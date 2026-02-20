@@ -1,0 +1,5 @@
+{
+  "name": "Telegram Topic Manager",
+  "description": "Manage automatic replies and broadcasts for your Telegram group topics.",
+  "requestFramePermissions": []
+}
