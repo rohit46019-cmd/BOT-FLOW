@@ -22,7 +22,8 @@ import {
   Image as ImageIcon,
   X,
   Folder,
-  ArrowLeft
+  ArrowLeft,
+  FileText
 } from "lucide-react";
 
 interface Stats {
@@ -49,7 +50,16 @@ interface Topic {
   created_at: string;
 }
 
-const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user'] as const;
+interface AppLog {
+  _id: string;
+  level: 'info' | 'error' | 'warn';
+  message: string;
+  details?: string;
+  route?: string;
+  timestamp: string;
+}
+
+const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user', 'logs'] as const;
 type TabType = typeof TABS[number];
 
 export default function App() {
@@ -60,6 +70,7 @@ export default function App() {
   const [apiHashInput, setApiHashInput] = useState("");
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [keywords, setKeywords] = useState<Keyword[]>([]);
+  const [logs, setLogs] = useState<AppLog[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newReply, setNewReply] = useState("");
   const [newPhoto, setNewPhoto] = useState<string | null>(null);
@@ -113,9 +124,33 @@ export default function App() {
     }
   };
 
+  const fetchLogs = async () => {
+    try {
+      const res = await fetch("/api/logs");
+      const data = await res.json();
+      setLogs(data);
+    } catch (err) {
+      console.error("Failed to fetch logs", err);
+    }
+  };
+
+  const clearLogs = async () => {
+    if (!confirm("Clear all logs?")) return;
+    try {
+      const res = await fetch("/api/logs", { method: "DELETE" });
+      if (res.ok) {
+        setLogs([]);
+        showNotification('success', 'Logs cleared');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to clear logs');
+    }
+  };
+
   useEffect(() => {
     fetchStats();
     fetchKeywords();
+    fetchLogs();
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
@@ -136,6 +171,12 @@ export default function App() {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), type === 'error' ? 6000 : duration);
   };
+
+  useEffect(() => {
+    if (activeTab === 'logs') {
+      fetchLogs();
+    }
+  }, [activeTab]);
 
   const handleUpdateSettings = async () => {
     setSaving(true);
@@ -371,12 +412,12 @@ export default function App() {
             setActiveTab(id);
           }
         }}
-        className={`flex flex-col items-center justify-center py-2 px-4 rounded-2xl transition-all duration-300 relative ${
+        className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative ${
           isActive ? "text-emerald-400" : (darkMode ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-800")
         }`}
       >
-        <Icon size={24} className={isActive ? "scale-110" : ""} />
-        <span className="text-[10px] font-bold uppercase tracking-widest mt-1">{label}</span>
+        <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110" : ""}`} />
+        <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest mt-1">{label}</span>
         {isActive && (
           <motion.div 
             layoutId="activeTab"
@@ -773,16 +814,80 @@ export default function App() {
             </motion.div>
           )}
 
+          {activeTab === 'logs' && (
+            <motion.div
+              key="logs"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+                <div className="flex items-center justify-between px-2">
+                  <h3 className={`text-xl font-black uppercase tracking-tighter ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Logs</h3>
+                  <button 
+                    onClick={clearLogs}
+                    className="text-rose-500 text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/10 px-3 py-1 rounded-full transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                  {logs.length === 0 ? (
+                    <div className="text-center py-12 text-slate-500 italic text-sm">No logs found</div>
+                  ) : (
+                    logs.map((log) => (
+                      <div 
+                        key={log._id} 
+                        className={`p-4 rounded-2xl border transition-colors ${
+                          darkMode ? 'bg-slate-950/50 border-slate-800' : 'bg-slate-50 border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                            log.level === 'error' ? 'bg-rose-500/20 text-rose-500' : 
+                            log.level === 'warn' ? 'bg-amber-500/20 text-amber-500' : 
+                            'bg-emerald-500/20 text-emerald-500'
+                          }`}>
+                            {log.level}
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className={`text-sm font-bold mb-1 ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>{log.message}</p>
+                        {log.route && (
+                          <p className="text-[10px] font-mono text-slate-500 mb-2">Route: {log.route}</p>
+                        )}
+                        {log.details && (
+                          <pre className={`text-[10px] p-3 rounded-xl overflow-x-auto font-mono ${
+                            darkMode ? 'bg-slate-900 text-slate-400' : 'bg-slate-200 text-slate-600'
+                          }`}>
+                            {log.details}
+                          </pre>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
         </AnimatePresence>
       </main>
 
       {/* Bottom Navigation */}
-      <nav className={`fixed bottom-6 left-4 right-4 backdrop-blur-xl border rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
+      <nav className={`fixed bottom-6 left-2 right-2 sm:left-4 sm:right-4 backdrop-blur-xl border rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
         <TabButton id="dashboard" icon={LayoutDashboard} label="Home" />
         <TabButton id="keywords" icon={Hash} label="Words" />
         <TabButton id="broadcast" icon={Send} label="Cast" />
         <TabButton id="settings" icon={Settings} label="Set" />
         <TabButton id="user" icon={User} label="User" />
+        <TabButton id="logs" icon={FileText} label="Logs" />
       </nav>
 
       {/* Notifications */}

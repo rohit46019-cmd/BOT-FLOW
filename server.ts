@@ -35,6 +35,15 @@ const KeywordSchema = new mongoose.Schema({
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
+const LogSchema = new mongoose.Schema({
+  level: { type: String, enum: ['info', 'error', 'warn'], default: 'info' },
+  message: { type: String, required: true },
+  details: { type: String },
+  route: { type: String },
+  timestamp: { type: Date, default: Date.now }
+});
+const Log = mongoose.model("Log", LogSchema);
+
 // Helper functions
 const getSetting = async (key: string) => await Setting.findOne({ key });
 const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
@@ -43,6 +52,19 @@ const logTopic = async (topicId: number, name: string) => {
   try {
     await Topic.create({ telegram_topic_id: topicId, name });
   } catch (err) {}
+};
+
+const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info', route?: string, details?: any) => {
+  try {
+    await Log.create({
+      message,
+      level,
+      route,
+      details: details ? (typeof details === 'string' ? details : JSON.stringify(details, null, 2)) : undefined
+    });
+  } catch (err) {
+    console.error("Failed to save log to DB:", err);
+  }
 };
 
 // Initialize default settings
@@ -199,6 +221,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
+      await saveLog(err.message, 'error', '/api/stats');
       res.status(500).json({ error: `[GET /api/stats] ${err.message}` });
     }
   });
@@ -210,9 +233,11 @@ async function startServer() {
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
       if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
+      await saveLog(err.message, 'error', '/api/settings', req.body);
       res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
     }
   });
@@ -272,9 +297,11 @@ async function startServer() {
       const result = await userClient.sendCode({ apiId, apiHash }, phone);
       phoneCodeHash = result.phoneCodeHash;
       phoneNumber = phone;
+      await saveLog(`Auth code sent to ${phone}`, 'info', '/api/auth/send-code');
       res.json({ success: true });
     } catch (err: any) {
       console.error("SendCode error:", err);
+      await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId });
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     }
   });
@@ -313,8 +340,10 @@ async function startServer() {
       const sessionString = (userClient.session as StringSession).save();
       await setSetting("session_string", sessionString);
       setupUserBotHandlers(userClient, groupId);
+      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin');
       res.json({ success: true });
     } catch (err: any) {
+      await saveLog(err.message, 'error', '/api/auth/signin', { phoneNumber });
       res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
@@ -384,12 +413,32 @@ async function startServer() {
     try {
       if (userClient && userClient.connected) {
         await userClient.sendMessage(groupId, { message });
+        await saveLog("Broadcast sent", 'info', '/api/broadcast', { messageLength: message.length });
         res.json({ success: true });
       } else {
         res.status(400).json({ error: "Telegram ID not logged in. Please login first." });
       }
     } catch (err: any) {
+      await saveLog(err.message, 'error', '/api/broadcast');
       res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
+    }
+  });
+
+  app.get("/api/logs", async (req, res) => {
+    try {
+      const logs = await Log.find().sort({ timestamp: -1 }).limit(100);
+      res.json(logs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/logs", async (req, res) => {
+    try {
+      await Log.deleteMany({});
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -419,9 +468,18 @@ async function startServer() {
     // Connect UserBot in background
     (async () => {
       try {
-        const sessionString = (await getSetting("session_string"))?.value;
-        const apiIdRaw = (await getSetting("api_id"))?.value || "";
-        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
+        let sessionString = (await getSetting("session_string"))?.value;
+        
+        // Use hardcoded session if database session is missing
+        if (!sessionString) {
+          sessionString = hardcodedSession;
+          await setSetting("session_string", hardcodedSession);
+          console.log("Using hardcoded Telegram session.");
+        }
+
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
         const apiId = parseInt(apiIdRaw.trim(), 10);
 
         if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
@@ -430,11 +488,13 @@ async function startServer() {
             connectionRetries: 5,
           });
           await userClient.connect();
-          console.log("UserBot connected using saved session.");
+          console.log("UserBot connected successfully.");
           setupUserBotHandlers(userClient, groupId);
+          await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Failed to connect UserBot on startup:", err);
+        await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
       }
     })();
   });
