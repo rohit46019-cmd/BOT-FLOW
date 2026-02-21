@@ -92,6 +92,10 @@ export default function App() {
       setApiIdInput(data.apiId);
       setApiHashInput(data.apiHash);
       if (!phone) setPhone(data.defaultPhone);
+      
+      if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
+        setAuthStep('phone');
+      }
     } catch (err) {
       console.error("Failed to fetch stats", err);
     } finally {
@@ -627,6 +631,144 @@ export default function App() {
                   <Send size={18} />
                   <span>{broadcasting ? 'Sending...' : 'Send Now'}</span>
                 </motion.button>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'user' && (
+            <motion.div
+              key="user"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+                {stats?.isUserBotConnected ? (
+                  <div className="text-center py-6 space-y-4">
+                    <div className="bg-emerald-500/10 w-20 h-20 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
+                      <CheckCircle2 className="text-emerald-500" size={40} />
+                    </div>
+                    <h3 className={`text-xl font-black uppercase tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Account Linked</h3>
+                    <p className="text-slate-500 text-sm">Your personal account is active.</p>
+                    <button 
+                      onClick={handleLogout}
+                      className="text-rose-500 text-xs font-bold uppercase tracking-widest hover:underline mt-4"
+                    >
+                      Logout Session
+                    </button>
+                    
+                    {deferredPrompt && (
+                      <div className={`pt-6 border-t mt-6 transition-colors duration-500 ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+                        <button
+                          onClick={handleInstallApp}
+                          className="w-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-600/30 transition-all flex items-center justify-center space-x-2"
+                        >
+                          <Smartphone size={18} />
+                          <span>Install App</span>
+                        </button>
+                        <p className="text-[10px] text-slate-500 mt-2 text-center">Install USERBOT PRO on your home screen</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {authStep === 'credentials' && (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API ID</label>
+                          <input
+                            type="text"
+                            value={apiIdInput}
+                            onChange={(e) => setApiIdInput(e.target.value)}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API Hash</label>
+                          <input
+                            type="text"
+                            value={apiHashInput}
+                            onChange={(e) => setApiHashInput(e.target.value)}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                          />
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
+                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all"
+                        >
+                          Next Step
+                        </motion.button>
+                      </div>
+                    )}
+
+                    {authStep === 'phone' && (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Phone Number</label>
+                          <input
+                            type="text"
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            placeholder="+1234567890"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                          />
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={handleSendCode}
+                          disabled={authLoading}
+                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                        >
+                          {authLoading ? <RefreshCw className="animate-spin" size={20} /> : null}
+                          <span>Send Login Code</span>
+                        </motion.button>
+                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-sm">Back to API Settings</button>
+                      </div>
+                    )}
+
+                    {authStep === 'code' && (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">Login Code</label>
+                          <input
+                            type="text"
+                            value={code}
+                            onChange={(e) => setCode(e.target.value)}
+                            placeholder="Enter code from Telegram"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">2FA Password (Optional)</label>
+                          <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="If enabled"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                          />
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={handleSignIn}
+                          disabled={authLoading}
+                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                        >
+                          {authLoading ? <RefreshCw className="animate-spin" size={20} /> : null}
+                          <span>Complete Login</span>
+                        </motion.button>
+                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-sm">Back</button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
