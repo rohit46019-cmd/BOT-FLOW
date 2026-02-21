@@ -204,18 +204,27 @@ async function startServer() {
   });
 
   app.post("/api/settings", async (req, res) => {
-    const { autoReply, delaySeconds, apiId, apiHash } = req.body;
-    if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
-    if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
-    if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
-    if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
-    res.json({ success: true });
+    try {
+      const { autoReply, delaySeconds, apiId, apiHash } = req.body;
+      if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
+      if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
+      if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
+      if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error in /api/settings:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Keyword Routes
   app.get("/api/keywords", async (req, res) => {
-    const keywords = await Keyword.find();
-    res.json(keywords);
+    try {
+      const keywords = await Keyword.find();
+      res.json(keywords);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post("/api/keywords", async (req, res) => {
