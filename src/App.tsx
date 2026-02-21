@@ -41,6 +41,7 @@ interface Keyword {
   keyword: string;
   reply: string;
   photo?: string;
+  message_link?: string;
 }
 
 interface Topic {
@@ -73,7 +74,7 @@ export default function App() {
   const [logs, setLogs] = useState<AppLog[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newReply, setNewReply] = useState("");
-  const [newPhoto, setNewPhoto] = useState<string | null>(null);
+  const [newMessageLink, setNewMessageLink] = useState("");
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -209,33 +210,26 @@ export default function App() {
   };
 
   const handleAddKeyword = async () => {
-    if (!newKeyword || !newReply) return;
+    if (!newKeyword || (!newReply && !newMessageLink)) return;
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword: newKeyword, reply: newReply, photo: newPhoto }),
+        body: JSON.stringify({ 
+          keyword: newKeyword, 
+          reply: newReply, 
+          message_link: newMessageLink 
+        }),
       });
       if (res.ok) {
         showNotification('success', 'Keyword added!');
         setNewKeyword("");
         setNewReply("");
-        setNewPhoto(null);
+        setNewMessageLink("");
         fetchKeywords();
       }
     } catch (err) {
       showNotification('error', 'Failed to add keyword');
-    }
-  };
-
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setNewPhoto(reader.result as string);
-      };
-      reader.readAsDataURL(file);
     }
   };
 
@@ -576,29 +570,17 @@ export default function App() {
                     className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
-                
+
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reply Photo (Optional)</label>
-                  <div className="flex items-center space-x-4">
-                    <label className={`flex-1 flex items-center justify-center space-x-2 p-4 border-2 border-dashed rounded-2xl cursor-pointer transition-all ${darkMode ? 'border-slate-800 hover:border-emerald-500/50 bg-slate-950/50' : 'border-slate-200 hover:border-emerald-500/50 bg-slate-50'}`}>
-                      <ImageIcon size={20} className="text-emerald-500" />
-                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
-                        {newPhoto ? 'Change Photo' : 'Upload Photo'}
-                      </span>
-                      <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
-                    </label>
-                    {newPhoto && (
-                      <div className="relative w-14 h-14 rounded-xl overflow-hidden border border-emerald-500/30">
-                        <img src={newPhoto} alt="Preview" className="w-full h-full object-cover" />
-                        <button 
-                          onClick={() => setNewPhoto(null)}
-                          className="absolute top-0 right-0 bg-rose-500 text-white p-0.5 rounded-bl-lg"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Chat Forward URL (Optional)</label>
+                  <input
+                    type="text"
+                    value={newMessageLink}
+                    onChange={(e) => setNewMessageLink(e.target.value)}
+                    placeholder="https://t.me/c/3672030592/123"
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                  />
+                  <p className="text-[10px] text-slate-500 ml-1 italic">Paste the Telegram message link here to forward media/files.</p>
                 </div>
 
                 <motion.button
@@ -620,14 +602,16 @@ export default function App() {
                     className={`border p-4 rounded-2xl flex items-center justify-between transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
                   >
                     <div className="flex items-center space-x-4">
-                      {kw.photo && (
-                        <div className="w-12 h-12 rounded-xl overflow-hidden border border-slate-700">
-                          <img src={kw.photo} alt="Reply" className="w-full h-full object-cover" />
-                        </div>
-                      )}
                       <div>
                         <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{kw.keyword}</p>
-                        <p className={`text-sm mt-1 transition-colors duration-500 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{kw.reply}</p>
+                        {kw.message_link ? (
+                          <div className="flex items-center space-x-2 mt-1">
+                            <FileText size={12} className="text-slate-500" />
+                            <p className="text-[10px] text-slate-500 italic truncate max-w-[150px]">{kw.message_link}</p>
+                          </div>
+                        ) : (
+                          <p className={`text-sm mt-1 transition-colors duration-500 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{kw.reply}</p>
+                        )}
                       </div>
                     </div>
                     <button 

@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
+import { CustomFile } from "telegram/client/uploads";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -30,8 +31,9 @@ const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
   keyword: { type: String, required: true, unique: true },
-  reply: { type: String, required: true },
-  photo: { type: String } // Base64 string
+  reply: { type: String }, // Made optional to support message_link only
+  photo: { type: String }, // Base64 string (legacy)
+  message_link: { type: String } // Telegram message link
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -101,7 +103,8 @@ let phoneNumber: string | null = null;
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
 
   const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
@@ -123,60 +126,153 @@ async function startServer() {
       const message = event.message;
       if (!message) return;
 
-      const chatId = message.peerId?.channelId?.toString() || message.peerId?.chatId?.toString();
+      // Robust ID extraction
+      let chatId: string = "";
+      try {
+        const peerId = await client.getPeerId(message.peerId);
+        chatId = peerId.toString();
+      } catch (e) {
+        chatId = message.peerId?.channelId?.toString() || message.peerId?.chatId?.toString() || "";
+      }
+
+      const normalizedChatId = chatId.replace("-100", "");
       const normalizedTargetId = targetGroupId.replace("-100", "");
+      
+      console.log(`UserBot received message in chat ${chatId} (normalized: ${normalizedChatId}): "${message.message || '[No text]'}"`);
+      
+      if (normalizedChatId !== normalizedTargetId) {
+        return;
+      }
 
       // 1. Topic Creation Handler
       if (message.action instanceof Api.MessageActionTopicCreate) {
-        if (chatId === normalizedTargetId) {
-          const topicName = message.action.title;
-          const topicId = message.id;
-          await logTopic(topicId, topicName);
-          
-          const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
-          const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
-          
-          setTimeout(async () => {
-            try {
-              await client.sendMessage(message.peerId, {
-                message: autoReply,
-                replyTo: topicId,
-              });
-            } catch (err) {
-              console.error("UserBot failed to send auto-reply:", err);
-            }
-          }, delaySeconds * 1000);
-        }
+        const topicName = message.action.title;
+        const topicId = message.id;
+        await logTopic(topicId, topicName);
+        
+        const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
+        const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+        
+        setTimeout(async () => {
+          try {
+            await client.sendMessage(message.peerId, {
+              message: autoReply,
+              replyTo: topicId,
+            });
+          } catch (err) {
+            console.error("UserBot failed to send auto-reply:", err);
+          }
+        }, delaySeconds * 1000);
       }
 
       // 2. Keyword Handler
       if (message.message && !message.out) {
-        if (chatId === normalizedTargetId) {
-          const text = message.message.toLowerCase();
-          const keywords = await Keyword.find();
-          
-          for (const kw of keywords) {
-            if (text.includes(kw.keyword.toLowerCase())) {
-              try {
-                if (kw.photo) {
-                  // Convert base64 to buffer
-                  const buffer = Buffer.from(kw.photo.split(",")[1] || kw.photo, "base64");
-                  await client.sendFile(message.peerId, {
-                    file: buffer,
-                    caption: kw.reply,
-                    replyTo: message.id,
-                  });
+        const text = message.message.toLowerCase();
+        const keywords = await Keyword.find();
+        
+        console.log(`Checking message for keywords: "${text}". Found ${keywords.length} keywords in DB.`);
+
+        for (const kw of keywords) {
+          if (text.includes(kw.keyword.toLowerCase())) {
+            console.log(`Matched keyword: ${kw.keyword}`);
+            try {
+              const replyToMsgId = message.id;
+
+              if (kw.message_link) {
+                console.log(`Handling message link: ${kw.message_link}`);
+                
+                const parts = kw.message_link.split("/").filter(p => p.length > 0);
+                const messageId = parseInt(parts[parts.length - 1], 10);
+                
+                if (!isNaN(messageId)) {
+                  let fromPeer: any = targetGroupId;
+                  
+                  if (kw.message_link.includes("/c/")) {
+                    const cIndex = parts.indexOf("c");
+                    if (cIndex !== -1 && parts[cIndex + 1]) {
+                      fromPeer = `-100${parts[cIndex + 1]}`;
+                    }
+                  } else {
+                    const tmeIndex = parts.indexOf("t.me");
+                    if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                      fromPeer = parts[tmeIndex + 1];
+                    } else if (parts.length >= 3) {
+                      fromPeer = parts[2];
+                    }
+                  }
+
+                  const replyToMsgId = message.id;
+                  const topMsgId = message.replyTo?.replyToMsgId;
+
+                  console.log(`Forwarding message ${messageId} from ${fromPeer} to ${chatId} (Topic: ${topMsgId})`);
+                  
+                  try {
+                    // Try to load the entity first
+                    try {
+                      await client.getEntity(fromPeer);
+                    } catch (e) {}
+
+                    // 1. Send a small reply/tag message first to satisfy "tag krk reply kare"
+                    // and to ensure the user knows which message triggered the forward.
+                    await client.sendMessage(message.peerId, {
+                      message: "Okay",
+                      replyTo: replyToMsgId,
+                    });
+
+                    // 2. Forward the actual content
+                    // Using invoke to support topMsgId (forum topics)
+                    await client.invoke(
+                      new Api.messages.ForwardMessages({
+                        fromPeer: fromPeer,
+                        id: [messageId],
+                        randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                        toPeer: message.peerId,
+                        topMsgId: topMsgId,
+                      })
+                    );
+                    
+                    console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
+                  } catch (forwardErr: any) {
+                    console.error("Forwarding failed, trying fallback:", forwardErr.message);
+                    // Fallback to simpler forward if invoke fails
+                    await client.forwardMessages(message.peerId, {
+                      messages: [messageId],
+                      fromPeer: targetGroupId,
+                    });
+                  }
                 } else {
-                  await client.sendMessage(message.peerId, {
-                    message: kw.reply,
-                    replyTo: message.id,
-                  });
+                  console.error(`Invalid message ID in link: ${kw.message_link}`);
                 }
-                console.log(`Keyword match: ${kw.keyword} -> ${kw.reply}`);
-                break; // Only reply to the first matching keyword
-              } catch (err) {
-                console.error("UserBot failed to send keyword reply:", err);
+              } else if (kw.photo) {
+                console.log(`Sending photo reply for keyword: ${kw.keyword}`);
+                const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
+                const buffer = Buffer.from(base64Data, "base64");
+                
+                const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
+                const toUpload = await client.uploadFile({
+                  file: fileToUpload,
+                  workers: 1,
+                });
+
+                await client.sendFile(message.peerId, {
+                  file: toUpload,
+                  caption: kw.reply || "",
+                  replyTo: replyToMsgId,
+                  forceDocument: false,
+                });
+              } else if (kw.reply) {
+                console.log(`Sending text reply for keyword: ${kw.keyword}`);
+                await client.sendMessage(message.peerId, {
+                  message: kw.reply,
+                  replyTo: replyToMsgId,
+                });
               }
+              
+              await saveLog(`Keyword matched: ${kw.keyword}`, 'info', 'USERBOT');
+              break; 
+            } catch (err: any) {
+              console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
+              await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT');
             }
           }
         }
@@ -278,9 +374,9 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { keyword, reply, photo } = req.body;
+    const { keyword, reply, photo, message_link } = req.body;
     try {
-      await Keyword.findOneAndUpdate({ keyword }, { reply, photo }, { upsert: true, new: true });
+      await Keyword.findOneAndUpdate({ keyword }, { reply, photo, message_link }, { upsert: true, new: true });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/keywords] ${err.message}` });
