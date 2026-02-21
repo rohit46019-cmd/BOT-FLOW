@@ -199,7 +199,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[GET /api/stats] ${err.message}` });
     }
   });
 
@@ -213,7 +213,7 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
     }
   });
 
@@ -223,7 +223,7 @@ async function startServer() {
       const keywords = await Keyword.find();
       res.json(keywords);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[GET /api/keywords] ${err.message}` });
     }
   });
 
@@ -233,7 +233,7 @@ async function startServer() {
       await Keyword.findOneAndUpdate({ keyword }, { reply, photo }, { upsert: true, new: true });
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/keywords] ${err.message}` });
     }
   });
 
@@ -242,7 +242,7 @@ async function startServer() {
       await Keyword.findByIdAndDelete(req.params.id);
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[DELETE /api/keywords] ${err.message}` });
     }
   });
 
@@ -275,7 +275,7 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       console.error("SendCode error:", err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     }
   });
 
@@ -315,7 +315,7 @@ async function startServer() {
       setupUserBotHandlers(userClient, groupId);
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
 
@@ -328,7 +328,7 @@ async function startServer() {
       await Setting.deleteOne({ key: "session_string" });
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/auth/logout] ${err.message}` });
     }
   });
 
@@ -337,7 +337,7 @@ async function startServer() {
       const topics = await Topic.find().sort({ created_at: -1 });
       res.json(topics);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[GET /api/topics] ${err.message}` });
     }
   });
 
@@ -373,7 +373,7 @@ async function startServer() {
       res.json(formattedMessages.reverse()); // Reverse to show oldest first
     } catch (err: any) {
       console.error("Error fetching messages:", err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[GET /api/group/messages] ${err.message}` });
     }
   });
 
@@ -389,7 +389,7 @@ async function startServer() {
         res.status(400).json({ error: "Telegram ID not logged in. Please login first." });
       }
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
     }
   });
 

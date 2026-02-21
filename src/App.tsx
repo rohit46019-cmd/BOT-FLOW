@@ -132,9 +132,9 @@ export default function App() {
     }
   };
 
-  const showNotification = (type: 'success' | 'error', message: string) => {
+  const showNotification = (type: 'success' | 'error', message: string, duration = 3000) => {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), 3000);
+    setTimeout(() => setNotification(null), type === 'error' ? 6000 : duration);
   };
 
   const handleUpdateSettings = async () => {
