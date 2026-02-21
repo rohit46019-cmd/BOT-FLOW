@@ -20,7 +20,9 @@ import {
   Sun,
   Moon,
   Image as ImageIcon,
-  X
+  X,
+  Folder,
+  ArrowLeft
 } from "lucide-react";
 
 interface Stats {
@@ -38,6 +40,13 @@ interface Keyword {
   keyword: string;
   reply: string;
   photo?: string;
+}
+
+interface Topic {
+  _id: string;
+  telegram_topic_id: number;
+  name: string;
+  created_at: string;
 }
 
 const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user'] as const;
@@ -382,20 +391,20 @@ export default function App() {
           <h1 className={`font-black text-xl tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT<span className="text-emerald-500">PRO</span></h1>
         </div>
         <div className="flex items-center space-x-4">
-          <button 
-            onClick={() => setDarkMode(!darkMode)}
-            className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400 hover:bg-slate-700' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-          <div className="flex flex-col items-end">
-            <div className={`w-2 h-2 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]'}`} />
-            <span className="text-[10px] font-bold uppercase tracking-widest opacity-60 mt-1">
-              {stats?.isUserBotConnected ? 'Connected' : 'Offline'}
-            </span>
+          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+            <span className={`w-2 h-2 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+            <span>{stats?.isUserBotConnected ? 'Connected' : 'Offline'}</span>
           </div>
         </div>
       </header>
+
+      {/* Floating Dark Mode Button */}
+      <button 
+        onClick={() => setDarkMode(!darkMode)}
+        className={`fixed bottom-24 right-4 z-50 p-4 rounded-full shadow-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400 hover:bg-slate-700 border border-slate-700' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
+      >
+        {darkMode ? <Sun size={24} /> : <Moon size={24} />}
+      </button>
 
       <main 
         className="p-4 max-w-md mx-auto overflow-hidden"
@@ -436,20 +445,6 @@ export default function App() {
                 </div>
                 <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-emerald-600/10 rounded-full blur-3xl" />
               </div>
-
-              <div className={`border p-6 rounded-[2.5rem] transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center space-x-2">
-                  <Hash size={14} />
-                  <span>Recent Keywords</span>
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {keywords.length > 0 ? keywords.slice(0, 5).map(kw => (
-                    <span key={kw._id} className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-colors duration-500 ${darkMode ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                      {kw.keyword}
-                    </span>
-                  )) : <p className="text-xs text-slate-600 italic">No keywords added yet</p>}
-                </div>
-              </div>
             </motion.div>
           )}
 
@@ -463,6 +458,7 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
+              {/* Settings Section */}
               <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Welcome Message</label>

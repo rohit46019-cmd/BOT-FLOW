@@ -85,21 +85,6 @@ async function startServer() {
   const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
   const groupId = "-1003672030592"; // Strictly enforced Group ID
 
-  // Initialize User Client if session exists
-  const sessionString = (await getSetting("session_string"))?.value;
-  const apiIdRaw = (await getSetting("api_id"))?.value || "";
-  const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-  const apiId = parseInt(apiIdRaw.trim(), 10);
-
-  if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-    userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-      connectionRetries: 5,
-    });
-    await userClient.connect();
-    console.log("UserBot connected using saved session.");
-    setupUserBotHandlers(userClient, groupId);
-  }
-
   const bot = new TelegramBot(token, { polling: true });
 
   // Handle polling errors to prevent crash and clean up logs
@@ -194,15 +179,28 @@ async function startServer() {
 
   // API Routes
   app.get("/api/stats", async (req, res) => {
-    res.json({
-      topicCount: await getTopicCount(),
-      autoReply: (await getSetting("auto_reply"))?.value || "",
-      delaySeconds: parseInt((await getSetting("delay_seconds"))?.value || "0", 10),
-      isUserBotConnected: !!userClient && userClient.connected,
-      apiId: (await getSetting("api_id"))?.value || "",
-      apiHash: (await getSetting("api_hash"))?.value || "",
-      defaultPhone: (await getSetting("default_phone"))?.value || "",
-    });
+    try {
+      const topicCount = await getTopicCount();
+      const autoReply = (await getSetting("auto_reply"))?.value || "";
+      const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+      const isUserBotConnected = !!userClient && userClient.connected;
+      const apiId = (await getSetting("api_id"))?.value || "";
+      const apiHash = (await getSetting("api_hash"))?.value || "";
+      const defaultPhone = (await getSetting("default_phone"))?.value || "";
+
+      res.json({
+        topicCount,
+        autoReply,
+        delaySeconds,
+        isUserBotConnected,
+        apiId,
+        apiHash,
+        defaultPhone,
+      });
+    } catch (err: any) {
+      console.error("Error in /api/stats:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post("/api/settings", async (req, res) => {
@@ -325,6 +323,51 @@ async function startServer() {
     }
   });
 
+  app.get("/api/topics", async (req, res) => {
+    try {
+      const topics = await Topic.find().sort({ created_at: -1 });
+      res.json(topics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/group/messages", async (req, res) => {
+    console.log("Accessing /api/group/messages");
+    if (!userClient || !userClient.connected) {
+      console.log("UserBot not connected");
+      return res.status(400).json({ error: "UserBot not connected" });
+    }
+    try {
+      const { topicId } = req.query;
+      const options: any = { limit: 50 };
+      
+      if (topicId) {
+        options.replyTo = parseInt(topicId as string, 10);
+      }
+
+      const messages = await userClient.getMessages(groupId, options);
+      if (!messages) {
+        return res.json([]);
+      }
+      
+      const formattedMessages = messages
+        .filter(m => m && m.message) // Filter out empty messages
+        .map((m: any) => ({
+          id: m.id,
+          text: m.message,
+          date: m.date,
+          senderId: m.senderId?.toString(),
+          isOutgoing: m.out,
+          replyToMsgId: m.replyTo?.replyToMsgId,
+        }));
+      res.json(formattedMessages.reverse()); // Reverse to show oldest first
+    } catch (err: any) {
+      console.error("Error fetching messages:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/broadcast", async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
@@ -341,6 +384,11 @@ async function startServer() {
     }
   });
 
+  // API 404 Handler
+  app.use("/api/*", (req, res) => {
+    res.status(404).json({ error: "API endpoint not found" });
+  });
+
   // Vite middleware
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -355,8 +403,31 @@ async function startServer() {
     });
   }
 
+  // Start Server immediately
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Connect UserBot in background
+    (async () => {
+      try {
+        const sessionString = (await getSetting("session_string"))?.value;
+        const apiIdRaw = (await getSetting("api_id"))?.value || "";
+        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+        const apiId = parseInt(apiIdRaw.trim(), 10);
+
+        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+          console.log("Attempting to connect UserBot...");
+          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+            connectionRetries: 5,
+          });
+          await userClient.connect();
+          console.log("UserBot connected using saved session.");
+          setupUserBotHandlers(userClient, groupId);
+        }
+      } catch (err) {
+        console.error("Failed to connect UserBot on startup:", err);
+      }
+    })();
   });
 
   // Graceful shutdown
