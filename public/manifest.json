@@ -1,0 +1,17 @@
+{
+  "name": "USERBOT PRO",
+  "short_name": "UserbotPro",
+  "description": "Professional Telegram Topic & Userbot Manager",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

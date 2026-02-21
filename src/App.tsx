@@ -16,7 +16,11 @@ import {
   Hash,
   Plus,
   Trash2,
-  LayoutDashboard
+  LayoutDashboard,
+  Sun,
+  Moon,
+  Image as ImageIcon,
+  X
 } from "lucide-react";
 
 interface Stats {
@@ -33,6 +37,7 @@ interface Keyword {
   _id: string;
   keyword: string;
   reply: string;
+  photo?: string;
 }
 
 const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user'] as const;
@@ -48,6 +53,7 @@ export default function App() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newReply, setNewReply] = useState("");
+  const [newPhoto, setNewPhoto] = useState<string | null>(null);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -57,6 +63,7 @@ export default function App() {
   const [direction, setDirection] = useState(0);
   const [touchStart, setTouchStart] = useState({ x: 0, y: 0 });
   const [touchEnd, setTouchEnd] = useState({ x: 0, y: 0 });
+  const [darkMode, setDarkMode] = useState(true);
 
   // Auth State
   const [phone, setPhone] = useState("");
@@ -64,6 +71,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [authStep, setAuthStep] = useState<'credentials' | 'phone' | 'code'>('credentials');
   const [authLoading, setAuthLoading] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   const fetchStats = async () => {
     try {
@@ -95,7 +103,21 @@ export default function App() {
   useEffect(() => {
     fetchStats();
     fetchKeywords();
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    });
   }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+    }
+  };
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
@@ -134,16 +156,28 @@ export default function App() {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword: newKeyword, reply: newReply }),
+        body: JSON.stringify({ keyword: newKeyword, reply: newReply, photo: newPhoto }),
       });
       if (res.ok) {
         showNotification('success', 'Keyword added!');
         setNewKeyword("");
         setNewReply("");
+        setNewPhoto(null);
         fetchKeywords();
       }
     } catch (err) {
       showNotification('error', 'Failed to add keyword');
+    }
+  };
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNewPhoto(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -291,7 +325,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0f172a] flex items-center justify-center">
+      <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-[#0f172a]' : 'bg-slate-50'}`}>
         <motion.div 
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
@@ -315,7 +349,7 @@ export default function App() {
           }
         }}
         className={`flex flex-col items-center justify-center py-2 px-4 rounded-2xl transition-all duration-300 relative ${
-          isActive ? "text-emerald-400" : "text-slate-400 hover:text-slate-200"
+          isActive ? "text-emerald-400" : (darkMode ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-800")
         }`}
       >
         <Icon size={24} className={isActive ? "scale-110" : ""} />
@@ -331,20 +365,35 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-slate-200 font-sans pb-24">
-      {/* Header */}
-      <header className="p-6 flex items-center justify-between sticky top-0 z-50 bg-[#0f172a]/80 backdrop-blur-md border-b border-slate-800">
-        <div className="flex items-center space-x-3">
-          <div className="bg-gradient-to-br from-emerald-600 to-emerald-400 p-2 rounded-xl shadow-lg shadow-emerald-900/20">
-            <Bell className="text-white" size={20} />
-          </div>
-          <h1 className="font-black text-xl tracking-tighter text-white">USERBOT<span className="text-emerald-500">PRO</span></h1>
+    <div className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-[#0f172a] text-slate-200' : 'bg-slate-50 text-slate-800'} font-sans pb-24`}>
+      {/* Offline Warning */}
+      {!stats?.isUserBotConnected && (
+        <div className="bg-rose-600 text-white text-[10px] font-black uppercase tracking-[0.2em] py-2 text-center sticky top-0 z-[60] shadow-lg">
+          ⚠️ Please login Telegram ID to enable auto-replies
         </div>
-        <div className="flex items-center space-x-2">
-          <div className={`w-2 h-2 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]'}`} />
-          <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">
-            {stats?.isUserBotConnected ? 'Connected' : 'Offline'}
-          </span>
+      )}
+
+      {/* Header */}
+      <header className={`p-6 flex items-center justify-between sticky top-0 z-50 backdrop-blur-md border-b transition-colors duration-500 ${darkMode ? 'bg-[#0f172a]/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
+        <div className="flex items-center space-x-3">
+          <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-emerald-900/20">
+            <img src="/logo.svg" alt="Logo" className="w-full h-full object-cover" />
+          </div>
+          <h1 className={`font-black text-xl tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT<span className="text-emerald-500">PRO</span></h1>
+        </div>
+        <div className="flex items-center space-x-4">
+          <button 
+            onClick={() => setDarkMode(!darkMode)}
+            className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400 hover:bg-slate-700' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+          >
+            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+          <div className="flex flex-col items-end">
+            <div className={`w-2 h-2 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]'}`} />
+            <span className="text-[10px] font-bold uppercase tracking-widest opacity-60 mt-1">
+              {stats?.isUserBotConnected ? 'Connected' : 'Offline'}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -366,36 +415,36 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className="grid grid-cols-2 gap-4">
-                <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-3xl">
+                <div className={`border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                   <BarChart3 className="text-emerald-400 mb-3" size={20} />
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Topics</p>
-                  <h3 className="text-3xl font-black text-white mt-1">{stats?.topicCount || 0}</h3>
+                  <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.topicCount || 0}</h3>
                 </div>
-                <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-3xl">
+                <div className={`border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                   <RefreshCw className="text-emerald-400 mb-3" size={20} />
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Delay</p>
-                  <h3 className="text-3xl font-black text-white mt-1">{stats?.delaySeconds || 0}s</h3>
+                  <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.delaySeconds || 0}s</h3>
                 </div>
               </div>
 
-              <div className="bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 p-6 rounded-[2.5rem] shadow-2xl relative overflow-hidden">
+              <div className={`border p-6 rounded-[2.5rem] shadow-2xl relative overflow-hidden transition-colors duration-500 ${darkMode ? 'bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
                 <div className="relative z-10">
                   <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-2">Auto Reply Active</p>
-                  <p className="text-lg font-medium text-slate-200 leading-relaxed italic">
+                  <p className={`text-lg font-medium leading-relaxed italic transition-colors duration-500 ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
                     "{stats?.autoReply || 'No message set'}"
                   </p>
                 </div>
                 <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-emerald-600/10 rounded-full blur-3xl" />
               </div>
 
-              <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-[2.5rem]">
+              <div className={`border p-6 rounded-[2.5rem] transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center space-x-2">
                   <Hash size={14} />
                   <span>Recent Keywords</span>
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {keywords.length > 0 ? keywords.slice(0, 5).map(kw => (
-                    <span key={kw._id} className="bg-slate-800 text-slate-300 px-3 py-1 rounded-full text-[10px] font-bold border border-slate-700">
+                    <span key={kw._id} className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-colors duration-500 ${darkMode ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
                       {kw.keyword}
                     </span>
                   )) : <p className="text-xs text-slate-600 italic">No keywords added yet</p>}
@@ -414,13 +463,13 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-[2.5rem] space-y-6">
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Welcome Message</label>
                   <textarea
                     value={autoReplyInput}
                     onChange={(e) => setAutoReplyInput(e.target.value)}
-                    className="w-full h-32 p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm"
+                    className={`w-full h-32 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
                 <div className="space-y-2">
@@ -429,7 +478,7 @@ export default function App() {
                     type="number"
                     value={delaySecondsInput}
                     onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
-                    className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm"
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
                 <motion.button
@@ -455,7 +504,7 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-[2.5rem] space-y-4">
+              <div className={`border p-8 rounded-[2.5rem] space-y-4 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">New Keyword</label>
                   <input
@@ -463,7 +512,7 @@ export default function App() {
                     value={newKeyword}
                     onChange={(e) => setNewKeyword(e.target.value)}
                     placeholder="e.g. hello"
-                    className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
                 <div className="space-y-2">
@@ -473,9 +522,34 @@ export default function App() {
                     value={newReply}
                     onChange={(e) => setNewReply(e.target.value)}
                     placeholder="e.g. Hi there!"
-                    className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
+                
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reply Photo (Optional)</label>
+                  <div className="flex items-center space-x-4">
+                    <label className={`flex-1 flex items-center justify-center space-x-2 p-4 border-2 border-dashed rounded-2xl cursor-pointer transition-all ${darkMode ? 'border-slate-800 hover:border-emerald-500/50 bg-slate-950/50' : 'border-slate-200 hover:border-emerald-500/50 bg-slate-50'}`}>
+                      <ImageIcon size={20} className="text-emerald-500" />
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                        {newPhoto ? 'Change Photo' : 'Upload Photo'}
+                      </span>
+                      <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
+                    </label>
+                    {newPhoto && (
+                      <div className="relative w-14 h-14 rounded-xl overflow-hidden border border-emerald-500/30">
+                        <img src={newPhoto} alt="Preview" className="w-full h-full object-cover" />
+                        <button 
+                          onClick={() => setNewPhoto(null)}
+                          className="absolute top-0 right-0 bg-rose-500 text-white p-0.5 rounded-bl-lg"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
@@ -492,11 +566,18 @@ export default function App() {
                   <motion.div 
                     layout
                     key={kw._id}
-                    className="bg-slate-900/50 border border-slate-800 p-4 rounded-2xl flex items-center justify-between"
+                    className={`border p-4 rounded-2xl flex items-center justify-between transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
                   >
-                    <div>
-                      <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{kw.keyword}</p>
-                      <p className="text-sm text-slate-400 mt-1">{kw.reply}</p>
+                    <div className="flex items-center space-x-4">
+                      {kw.photo && (
+                        <div className="w-12 h-12 rounded-xl overflow-hidden border border-slate-700">
+                          <img src={kw.photo} alt="Reply" className="w-full h-full object-cover" />
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{kw.keyword}</p>
+                        <p className={`text-sm mt-1 transition-colors duration-500 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{kw.reply}</p>
+                      </div>
                     </div>
                     <button 
                       onClick={() => handleDeleteKeyword(kw._id)}
@@ -520,14 +601,14 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-[2.5rem] space-y-6">
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Broadcast Content</label>
                   <textarea
                     value={broadcastMessage}
                     onChange={(e) => setBroadcastMessage(e.target.value)}
                     placeholder="What would you like to announce?"
-                    className="w-full h-40 p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                    className={`w-full h-40 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                   />
                 </div>
                 <motion.button
@@ -535,7 +616,7 @@ export default function App() {
                   whileTap={{ scale: 0.98 }}
                   onClick={handleBroadcast}
                   disabled={broadcasting || !broadcastMessage.trim()}
-                  className="w-full bg-white text-slate-950 py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-200 transition-all disabled:opacity-50 flex items-center justify-center space-x-2"
+                  className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center space-x-2 ${darkMode ? 'bg-white text-slate-950 hover:bg-slate-200' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
                 >
                   <Send size={18} />
                   <span>{broadcasting ? 'Sending...' : 'Send Now'}</span>
@@ -554,13 +635,13 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-[2.5rem] space-y-6">
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 {stats?.isUserBotConnected ? (
                   <div className="text-center py-6 space-y-4">
                     <div className="bg-emerald-500/10 w-20 h-20 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
                       <CheckCircle2 className="text-emerald-500" size={40} />
                     </div>
-                    <h3 className="text-xl font-black text-white uppercase tracking-tighter">Account Linked</h3>
+                    <h3 className={`text-xl font-black uppercase tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Account Linked</h3>
                     <p className="text-slate-500 text-sm">Your personal account is active.</p>
                     <button 
                       onClick={handleLogout}
@@ -568,6 +649,19 @@ export default function App() {
                     >
                       Logout Session
                     </button>
+                    
+                    {deferredPrompt && (
+                      <div className={`pt-6 border-t mt-6 transition-colors duration-500 ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+                        <button
+                          onClick={handleInstallApp}
+                          className="w-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-600/30 transition-all flex items-center justify-center space-x-2"
+                        >
+                          <Smartphone size={18} />
+                          <span>Install App</span>
+                        </button>
+                        <p className="text-[10px] text-slate-500 mt-2 text-center">Install USERBOT PRO on your home screen</p>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-6">
@@ -579,7 +673,7 @@ export default function App() {
                             type="text"
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
-                            className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                           />
                         </div>
                         <div className="space-y-2">
@@ -588,7 +682,7 @@ export default function App() {
                             type="text"
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
-                            className="w-full p-4 bg-slate-950 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                           />
                         </div>
                         <motion.button
@@ -611,7 +705,7 @@ export default function App() {
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
                             placeholder="+1234567890"
-                            className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                           />
                         </div>
                         <motion.button
@@ -631,23 +725,23 @@ export default function App() {
                     {authStep === 'code' && (
                       <div className="space-y-4">
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold text-slate-700 uppercase tracking-wider">Login Code</label>
+                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">Login Code</label>
                           <input
                             type="text"
                             value={code}
                             onChange={(e) => setCode(e.target.value)}
                             placeholder="Enter code from Telegram"
-                            className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold text-slate-700 uppercase tracking-wider">2FA Password (Optional)</label>
+                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">2FA Password (Optional)</label>
                           <input
                             type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="If enabled"
-                            className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none"
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
                           />
                         </div>
                         <motion.button
@@ -672,7 +766,7 @@ export default function App() {
       </main>
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-6 left-4 right-4 bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50">
+      <nav className={`fixed bottom-6 left-4 right-4 backdrop-blur-xl border rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
         <TabButton id="dashboard" icon={LayoutDashboard} label="Home" />
         <TabButton id="keywords" icon={Hash} label="Words" />
         <TabButton id="broadcast" icon={Send} label="Cast" />

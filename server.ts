@@ -30,7 +30,8 @@ const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
   keyword: { type: String, required: true, unique: true },
-  reply: { type: String, required: true }
+  reply: { type: String, required: true },
+  photo: { type: String } // Base64 string
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -101,6 +102,15 @@ async function startServer() {
 
   const bot = new TelegramBot(token, { polling: true });
 
+  // Handle polling errors to prevent crash and clean up logs
+  bot.on("polling_error", (error: any) => {
+    if (error.message && error.message.includes("409 Conflict")) {
+      // This is expected during rapid restarts in this environment
+      return;
+    }
+    console.error("Telegram Bot Polling Error:", error);
+  });
+
   function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
       const message = event.message;
@@ -141,10 +151,20 @@ async function startServer() {
           for (const kw of keywords) {
             if (text.includes(kw.keyword.toLowerCase())) {
               try {
-                await client.sendMessage(message.peerId, {
-                  message: kw.reply,
-                  replyTo: message.id,
-                });
+                if (kw.photo) {
+                  // Convert base64 to buffer
+                  const buffer = Buffer.from(kw.photo.split(",")[1] || kw.photo, "base64");
+                  await client.sendFile(message.peerId, {
+                    file: buffer,
+                    caption: kw.reply,
+                    replyTo: message.id,
+                  });
+                } else {
+                  await client.sendMessage(message.peerId, {
+                    message: kw.reply,
+                    replyTo: message.id,
+                  });
+                }
                 console.log(`Keyword match: ${kw.keyword} -> ${kw.reply}`);
                 break; // Only reply to the first matching keyword
               } catch (err) {
@@ -157,27 +177,17 @@ async function startServer() {
     });
   }
 
-  // Bot Logic (Fallback)
+  // Bot Logic (Logging only, no auto-replies)
   bot.on("message", async (msg) => {
     // Only process messages from the target group
     if (msg.chat.id.toString() !== groupId) return;
 
-    if (msg.forum_topic_created && !userClient) {
+    if (msg.forum_topic_created) {
       const topicName = msg.forum_topic_created.name;
       const topicId = msg.message_thread_id;
 
       if (topicId) {
         await logTopic(topicId, topicName);
-        const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
-        const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
-        
-        setTimeout(async () => {
-          try {
-            await bot.sendMessage(groupId, autoReply, { message_thread_id: topicId });
-          } catch (err) {
-            console.error("Bot failed to send auto-reply:", err);
-          }
-        }, delaySeconds * 1000);
       }
     }
   });
@@ -211,9 +221,9 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { keyword, reply } = req.body;
+    const { keyword, reply, photo } = req.body;
     try {
-      await Keyword.findOneAndUpdate({ keyword }, { reply }, { upsert: true, new: true });
+      await Keyword.findOneAndUpdate({ keyword }, { reply, photo }, { upsert: true, new: true });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -322,10 +332,10 @@ async function startServer() {
     try {
       if (userClient && userClient.connected) {
         await userClient.sendMessage(groupId, { message });
+        res.json({ success: true });
       } else {
-        await bot.sendMessage(groupId, message);
+        res.status(400).json({ error: "Telegram ID not logged in. Please login first." });
       }
-      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -348,6 +358,21 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log("Shutting down...");
+    if (bot.isPolling()) {
+      await bot.stopPolling();
+    }
+    if (userClient) {
+      await userClient.disconnect();
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 startServer();
