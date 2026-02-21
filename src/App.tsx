@@ -692,13 +692,21 @@ export default function App() {
                     <div className="bg-emerald-500/10 w-20 h-20 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
                       <CheckCircle2 className="text-emerald-500" size={40} />
                     </div>
-                    <h3 className={`text-xl font-black uppercase tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Account Linked</h3>
-                    <p className="text-slate-500 text-sm">Your personal account is active.</p>
+                    <h3 className={`text-xl font-black uppercase tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Linked</h3>
+                    <p className="text-slate-500 text-sm">The Telegram session is active and shared across all users.</p>
+                    <div className="pt-4">
+                      <button 
+                        onClick={fetchStats}
+                        className="text-emerald-500 text-[10px] font-black uppercase tracking-widest hover:underline"
+                      >
+                        Refresh Connection Status
+                      </button>
+                    </div>
                     <button 
                       onClick={handleLogout}
-                      className="text-rose-500 text-xs font-bold uppercase tracking-widest hover:underline mt-4"
+                      className="text-slate-500 text-[9px] font-bold uppercase tracking-widest hover:text-rose-500 transition-colors mt-8 opacity-30 hover:opacity-100"
                     >
-                      Logout Session
+                      Reset System Session
                     </button>
                     
                     {deferredPrompt && (

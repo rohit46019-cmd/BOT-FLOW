@@ -205,7 +205,32 @@ async function startServer() {
       const topicCount = await getTopicCount();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
-      const isUserBotConnected = !!userClient && userClient.connected;
+      
+      let isUserBotConnected = !!userClient && userClient.connected;
+      
+      // Auto-reconnect attempt if disconnected but we have a session
+      if (!isUserBotConnected) {
+        const sessionString = (await getSetting("session_string"))?.value;
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiId = parseInt(apiIdRaw.trim(), 10);
+
+        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+          try {
+            console.log("Auto-reconnecting UserBot during stats check...");
+            userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+              connectionRetries: 3,
+            });
+            await userClient.connect();
+            setupUserBotHandlers(userClient, groupId);
+            isUserBotConnected = true;
+            await saveLog("UserBot auto-reconnected during stats check", "info", "/api/stats");
+          } catch (connErr: any) {
+            console.error("Auto-reconnect failed:", connErr.message);
+          }
+        }
+      }
+
       const apiId = (await getSetting("api_id"))?.value || "";
       const apiHash = (await getSetting("api_hash"))?.value || "";
       const defaultPhone = (await getSetting("default_phone"))?.value || "";
