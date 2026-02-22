@@ -25,13 +25,17 @@ import {
   ArrowLeft,
   FileText,
   Download,
-  Upload
+  Upload,
+  Play,
+  Pause
 } from "lucide-react";
 
 interface Stats {
   topicCount: number;
+  todayTopicCount: number;
   autoReply: string;
   delaySeconds: number;
+  isSystemPaused: boolean;
   isUserBotConnected: boolean;
   apiId: string;
   apiHash: string;
@@ -44,6 +48,7 @@ interface Keyword {
   reply: string;
   photo?: string;
   message_link?: string;
+  message_links?: string[];
 }
 
 interface Topic {
@@ -76,7 +81,7 @@ export default function App() {
   const [logs, setLogs] = useState<AppLog[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
   const [newReply, setNewReply] = useState("");
-  const [newMessageLink, setNewMessageLink] = useState("");
+  const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -86,7 +91,16 @@ export default function App() {
   const [direction, setDirection] = useState(0);
   const [touchStart, setTouchStart] = useState({ x: 0, y: 0 });
   const [touchEnd, setTouchEnd] = useState({ x: 0, y: 0 });
-  const [darkMode, setDarkMode] = useState(true);
+  const [refreshingLogs, setRefreshingLogs] = useState(false);
+  const [editingKeywordId, setEditingKeywordId] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem("darkMode");
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("darkMode", JSON.stringify(darkMode));
+  }, [darkMode]);
 
   // Auth State
   const [phone, setPhone] = useState("");
@@ -99,6 +113,11 @@ export default function App() {
   const fetchStats = async () => {
     try {
       const res = await fetch("/api/stats");
+      if (!res.ok) {
+        const text = await res.text();
+        if (text.includes("Rate exceeded")) return;
+        throw new Error(`Server error: ${res.status}`);
+      }
       const data = await res.json();
       setStats(data);
       setAutoReplyInput(data.autoReply);
@@ -120,6 +139,11 @@ export default function App() {
   const fetchKeywords = async () => {
     try {
       const res = await fetch("/api/keywords");
+      if (!res.ok) {
+        const text = await res.text();
+        if (text.includes("Rate exceeded")) return;
+        throw new Error(`Server error: ${res.status}`);
+      }
       const data = await res.json();
       setKeywords(data);
     } catch (err) {
@@ -128,12 +152,21 @@ export default function App() {
   };
 
   const fetchLogs = async () => {
+    setRefreshingLogs(true);
     try {
       const res = await fetch("/api/logs");
+      if (!res.ok) {
+        const text = await res.text();
+        if (text.includes("Rate exceeded")) return;
+        throw new Error(`Server error: ${res.status}`);
+      }
       const data = await res.json();
       setLogs(data);
     } catch (err) {
       console.error("Failed to fetch logs", err);
+    } finally {
+      // Add a slight delay so the animation is visible even for fast requests
+      setTimeout(() => setRefreshingLogs(false), 500);
     }
   };
 
@@ -181,6 +214,34 @@ export default function App() {
     }
   }, [activeTab]);
 
+  const handleTogglePause = async () => {
+    if (!stats) return;
+    const newPausedState = !stats.isSystemPaused;
+    
+    // Optimistic update
+    setStats({ ...stats, isSystemPaused: newPausedState });
+    
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systemPaused: newPausedState }),
+      });
+      
+      if (res.ok) {
+        showNotification('success', newPausedState ? 'System Paused' : 'System Resumed');
+        fetchStats();
+      } else {
+        // Revert on failure
+        setStats({ ...stats, isSystemPaused: !newPausedState });
+        showNotification('error', 'Failed to update status');
+      }
+    } catch (err) {
+      setStats({ ...stats, isSystemPaused: !newPausedState });
+      showNotification('error', 'Connection error');
+    }
+  };
+
   const handleUpdateSettings = async () => {
     setSaving(true);
     try {
@@ -212,27 +273,70 @@ export default function App() {
   };
 
   const handleAddKeyword = async () => {
-    if (!newKeyword || (!newReply && !newMessageLink)) return;
+    if (!newKeyword || (!newReply && newMessageLinks.every(l => !l))) return;
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
+          id: editingKeywordId,
           keyword: newKeyword, 
           reply: newReply, 
-          message_link: newMessageLink 
+          message_links: newMessageLinks.filter(l => l.trim().length > 0)
         }),
       });
       if (res.ok) {
-        showNotification('success', 'Keyword added!');
+        showNotification('success', editingKeywordId ? 'Keyword updated!' : 'Keyword added!');
         setNewKeyword("");
         setNewReply("");
-        setNewMessageLink("");
+        setNewMessageLinks([""]);
+        setEditingKeywordId(null);
         fetchKeywords();
       }
     } catch (err) {
-      showNotification('error', 'Failed to add keyword');
+      showNotification('error', editingKeywordId ? 'Failed to update keyword' : 'Failed to add keyword');
     }
+  };
+
+  const handleEditKeyword = (kw: Keyword) => {
+    setNewKeyword(kw.keyword);
+    setNewReply(kw.reply || "");
+    const links = kw.message_links && kw.message_links.length > 0 
+      ? [...kw.message_links] 
+      : (kw.message_link ? [kw.message_link] : [""]);
+    setNewMessageLinks(links);
+    setEditingKeywordId(kw._id);
+    // Scroll to top of the keyword section
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setNewKeyword("");
+    setNewReply("");
+    setNewMessageLinks([""]);
+    setEditingKeywordId(null);
+  };
+
+  const addUrlField = () => {
+    if (newMessageLinks.length < 6) {
+      setNewMessageLinks([...newMessageLinks, ""]);
+    }
+  };
+
+  const removeUrlField = (index: number) => {
+    if (newMessageLinks.length > 1) {
+      const newLinks = [...newMessageLinks];
+      newLinks.splice(index, 1);
+      setNewMessageLinks(newLinks);
+    } else {
+      setNewMessageLinks([""]);
+    }
+  };
+
+  const updateUrlField = (index: number, value: string) => {
+    const newLinks = [...newMessageLinks];
+    newLinks[index] = value;
+    setNewMessageLinks(newLinks);
   };
 
   const handleDeleteKeyword = async (id: string) => {
@@ -533,17 +637,76 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className="grid grid-cols-2 gap-4">
-                <div className={`border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                  <BarChart3 className="text-emerald-400 mb-3" size={20} />
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Topics</p>
-                  <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.topicCount || 0}</h3>
-                </div>
-                <div className={`border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                  <RefreshCw className="text-emerald-400 mb-3" size={20} />
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Delay</p>
-                  <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.delaySeconds || 0}s</h3>
-                </div>
+                <motion.div 
+                  whileHover={{ scale: 1.05, rotateY: 5 }}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className="relative overflow-hidden p-5 rounded-3xl bg-gradient-to-br from-violet-600 to-indigo-600 text-white shadow-lg shadow-indigo-500/30 group"
+                >
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 group-hover:animate-pulse transition-all" />
+                  <div className="absolute bottom-0 left-0 w-20 h-20 bg-purple-500/20 rounded-full blur-xl -ml-5 -mb-5" />
+                  <BarChart3 className="text-white/80 mb-3 relative z-10" size={20} />
+                  <p className="text-xs font-bold text-white/60 uppercase tracking-widest relative z-10">Total Topics</p>
+                  <h3 className="text-3xl font-black mt-1 relative z-10">{stats?.topicCount || 0}</h3>
+                </motion.div>
+
+                <motion.div 
+                  whileHover={{ scale: 1.05, rotateY: -5 }}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: 0.1 }}
+                  className="relative overflow-hidden p-5 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/30 group"
+                >
+                  <div className="absolute bottom-0 right-0 w-24 h-24 bg-white/10 rounded-full blur-xl -mr-5 -mb-5 group-hover:animate-pulse transition-all" />
+                  <div className="absolute top-0 left-0 w-16 h-16 bg-teal-300/20 rounded-full blur-lg -ml-2 -mt-2" />
+                  <LayoutDashboard className="text-white/80 mb-3 relative z-10" size={20} />
+                  <p className="text-xs font-bold text-white/60 uppercase tracking-widest relative z-10">Today</p>
+                  <h3 className="text-3xl font-black mt-1 relative z-10">{stats?.todayTopicCount || 0}</h3>
+                </motion.div>
+
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: 0.2 }}
+                  className={`col-span-2 border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Response Delay</p>
+                      <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.delaySeconds || 0}s</h3>
+                    </div>
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                      <RefreshCw className="text-emerald-400" size={24} />
+                    </div>
+                  </div>
+                </motion.div>
               </div>
+
+              {/* System Pause/Resume Button */}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleTogglePause}
+                className={`w-full p-6 rounded-[2.5rem] shadow-xl flex items-center justify-between transition-all duration-500 ${
+                  stats?.isSystemPaused 
+                    ? 'bg-rose-500 text-white shadow-rose-500/30' 
+                    : 'bg-emerald-500 text-white shadow-emerald-500/30'
+                }`}
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm">
+                    {stats?.isSystemPaused ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
+                  </div>
+                  <div className="text-left">
+                    <p className="text-xs font-black uppercase tracking-widest opacity-80">System Status</p>
+                    <h3 className="text-xl font-black">{stats?.isSystemPaused ? 'PAUSED' : 'ACTIVE'}</h3>
+                  </div>
+                </div>
+                <div className="bg-white/20 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest backdrop-blur-sm">
+                  {stats?.isSystemPaused ? 'Tap to Resume' : 'Tap to Pause'}
+                </div>
+              </motion.button>
 
               <div className={`border p-6 rounded-[2.5rem] shadow-2xl relative overflow-hidden transition-colors duration-500 ${darkMode ? 'bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
                 <div className="relative z-10">
@@ -659,27 +822,63 @@ export default function App() {
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Chat Forward URL (Optional)</label>
-                  <input
-                    type="text"
-                    value={newMessageLink}
-                    onChange={(e) => setNewMessageLink(e.target.value)}
-                    placeholder="https://t.me/c/3672030592/123"
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
-                  />
-                  <p className="text-[10px] text-slate-500 ml-1 italic">Paste the Telegram message link here to forward media/files.</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Chat Forward URLs (Optional)</label>
+                    {newMessageLinks.length < 6 && (
+                      <button 
+                        onClick={addUrlField}
+                        className="text-emerald-500 hover:text-emerald-400 transition-colors"
+                        title="Add more URLs"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    )}
+                  </div>
+                  
+                  {newMessageLinks.map((link, index) => (
+                    <div key={index} className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={link}
+                        onChange={(e) => updateUrlField(index, e.target.value)}
+                        placeholder="https://t.me/c/3672030592/123"
+                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                      />
+                      {newMessageLinks.length > 1 && (
+                        <button 
+                          onClick={() => removeUrlField(index)}
+                          className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-slate-500 ml-1 italic">Paste Telegram message links to forward media/files. Max 6 URLs.</p>
                 </div>
 
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleAddKeyword}
-                  className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
-                >
-                  <Plus size={18} />
-                  <span>Add Keyword</span>
-                </motion.button>
+                <div className="flex space-x-2">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleAddKeyword}
+                    className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                  >
+                    {editingKeywordId ? <RefreshCw size={18} /> : <Plus size={18} />}
+                    <span>{editingKeywordId ? 'Update Keyword' : 'Add Keyword'}</span>
+                  </motion.button>
+                  {editingKeywordId && (
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={cancelEdit}
+                      className="bg-slate-500 text-white px-6 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-400 transition-all"
+                    >
+                      <X size={18} />
+                    </motion.button>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -692,22 +891,33 @@ export default function App() {
                     <div className="flex items-center space-x-4">
                       <div>
                         <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{kw.keyword}</p>
-                        {kw.message_link ? (
-                          <div className="flex items-center space-x-2 mt-1">
-                            <FileText size={12} className="text-slate-500" />
-                            <p className="text-[10px] text-slate-500 italic truncate max-w-[150px]">{kw.message_link}</p>
+                        {(kw.message_links && kw.message_links.length > 0) || kw.message_link ? (
+                          <div className="space-y-1 mt-1">
+                            <div className="flex items-center space-x-2">
+                              <FileText size={12} className="text-slate-500" />
+                              <p className="text-[10px] text-slate-500 italic">Forwarding {kw.message_links?.length || 1} content(s)</p>
+                            </div>
+                            {kw.reply && <p className={`text-[10px] transition-colors duration-500 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>{kw.reply}</p>}
                           </div>
                         ) : (
                           <p className={`text-sm mt-1 transition-colors duration-500 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{kw.reply}</p>
                         )}
                       </div>
                     </div>
-                    <button 
-                      onClick={() => handleDeleteKeyword(kw._id)}
-                      className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button 
+                        onClick={() => handleEditKeyword(kw)}
+                        className={`p-2 rounded-xl transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
+                      >
+                        <Settings size={18} />
+                      </button>
+                      <button 
+                        onClick={() => handleDeleteKeyword(kw._id)}
+                        className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
                   </motion.div>
                 ))}
               </div>
@@ -907,12 +1117,22 @@ export default function App() {
               <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
                 <div className="flex items-center justify-between px-2">
                   <h3 className={`text-xl font-black uppercase tracking-tighter ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Logs</h3>
-                  <button 
-                    onClick={clearLogs}
-                    className="text-rose-500 text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/10 px-3 py-1 rounded-full transition-colors"
-                  >
-                    Clear All
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button 
+                      onClick={fetchLogs}
+                      disabled={refreshingLogs}
+                      className={`p-2 rounded-full transition-all ${darkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-600'} ${refreshingLogs ? 'opacity-50' : ''}`}
+                      title="Refresh Logs"
+                    >
+                      <RefreshCw size={14} className={refreshingLogs ? 'animate-spin' : ''} />
+                    </button>
+                    <button 
+                      onClick={clearLogs}
+                      className="text-rose-500 text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/10 px-3 py-1 rounded-full transition-colors"
+                    >
+                      Clear All
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">

@@ -34,7 +34,8 @@ const KeywordSchema = new mongoose.Schema({
   keyword: { type: String, required: true, unique: true },
   reply: { type: String }, // Made optional to support message_link only
   photo: { type: String }, // Base64 string (legacy)
-  message_link: { type: String } // Telegram message link
+  message_link: { type: String }, // Legacy Telegram message link
+  message_links: { type: [String], default: [] } // Multiple Telegram message links
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -51,6 +52,11 @@ const Log = mongoose.model("Log", LogSchema);
 const getSetting = async (key: string) => await Setting.findOne({ key });
 const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
 const getTopicCount = async () => await Topic.countDocuments();
+const getTodayTopicCount = async () => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  return await Topic.countDocuments({ created_at: { $gte: startOfDay } });
+};
 const logTopic = async (topicId: number, name: string) => {
   try {
     await Topic.create({ telegram_topic_id: topicId, name });
@@ -94,6 +100,12 @@ async function initSettings() {
   if (!defaultPhone) {
     await setSetting("default_phone", "+919006334503");
     console.log("Default Phone set.");
+  }
+  
+  const systemPaused = await getSetting("system_paused");
+  if (!systemPaused) {
+    await setSetting("system_paused", "false");
+    console.log("System Paused setting initialized.");
   }
 }
 initSettings();
@@ -152,6 +164,13 @@ async function startServer() {
         return;
       }
 
+      // Check if system is paused
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      if (isSystemPaused) {
+        console.log("System is paused. Skipping message processing.");
+        return;
+      }
+
       console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
       // 1. Topic Creation Handler
@@ -178,79 +197,106 @@ async function startServer() {
       // 2. Keyword Handler
       if (message.message && !message.out) {
         const text = message.message.toLowerCase().trim();
+        const matches: { kw: any, index: number }[] = [];
         
         for (const kw of cachedKeywords) {
           const kwLower = kw.keyword.toLowerCase().trim();
           // Use regex for more reliable matching (word boundaries)
-          const regex = new RegExp(`\\b${kwLower}\\b`, 'i');
+          const regex = new RegExp(`\\b${kwLower}\\b`, 'gi');
           
-          if (text.includes(kwLower) || regex.test(text)) {
-            console.log(`Matched keyword: ${kw.keyword}`);
+          let match;
+          while ((match = regex.exec(text)) !== null) {
+            matches.push({ kw, index: match.index });
+            // If we only want to match each keyword once per message, we can break here
+            // But if the user wants "line-wise" for every occurrence, we might want all.
+            // Usually, one reply per keyword type is enough.
+            break; 
+          }
+          
+          // Fallback to simple includes if regex didn't catch it (e.g. non-word characters)
+          if (matches.every(m => m.kw.keyword !== kw.keyword) && text.includes(kwLower)) {
+            matches.push({ kw, index: text.indexOf(kwLower) });
+          }
+        }
+
+        // Sort matches by their appearance in the message
+        matches.sort((a, b) => a.index - b.index);
+
+        if (matches.length > 0) {
+          console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
+          
+          for (const match of matches) {
+            const kw = match.kw;
+            console.log(`Processing matched keyword: ${kw.keyword} at index ${match.index}`);
+            
             try {
               const replyToMsgId = message.id;
 
-              if (kw.message_link) {
-                console.log(`Handling message link: ${kw.message_link}`);
+              // Collect all links to process (legacy + new array)
+              const linksToProcess = [...(kw.message_links || [])];
+              if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
+                linksToProcess.push(kw.message_link);
+              }
+
+              if (linksToProcess.length > 0) {
+                console.log(`Handling ${linksToProcess.length} message links for keyword: ${kw.keyword}`);
                 
-                const parts = kw.message_link.split("/").filter(p => p.length > 0);
-                const messageId = parseInt(parts[parts.length - 1], 10);
-                
-                if (!isNaN(messageId)) {
-                  let fromPeer: any = targetGroupId;
+                // Send the custom reply message first if it exists
+                if (kw.reply) {
+                  await client.sendMessage(message.peerId, {
+                    message: kw.reply,
+                    replyTo: replyToMsgId,
+                  });
+                }
+
+                for (const link of linksToProcess) {
+                  const parts = link.split("/").filter(p => p.length > 0);
+                  const messageId = parseInt(parts[parts.length - 1], 10);
                   
-                  if (kw.message_link.includes("/c/")) {
-                    const cIndex = parts.indexOf("c");
-                    if (cIndex !== -1 && parts[cIndex + 1]) {
-                      fromPeer = `-100${parts[cIndex + 1]}`;
-                    }
-                  } else {
-                    const tmeIndex = parts.indexOf("t.me");
-                    if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
-                      fromPeer = parts[tmeIndex + 1];
-                    } else if (parts.length >= 3) {
-                      fromPeer = parts[2];
-                    }
-                  }
-
-                  const topMsgId = message.replyTo?.replyToMsgId;
-
-                  console.log(`Forwarding message ${messageId} from ${fromPeer} to ${chatId} (Topic: ${topMsgId})`);
-                  
-                  try {
-                    // Try to load the entity first
-                    try {
-                      await client.getEntity(fromPeer);
-                    } catch (e) {}
-
-                    // 1. Send the custom reply message first
-                    await client.sendMessage(message.peerId, {
-                      message: kw.reply || "Okay",
-                      replyTo: replyToMsgId,
-                    });
-
-                    // 2. Forward the actual content
-                    // Using invoke to support topMsgId (forum topics)
-                    await client.invoke(
-                      new Api.messages.ForwardMessages({
-                        fromPeer: fromPeer,
-                        id: [messageId],
-                        randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                        toPeer: message.peerId,
-                        topMsgId: topMsgId,
-                      })
-                    );
+                  if (!isNaN(messageId)) {
+                    let fromPeer: any = targetGroupId;
                     
-                    console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
-                  } catch (forwardErr: any) {
-                    console.error("Forwarding failed, trying fallback:", forwardErr.message);
-                    // Fallback to simpler forward if invoke fails
-                    await client.forwardMessages(message.peerId, {
-                      messages: [messageId],
-                      fromPeer: targetGroupId,
-                    });
+                    if (link.includes("/c/")) {
+                      const cIndex = parts.indexOf("c");
+                      if (cIndex !== -1 && parts[cIndex + 1]) {
+                        fromPeer = `-100${parts[cIndex + 1]}`;
+                      }
+                    } else {
+                      const tmeIndex = parts.indexOf("t.me");
+                      if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                        fromPeer = parts[tmeIndex + 1];
+                      } else if (parts.length >= 3) {
+                        fromPeer = parts[2];
+                      }
+                    }
+
+                    const topMsgId = message.replyTo?.replyToMsgId;
+                    
+                    try {
+                      try {
+                        await client.getEntity(fromPeer);
+                      } catch (e) {}
+
+                      await client.invoke(
+                        new Api.messages.ForwardMessages({
+                          fromPeer: fromPeer,
+                          id: [messageId],
+                          randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                          toPeer: message.peerId,
+                          topMsgId: topMsgId,
+                        })
+                      );
+                      console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
+                    } catch (forwardErr: any) {
+                      console.error("Forwarding failed, trying fallback:", forwardErr.message);
+                      await client.forwardMessages(message.peerId, {
+                        messages: [messageId],
+                        fromPeer: targetGroupId,
+                      });
+                    }
                   }
-                } else {
-                  console.error(`Invalid message ID in link: ${kw.message_link}`);
+                  // Small delay between forwards
+                  await new Promise(resolve => setTimeout(resolve, 500));
                 }
               } else if (kw.photo) {
                 console.log(`Sending photo reply for keyword: ${kw.keyword}`);
@@ -278,7 +324,11 @@ async function startServer() {
               }
               
               await saveLog(`Keyword matched: ${kw.keyword}`, 'info', 'USERBOT');
-              break; 
+              
+              // Add a small delay between replies to avoid spamming/rate limits
+              if (matches.length > 1) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
             } catch (err: any) {
               console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
               await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT');
@@ -308,8 +358,10 @@ async function startServer() {
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
+      const todayTopicCount = await getTodayTopicCount();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -342,8 +394,10 @@ async function startServer() {
 
       res.json({
         topicCount,
+        todayTopicCount,
         autoReply,
         delaySeconds,
+        isSystemPaused,
         isUserBotConnected,
         apiId,
         apiHash,
@@ -358,12 +412,14 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
       if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId });
+      if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
+      
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -383,9 +439,14 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { keyword, reply, photo, message_link } = req.body;
+    const { id, keyword, reply, photo, message_link, message_links } = req.body;
     try {
-      await Keyword.findOneAndUpdate({ keyword }, { reply, photo, message_link }, { upsert: true, new: true });
+      const updateData = { keyword, reply, photo, message_link, message_links };
+      if (id) {
+        await Keyword.findByIdAndUpdate(id, updateData);
+      } else {
+        await Keyword.findOneAndUpdate({ keyword }, updateData, { upsert: true, new: true });
+      }
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
