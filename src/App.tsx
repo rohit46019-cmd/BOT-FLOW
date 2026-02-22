@@ -44,7 +44,8 @@ interface Stats {
 
 interface Keyword {
   _id: string;
-  keyword: string;
+  keyword: string; // Legacy
+  keywords?: string[]; // New array
   reply: string;
   photo?: string;
   message_link?: string;
@@ -79,7 +80,7 @@ export default function App() {
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
-  const [newKeyword, setNewKeyword] = useState("");
+  const [newKeywords, setNewKeywords] = useState<string[]>([""]); // Changed from single string to array
   const [newReply, setNewReply] = useState("");
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   
@@ -273,21 +274,23 @@ export default function App() {
   };
 
   const handleAddKeyword = async () => {
-    if (!newKeyword || (!newReply && newMessageLinks.every(l => !l))) return;
+    const validKeywords = newKeywords.filter(k => k.trim().length > 0);
+    if (validKeywords.length === 0 || (!newReply && newMessageLinks.every(l => !l))) return;
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           id: editingKeywordId,
-          keyword: newKeyword, 
+          keyword: validKeywords[0], // Legacy support
+          keywords: validKeywords,
           reply: newReply, 
           message_links: newMessageLinks.filter(l => l.trim().length > 0)
         }),
       });
       if (res.ok) {
         showNotification('success', editingKeywordId ? 'Keyword updated!' : 'Keyword added!');
-        setNewKeyword("");
+        setNewKeywords([""]);
         setNewReply("");
         setNewMessageLinks([""]);
         setEditingKeywordId(null);
@@ -299,7 +302,12 @@ export default function App() {
   };
 
   const handleEditKeyword = (kw: Keyword) => {
-    setNewKeyword(kw.keyword);
+    // Load keywords (legacy or new array)
+    const kws = kw.keywords && kw.keywords.length > 0 
+      ? [...kw.keywords] 
+      : (kw.keyword ? [kw.keyword] : [""]);
+    setNewKeywords(kws);
+    
     setNewReply(kw.reply || "");
     const links = kw.message_links && kw.message_links.length > 0 
       ? [...kw.message_links] 
@@ -311,10 +319,32 @@ export default function App() {
   };
 
   const cancelEdit = () => {
-    setNewKeyword("");
+    setNewKeywords([""]);
     setNewReply("");
     setNewMessageLinks([""]);
     setEditingKeywordId(null);
+  };
+
+  const addKeywordField = () => {
+    if (newKeywords.length < 9) {
+      setNewKeywords([...newKeywords, ""]);
+    }
+  };
+
+  const removeKeywordField = (index: number) => {
+    if (newKeywords.length > 1) {
+      const newKws = [...newKeywords];
+      newKws.splice(index, 1);
+      setNewKeywords(newKws);
+    } else {
+      setNewKeywords([""]);
+    }
+  };
+
+  const updateKeywordField = (index: number, value: string) => {
+    const newKws = [...newKeywords];
+    newKws[index] = value;
+    setNewKeywords(newKws);
   };
 
   const addUrlField = () => {
@@ -801,15 +831,40 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className={`border p-8 rounded-[2.5rem] space-y-4 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">New Keyword</label>
-                  <input
-                    type="text"
-                    value={newKeyword}
-                    onChange={(e) => setNewKeyword(e.target.value)}
-                    placeholder="e.g. hello"
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
-                  />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">New Keywords</label>
+                    {newKeywords.length < 9 && (
+                      <button 
+                        onClick={addKeywordField}
+                        className="text-emerald-500 hover:text-emerald-400 transition-colors"
+                        title="Add more keywords"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    )}
+                  </div>
+                  
+                  {newKeywords.map((kw, index) => (
+                    <div key={index} className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={kw}
+                        onChange={(e) => updateKeywordField(index, e.target.value)}
+                        placeholder="e.g. hello"
+                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                      />
+                      {newKeywords.length > 1 && (
+                        <button 
+                          onClick={() => removeKeywordField(index)}
+                          className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-slate-500 ml-1 italic">Add up to 9 keywords that trigger this reply.</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reply Message</label>
@@ -890,7 +945,13 @@ export default function App() {
                   >
                     <div className="flex items-center space-x-4">
                       <div>
-                        <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{kw.keyword}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
+                            <span key={i} className="text-xs font-black text-emerald-400 uppercase tracking-widest bg-emerald-400/10 px-2 py-1 rounded-lg">
+                              {k}
+                            </span>
+                          ))}
+                        </div>
                         {(kw.message_links && kw.message_links.length > 0) || kw.message_link ? (
                           <div className="space-y-1 mt-1">
                             <div className="flex items-center space-x-2">

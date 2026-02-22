@@ -31,7 +31,8 @@ const TopicSchema = new mongoose.Schema({
 const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
-  keyword: { type: String, required: true, unique: true },
+  keyword: { type: String }, // Legacy single keyword
+  keywords: { type: [String], default: [] }, // New array of keywords
   reply: { type: String }, // Made optional to support message_link only
   photo: { type: String }, // Base64 string (legacy)
   message_link: { type: String }, // Legacy Telegram message link
@@ -197,25 +198,35 @@ async function startServer() {
       // 2. Keyword Handler
       if (message.message && !message.out) {
         const text = message.message.toLowerCase().trim();
-        const matches: { kw: any, index: number }[] = [];
+        const matches: { kw: any, index: number, matchedWord: string }[] = [];
         
         for (const kw of cachedKeywords) {
-          const kwLower = kw.keyword.toLowerCase().trim();
-          // Use regex for more reliable matching (word boundaries)
-          const regex = new RegExp(`\\b${kwLower}\\b`, 'gi');
-          
-          let match;
-          while ((match = regex.exec(text)) !== null) {
-            matches.push({ kw, index: match.index });
-            // If we only want to match each keyword once per message, we can break here
-            // But if the user wants "line-wise" for every occurrence, we might want all.
-            // Usually, one reply per keyword type is enough.
-            break; 
+          // Collect all trigger words for this rule (legacy + new array)
+          const triggerWords = [...(kw.keywords || [])];
+          if (kw.keyword && !triggerWords.includes(kw.keyword)) {
+            triggerWords.push(kw.keyword);
           }
-          
-          // Fallback to simple includes if regex didn't catch it (e.g. non-word characters)
-          if (matches.every(m => m.kw.keyword !== kw.keyword) && text.includes(kwLower)) {
-            matches.push({ kw, index: text.indexOf(kwLower) });
+
+          // Check each trigger word
+          for (const word of triggerWords) {
+            const wordLower = word.toLowerCase().trim();
+            if (!wordLower) continue;
+
+            const regex = new RegExp(`\\b${wordLower}\\b`, 'gi');
+            let match;
+            let found = false;
+
+            // Regex match
+            while ((match = regex.exec(text)) !== null) {
+              matches.push({ kw, index: match.index, matchedWord: wordLower });
+              found = true;
+              break; // Only match this specific word once per message
+            }
+            
+            // Fallback includes match
+            if (!found && text.includes(wordLower)) {
+              matches.push({ kw, index: text.indexOf(wordLower), matchedWord: wordLower });
+            }
           }
         }
 
@@ -225,9 +236,19 @@ async function startServer() {
         if (matches.length > 0) {
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
           
+          const processedRuleIds = new Set<string>();
+
           for (const match of matches) {
             const kw = match.kw;
-            console.log(`Processing matched keyword: ${kw.keyword} at index ${match.index}`);
+            
+            // Skip if we've already replied for this rule (group of keywords)
+            if (processedRuleIds.has(kw._id.toString())) {
+              console.log(`Skipping duplicate match for rule ${kw._id} (word: ${match.matchedWord})`);
+              continue;
+            }
+
+            console.log(`Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
+            processedRuleIds.add(kw._id.toString());
             
             try {
               const replyToMsgId = message.id;
@@ -239,7 +260,7 @@ async function startServer() {
               }
 
               if (linksToProcess.length > 0) {
-                console.log(`Handling ${linksToProcess.length} message links for keyword: ${kw.keyword}`);
+                console.log(`Handling ${linksToProcess.length} message links for keyword: ${match.matchedWord}`);
                 
                 // Send the custom reply message first if it exists
                 if (kw.reply) {
@@ -439,13 +460,31 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, reply, photo, message_link, message_links } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links } = req.body;
     try {
-      const updateData = { keyword, reply, photo, message_link, message_links };
+      // Ensure keywords is an array
+      const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
+      
+      const updateData = { 
+        keyword, // Keep legacy
+        keywords: keywordsArray, 
+        reply, 
+        photo, 
+        message_link, 
+        message_links 
+      };
+      
       if (id) {
         await Keyword.findByIdAndUpdate(id, updateData);
       } else {
-        await Keyword.findOneAndUpdate({ keyword }, updateData, { upsert: true, new: true });
+        // For new entries, we can't rely on unique 'keyword' anymore if we use arrays
+        // But we can check if a document with the same primary keyword exists?
+        // Or just create new. Let's just create/update.
+        if (id) {
+           await Keyword.findByIdAndUpdate(id, updateData);
+        } else {
+           await Keyword.create(updateData);
+        }
       }
       await refreshKeywordCache();
       res.json({ success: true });
