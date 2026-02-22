@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
 import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
+import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { CustomFile } from "telegram/client/uploads";
 import path from "path";
@@ -100,6 +101,16 @@ initSettings();
 let userClient: TelegramClient | null = null;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
+let cachedKeywords: any[] = [];
+
+async function refreshKeywordCache() {
+  try {
+    cachedKeywords = await Keyword.find();
+    console.log(`Keyword cache refreshed: ${cachedKeywords.length} keywords.`);
+  } catch (err) {
+    console.error("Failed to refresh keyword cache:", err);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -126,23 +137,22 @@ async function startServer() {
       const message = event.message;
       if (!message) return;
 
-      // Robust ID extraction
+      // Fast ID extraction
       let chatId: string = "";
-      try {
-        const peerId = await client.getPeerId(message.peerId);
-        chatId = peerId.toString();
-      } catch (e) {
-        chatId = message.peerId?.channelId?.toString() || message.peerId?.chatId?.toString() || "";
+      if (message.peerId) {
+        if (message.peerId.channelId) chatId = "-100" + message.peerId.channelId.toString();
+        else if (message.peerId.chatId) chatId = "-" + message.peerId.chatId.toString();
+        else if (message.peerId.userId) chatId = message.peerId.userId.toString();
       }
 
       const normalizedChatId = chatId.replace("-100", "");
       const normalizedTargetId = targetGroupId.replace("-100", "");
       
-      console.log(`UserBot received message in chat ${chatId} (normalized: ${normalizedChatId}): "${message.message || '[No text]'}"`);
-      
       if (normalizedChatId !== normalizedTargetId) {
         return;
       }
+
+      console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
       // 1. Topic Creation Handler
       if (message.action instanceof Api.MessageActionTopicCreate) {
@@ -167,13 +177,14 @@ async function startServer() {
 
       // 2. Keyword Handler
       if (message.message && !message.out) {
-        const text = message.message.toLowerCase();
-        const keywords = await Keyword.find();
+        const text = message.message.toLowerCase().trim();
         
-        console.log(`Checking message for keywords: "${text}". Found ${keywords.length} keywords in DB.`);
-
-        for (const kw of keywords) {
-          if (text.includes(kw.keyword.toLowerCase())) {
+        for (const kw of cachedKeywords) {
+          const kwLower = kw.keyword.toLowerCase().trim();
+          // Use regex for more reliable matching (word boundaries)
+          const regex = new RegExp(`\\b${kwLower}\\b`, 'i');
+          
+          if (text.includes(kwLower) || regex.test(text)) {
             console.log(`Matched keyword: ${kw.keyword}`);
             try {
               const replyToMsgId = message.id;
@@ -201,7 +212,6 @@ async function startServer() {
                     }
                   }
 
-                  const replyToMsgId = message.id;
                   const topMsgId = message.replyTo?.replyToMsgId;
 
                   console.log(`Forwarding message ${messageId} from ${fromPeer} to ${chatId} (Topic: ${topMsgId})`);
@@ -212,10 +222,9 @@ async function startServer() {
                       await client.getEntity(fromPeer);
                     } catch (e) {}
 
-                    // 1. Send a small reply/tag message first to satisfy "tag krk reply kare"
-                    // and to ensure the user knows which message triggered the forward.
+                    // 1. Send the custom reply message first
                     await client.sendMessage(message.peerId, {
-                      message: "Okay",
+                      message: kw.reply || "Okay",
                       replyTo: replyToMsgId,
                     });
 
@@ -377,6 +386,7 @@ async function startServer() {
     const { keyword, reply, photo, message_link } = req.body;
     try {
       await Keyword.findOneAndUpdate({ keyword }, { reply, photo, message_link }, { upsert: true, new: true });
+      await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/keywords] ${err.message}` });
@@ -386,9 +396,55 @@ async function startServer() {
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
       await Keyword.findByIdAndDelete(req.params.id);
+      await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[DELETE /api/keywords] ${err.message}` });
+    }
+  });
+
+  // Export/Import Routes
+  app.get("/api/data/export", async (req, res) => {
+    try {
+      const keywords = await Keyword.find();
+      const settings = await Setting.find({ key: { $ne: "session_string" } }); // Don't export session string
+      res.json({ keywords, settings });
+    } catch (err: any) {
+      res.status(500).json({ error: `[GET /api/data/export] ${err.message}` });
+    }
+  });
+
+  app.post("/api/data/import", express.json({ limit: '10mb' }), async (req, res) => {
+    try {
+      const { keywords, settings } = req.body;
+      
+      if (keywords && Array.isArray(keywords)) {
+        for (const kw of keywords) {
+          await Keyword.findOneAndUpdate(
+            { keyword: kw.keyword },
+            { reply: kw.reply, photo: kw.photo, message_link: kw.message_link },
+            { upsert: true }
+          );
+        }
+      }
+
+      if (settings && Array.isArray(settings)) {
+        for (const s of settings) {
+          if (s.key !== "session_string") {
+            await Setting.findOneAndUpdate(
+              { key: s.key },
+              { value: s.value },
+              { upsert: true }
+            );
+          }
+        }
+      }
+
+      await refreshKeywordCache();
+      await saveLog("Data imported", 'info', '/api/data/import');
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: `[POST /api/data/import] ${err.message}` });
     }
   });
 
@@ -583,8 +639,11 @@ async function startServer() {
   }
 
   // Start Server immediately
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Initial keyword cache load
+    await refreshKeywordCache();
     
     // Connect UserBot in background
     (async () => {
