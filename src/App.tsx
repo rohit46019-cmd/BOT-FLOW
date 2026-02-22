@@ -50,6 +50,7 @@ interface Keyword {
   photo?: string;
   message_link?: string;
   message_links?: string[];
+  max_replies?: number;
 }
 
 interface Topic {
@@ -71,6 +72,51 @@ interface AppLog {
 const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user', 'logs'] as const;
 type TabType = typeof TABS[number];
 
+const TabButton = ({ 
+  id, 
+  icon: Icon, 
+  label, 
+  activeTab, 
+  setActiveTab, 
+  setDirection, 
+  darkMode 
+}: { 
+  id: TabType, 
+  icon: any, 
+  label: string,
+  activeTab: TabType,
+  setActiveTab: (id: TabType) => void,
+  setDirection: (dir: number) => void,
+  darkMode: boolean
+}) => {
+  const isActive = activeTab === id;
+  return (
+    <button
+      onClick={() => {
+        const currentIndex = TABS.indexOf(activeTab);
+        const newIndex = TABS.indexOf(id);
+        if (currentIndex !== newIndex) {
+          setDirection(newIndex > currentIndex ? 1 : -1);
+          setActiveTab(id);
+        }
+      }}
+      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative ${
+        isActive ? "text-emerald-400" : (darkMode ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-800")
+      }`}
+    >
+      <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110" : ""}`} />
+      <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest mt-1">{label}</span>
+      {isActive && (
+        <motion.div 
+          layoutId="activeTab"
+          className="absolute -top-1 w-8 h-1 bg-emerald-500 rounded-full"
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+        />
+      )}
+    </button>
+  );
+};
+
 export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [autoReplyInput, setAutoReplyInput] = useState("");
@@ -83,6 +129,7 @@ export default function App() {
   const [newKeywords, setNewKeywords] = useState<string[]>([""]); // Changed from single string to array
   const [newReply, setNewReply] = useState("");
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
+  const [newMaxReplies, setNewMaxReplies] = useState<number | string>(2);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -285,7 +332,8 @@ export default function App() {
           keyword: validKeywords[0], // Legacy support
           keywords: validKeywords,
           reply: newReply, 
-          message_links: newMessageLinks.filter(l => l.trim().length > 0)
+          message_links: newMessageLinks.filter(l => l.trim().length > 0),
+          max_replies: Number(newMaxReplies) || 2
         }),
       });
       if (res.ok) {
@@ -293,6 +341,7 @@ export default function App() {
         setNewKeywords([""]);
         setNewReply("");
         setNewMessageLinks([""]);
+        setNewMaxReplies(2);
         setEditingKeywordId(null);
         fetchKeywords();
       }
@@ -313,6 +362,7 @@ export default function App() {
       ? [...kw.message_links] 
       : (kw.message_link ? [kw.message_link] : [""]);
     setNewMessageLinks(links);
+    setNewMaxReplies(kw.max_replies || 2);
     setEditingKeywordId(kw._id);
     // Scroll to top of the keyword section
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -322,11 +372,12 @@ export default function App() {
     setNewKeywords([""]);
     setNewReply("");
     setNewMessageLinks([""]);
+    setNewMaxReplies(2);
     setEditingKeywordId(null);
   };
 
   const addKeywordField = () => {
-    if (newKeywords.length < 9) {
+    if (newKeywords.length < 20) {
       setNewKeywords([...newKeywords, ""]);
     }
   };
@@ -588,34 +639,6 @@ export default function App() {
     );
   }
 
-  const TabButton = ({ id, icon: Icon, label }: { id: TabType, icon: any, label: string }) => {
-    const isActive = activeTab === id;
-    return (
-      <button
-        onClick={() => {
-          const currentIndex = TABS.indexOf(activeTab);
-          const newIndex = TABS.indexOf(id);
-          if (currentIndex !== newIndex) {
-            setDirection(newIndex > currentIndex ? 1 : -1);
-            setActiveTab(id);
-          }
-        }}
-        className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative ${
-          isActive ? "text-emerald-400" : (darkMode ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-800")
-        }`}
-      >
-        <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110" : ""}`} />
-        <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest mt-1">{label}</span>
-        {isActive && (
-          <motion.div 
-            layoutId="activeTab"
-            className="absolute -top-1 w-8 h-1 bg-emerald-500 rounded-full"
-          />
-        )}
-      </button>
-    );
-  };
-
   return (
     <div className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-[#0f172a] text-slate-200' : 'bg-slate-50 text-slate-800'} font-sans pb-24`}>
       {/* Offline Warning */}
@@ -626,18 +649,23 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className={`p-6 flex items-center justify-between sticky top-0 z-50 backdrop-blur-md border-b transition-colors duration-500 ${darkMode ? 'bg-[#0f172a]/80 border-slate-800' : 'bg-white/80 border-slate-200'}`}>
-        <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-emerald-900/20">
-            <img src="/logo.svg" alt="Logo" className="w-full h-full object-cover" />
-          </div>
-          <h1 className={`font-black text-xl tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT<span className="text-emerald-500">PRO</span></h1>
-        </div>
+      <header className={`px-6 py-5 flex items-center justify-between sticky top-0 z-50 backdrop-blur-xl border-b rounded-b-[2.5rem] shadow-xl transition-all duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800 shadow-black/20' : 'bg-white/90 border-slate-200 shadow-slate-200/50'}`}>
         <div className="flex items-center space-x-4">
-          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-            <span className={`w-2 h-2 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-            <span>{stats?.isUserBotConnected ? 'Connected' : 'Offline'}</span>
+          <div className="relative w-12 h-12 group cursor-pointer">
+            <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-cyan-500 rounded-2xl rotate-6 opacity-40 blur-md group-hover:rotate-12 transition-transform duration-500"></div>
+            <div className={`relative w-full h-full rounded-2xl overflow-hidden shadow-inner flex items-center justify-center border transition-colors duration-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
+              <img src="/logo.svg" alt="Logo" className="w-8 h-8 object-contain drop-shadow-sm" />
+            </div>
           </div>
+          <div className="flex flex-col">
+            <h1 className={`font-black text-xl tracking-tighter leading-none transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT</h1>
+            <span className="text-[10px] font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500 tracking-[0.3em] uppercase block">PRO</span>
+          </div>
+        </div>
+        
+        <div className={`flex items-center space-x-2 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
+          <span className={`w-2 h-2 rounded-full shadow-sm ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse shadow-emerald-500/50' : 'bg-rose-500 shadow-rose-500/50'}`} />
+          <span>{stats?.isUserBotConnected ? 'Online' : 'Offline'}</span>
         </div>
       </header>
 
@@ -699,15 +727,21 @@ export default function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: 0.2 }}
-                  className={`col-span-2 border p-5 rounded-3xl transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
+                  className="col-span-2 relative overflow-hidden p-6 rounded-3xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/30 group"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 group-hover:animate-pulse transition-all" />
+                  <div className="absolute bottom-0 left-0 w-20 h-20 bg-fuchsia-300/20 rounded-full blur-xl -ml-5 -mb-5" />
+                  
+                  <div className="flex items-center justify-between relative z-10">
                     <div>
-                      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Response Delay</p>
-                      <h3 className={`text-3xl font-black mt-1 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{stats?.delaySeconds || 0}s</h3>
+                      <div className="flex items-center space-x-2 mb-1">
+                        <RefreshCw className="text-white/80" size={16} />
+                        <p className="text-xs font-bold text-white/80 uppercase tracking-widest">Response Delay</p>
+                      </div>
+                      <h3 className="text-4xl font-black mt-2">{stats?.delaySeconds || 0}<span className="text-lg font-bold opacity-60 ml-1">sec</span></h3>
                     </div>
-                    <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
-                      <RefreshCw className="text-emerald-400" size={24} />
+                    <div className="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                      <BarChart3 className="text-white" size={28} />
                     </div>
                   </div>
                 </motion.div>
@@ -718,35 +752,48 @@ export default function App() {
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
                 onClick={handleTogglePause}
-                className={`w-full p-6 rounded-[2.5rem] shadow-xl flex items-center justify-between transition-all duration-500 ${
+                className={`w-full p-6 rounded-[2.5rem] shadow-xl flex items-center justify-between transition-all duration-500 relative overflow-hidden group ${
                   stats?.isSystemPaused 
-                    ? 'bg-rose-500 text-white shadow-rose-500/30' 
-                    : 'bg-emerald-500 text-white shadow-emerald-500/30'
+                    ? 'bg-gradient-to-r from-rose-500 to-pink-600 shadow-rose-500/30' 
+                    : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-500/30'
                 }`}
               >
-                <div className="flex items-center space-x-4">
-                  <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm">
-                    {stats?.isSystemPaused ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
+                <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700" />
+                <div className="absolute bottom-0 left-0 w-32 h-32 bg-black/5 rounded-full blur-2xl -ml-10 -mb-10" />
+                
+                <div className="flex items-center space-x-5 relative z-10">
+                  <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-md border border-white/20 shadow-inner">
+                    {stats?.isSystemPaused ? <Play size={28} fill="currentColor" className="text-white ml-1" /> : <Pause size={28} fill="currentColor" className="text-white" />}
                   </div>
                   <div className="text-left">
-                    <p className="text-xs font-black uppercase tracking-widest opacity-80">System Status</p>
-                    <h3 className="text-xl font-black">{stats?.isSystemPaused ? 'PAUSED' : 'ACTIVE'}</h3>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/70 mb-1">Auto Reply System</p>
+                    <h3 className="text-2xl font-black text-white tracking-tight">{stats?.isSystemPaused ? 'SYSTEM PAUSED' : 'SYSTEM ACTIVE'}</h3>
                   </div>
                 </div>
-                <div className="bg-white/20 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest backdrop-blur-sm">
+                <div className="bg-white/20 px-5 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest backdrop-blur-md border border-white/10 text-white shadow-sm relative z-10 group-hover:bg-white/30 transition-colors">
                   {stats?.isSystemPaused ? 'Tap to Resume' : 'Tap to Pause'}
                 </div>
               </motion.button>
 
-              <div className={`border p-6 rounded-[2.5rem] shadow-2xl relative overflow-hidden transition-colors duration-500 ${darkMode ? 'bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+              <motion.div 
+                whileHover={{ scale: 1.02 }}
+                className="relative overflow-hidden p-8 rounded-[2.5rem] bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 text-white shadow-xl shadow-purple-500/30 group"
+              >
+                <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:rotate-45 transition-transform duration-700" />
+                <div className="absolute bottom-0 left-0 w-32 h-32 bg-black/10 rounded-full blur-2xl -ml-10 -mb-10 group-hover:-translate-y-2 transition-transform duration-500" />
+                
                 <div className="relative z-10">
-                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-2">Auto Reply Active</p>
-                  <p className={`text-lg font-medium leading-relaxed italic transition-colors duration-500 ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                    "{stats?.autoReply || 'No message set'}"
-                  </p>
+                  <div className="flex items-center space-x-2 mb-4 opacity-80">
+                    <MessageSquare size={16} className="text-white" />
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Auto Reply Active</p>
+                  </div>
+                  <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/10">
+                    <p className="text-lg font-medium leading-relaxed italic text-white/90">
+                      "{stats?.autoReply || 'No message set'}"
+                    </p>
+                  </div>
                 </div>
-                <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-emerald-600/10 rounded-full blur-3xl" />
-              </div>
+              </motion.div>
             </motion.div>
           )}
 
@@ -767,7 +814,7 @@ export default function App() {
                   <textarea
                     value={autoReplyInput}
                     onChange={(e) => setAutoReplyInput(e.target.value)}
-                    className={`w-full h-32 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                    className={`w-full h-32 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-indigo-500/30 border-indigo-500/30 text-white placeholder-white/50' : 'bg-indigo-500/30 border-indigo-500/30 text-slate-900 placeholder-slate-600'}`}
                   />
                 </div>
                 <div className="space-y-2">
@@ -776,7 +823,7 @@ export default function App() {
                     type="number"
                     value={delaySecondsInput}
                     onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-amber-500/30 border-amber-500/30 text-white placeholder-white/50' : 'bg-amber-500/30 border-amber-500/30 text-slate-900 placeholder-slate-600'}`}
                   />
                 </div>
                 <motion.button
@@ -834,7 +881,7 @@ export default function App() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between ml-1">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">New Keywords</label>
-                    {newKeywords.length < 9 && (
+                    {newKeywords.length < 20 && (
                       <button 
                         onClick={addKeywordField}
                         className="text-emerald-500 hover:text-emerald-400 transition-colors"
@@ -852,7 +899,7 @@ export default function App() {
                         value={kw}
                         onChange={(e) => updateKeywordField(index, e.target.value)}
                         placeholder="e.g. hello"
-                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-emerald-500/30 border-emerald-500/30 text-white placeholder-white/50' : 'bg-emerald-500/30 border-emerald-500/30 text-slate-900 placeholder-slate-600'}`}
                       />
                       {newKeywords.length > 1 && (
                         <button 
@@ -864,8 +911,22 @@ export default function App() {
                       )}
                     </div>
                   ))}
-                  <p className="text-[10px] text-slate-500 ml-1 italic">Add up to 9 keywords that trigger this reply.</p>
+                  <p className="text-[10px] text-slate-500 ml-1 italic">Add up to 20 keywords that trigger this reply.</p>
                 </div>
+                
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Max Replies per Topic</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={newMaxReplies}
+                    onChange={(e) => setNewMaxReplies(e.target.value === '' ? '' : parseInt(e.target.value))}
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-orange-500/30 border-orange-500/30 text-white placeholder-white/50' : 'bg-orange-500/30 border-orange-500/30 text-slate-900 placeholder-slate-600'}`}
+                  />
+                  <p className="text-[10px] text-slate-500 ml-1 italic">Maximum times the bot will reply to these keywords in a single topic (Default: 2).</p>
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reply Message</label>
                   <input
@@ -873,7 +934,7 @@ export default function App() {
                     value={newReply}
                     onChange={(e) => setNewReply(e.target.value)}
                     placeholder="e.g. Hi there!"
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-blue-500/30 border-blue-500/30 text-white placeholder-white/50' : 'bg-blue-500/30 border-blue-500/30 text-slate-900 placeholder-slate-600'}`}
                   />
                 </div>
 
@@ -898,7 +959,7 @@ export default function App() {
                         value={link}
                         onChange={(e) => updateUrlField(index, e.target.value)}
                         placeholder="https://t.me/c/3672030592/123"
-                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-pink-500/30 border-pink-500/30 text-white placeholder-white/50' : 'bg-pink-500/30 border-pink-500/30 text-slate-900 placeholder-slate-600'}`}
                       />
                       {newMessageLinks.length > 1 && (
                         <button 
@@ -951,6 +1012,9 @@ export default function App() {
                               {k}
                             </span>
                           ))}
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-500/10 px-2 py-1 rounded-lg border border-slate-500/20">
+                            Max: {kw.max_replies || 2}
+                          </span>
                         </div>
                         {(kw.message_links && kw.message_links.length > 0) || kw.message_link ? (
                           <div className="space-y-1 mt-1">
@@ -1002,7 +1066,7 @@ export default function App() {
                     value={broadcastMessage}
                     onChange={(e) => setBroadcastMessage(e.target.value)}
                     placeholder="What would you like to announce?"
-                    className={`w-full h-40 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                    className={`w-full h-40 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-purple-500/30 border-purple-500/30 text-white placeholder-white/50' : 'bg-purple-500/30 border-purple-500/30 text-slate-900 placeholder-slate-600'}`}
                   />
                 </div>
                 <motion.button
@@ -1075,7 +1139,7 @@ export default function App() {
                             type="text"
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-cyan-500/30 border-cyan-500/30 text-white placeholder-white/50' : 'bg-cyan-500/30 border-cyan-500/30 text-slate-900 placeholder-slate-600'}`}
                           />
                         </div>
                         <div className="space-y-2">
@@ -1084,7 +1148,7 @@ export default function App() {
                             type="text"
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-teal-500/30 border-teal-500/30 text-white placeholder-white/50' : 'bg-teal-500/30 border-teal-500/30 text-slate-900 placeholder-slate-600'}`}
                           />
                         </div>
                         <motion.button
@@ -1107,7 +1171,7 @@ export default function App() {
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
                             placeholder="+1234567890"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-green-500/30 border-green-500/30 text-white placeholder-white/50' : 'bg-green-500/30 border-green-500/30 text-slate-900 placeholder-slate-600'}`}
                           />
                         </div>
                         <motion.button
@@ -1133,7 +1197,7 @@ export default function App() {
                             value={code}
                             onChange={(e) => setCode(e.target.value)}
                             placeholder="Enter code from Telegram"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-rose-500/30 border-rose-500/30 text-white placeholder-white/50' : 'bg-rose-500/30 border-rose-500/30 text-slate-900 placeholder-slate-600'}`}
                           />
                         </div>
                         <div className="space-y-2">
@@ -1143,7 +1207,7 @@ export default function App() {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="If enabled"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-fuchsia-500/30 border-fuchsia-500/30 text-white placeholder-white/50' : 'bg-fuchsia-500/30 border-fuchsia-500/30 text-slate-900 placeholder-slate-600'}`}
                           />
                         </div>
                         <motion.button
@@ -1243,12 +1307,12 @@ export default function App() {
 
       {/* Bottom Navigation */}
       <nav className={`fixed bottom-6 left-2 right-2 sm:left-4 sm:right-4 backdrop-blur-xl border rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
-        <TabButton id="dashboard" icon={LayoutDashboard} label="Home" />
-        <TabButton id="keywords" icon={Hash} label="Words" />
-        <TabButton id="broadcast" icon={Send} label="Cast" />
-        <TabButton id="settings" icon={Settings} label="Set" />
-        <TabButton id="user" icon={User} label="User" />
-        <TabButton id="logs" icon={FileText} label="Logs" />
+        <TabButton id="dashboard" icon={LayoutDashboard} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        <TabButton id="keywords" icon={Hash} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        <TabButton id="broadcast" icon={Send} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        <TabButton id="settings" icon={Settings} label="Set" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        <TabButton id="user" icon={User} label="User" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        <TabButton id="logs" icon={FileText} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
       </nav>
 
       {/* Notifications */}

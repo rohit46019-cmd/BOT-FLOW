@@ -36,7 +36,8 @@ const KeywordSchema = new mongoose.Schema({
   reply: { type: String }, // Made optional to support message_link only
   photo: { type: String }, // Base64 string (legacy)
   message_link: { type: String }, // Legacy Telegram message link
-  message_links: { type: [String], default: [] } // Multiple Telegram message links
+  message_links: { type: [String], default: [] }, // Multiple Telegram message links
+  max_replies: { type: Number, default: 2 } // Max replies per topic per keyword rule
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -48,6 +49,15 @@ const LogSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 });
 const Log = mongoose.model("Log", LogSchema);
+
+const ReplyHistorySchema = new mongoose.Schema({
+  topic_id: { type: Number, required: true },
+  keyword_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword', required: true },
+  count: { type: Number, default: 0 },
+  last_updated: { type: Date, default: Date.now }
+});
+ReplyHistorySchema.index({ topic_id: 1, keyword_id: 1 }, { unique: true });
+const ReplyHistory = mongoose.model("ReplyHistory", ReplyHistorySchema);
 
 // Helper functions
 const getSetting = async (key: string) => await Setting.findOne({ key });
@@ -248,10 +258,22 @@ async function startServer() {
             }
 
             console.log(`Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
-            processedRuleIds.add(kw._id.toString());
             
             try {
               const replyToMsgId = message.id;
+              const topicId = message.replyTo?.replyToMsgId;
+
+              // Rate limiting check: Max replies per keyword rule per topic
+              if (topicId) {
+                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
+                const maxReplies = kw.max_replies || 2;
+                if (history && history.count >= maxReplies) {
+                  console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${history.count}/${maxReplies}).`);
+                  continue;
+                }
+              }
+
+              processedRuleIds.add(kw._id.toString());
 
               // Collect all links to process (legacy + new array)
               const linksToProcess = [...(kw.message_links || [])];
@@ -344,7 +366,16 @@ async function startServer() {
                 });
               }
               
-              await saveLog(`Keyword matched: ${kw.keyword}`, 'info', 'USERBOT');
+              // Update reply history count
+              if (topicId) {
+                await ReplyHistory.findOneAndUpdate(
+                  { topic_id: topicId, keyword_id: kw._id },
+                  { $inc: { count: 1 }, last_updated: new Date() },
+                  { upsert: true }
+                );
+              }
+              
+              await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
               
               // Add a small delay between replies to avoid spamming/rate limits
               if (matches.length > 1) {
@@ -460,7 +491,7 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, keywords, reply, photo, message_link, message_links } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
@@ -471,7 +502,8 @@ async function startServer() {
         reply, 
         photo, 
         message_link, 
-        message_links 
+        message_links,
+        max_replies: typeof max_replies === 'number' ? max_replies : 2
       };
       
       if (id) {
@@ -480,11 +512,7 @@ async function startServer() {
         // For new entries, we can't rely on unique 'keyword' anymore if we use arrays
         // But we can check if a document with the same primary keyword exists?
         // Or just create new. Let's just create/update.
-        if (id) {
-           await Keyword.findByIdAndUpdate(id, updateData);
-        } else {
-           await Keyword.create(updateData);
-        }
+        await Keyword.create(updateData);
       }
       await refreshKeywordCache();
       res.json({ success: true });
