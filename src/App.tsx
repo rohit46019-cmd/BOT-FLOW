@@ -36,6 +36,11 @@ interface Stats {
   autoReply: string;
   delaySeconds: number;
   isSystemPaused: boolean;
+  photoReplyEnabled: boolean;
+  photoReplyMessage: string;
+  photoReplyMax: number;
+  notificationSoundEnabled: boolean;
+  notificationSoundType: string;
   isUserBotConnected: boolean;
   apiId: string;
   apiHash: string;
@@ -51,6 +56,7 @@ interface Keyword {
   message_link?: string;
   message_links?: string[];
   max_replies?: number;
+  match_mode?: 'exact' | 'partial';
 }
 
 interface Topic {
@@ -90,6 +96,15 @@ const TabButton = ({
   darkMode: boolean
 }) => {
   const isActive = activeTab === id;
+  const colors = {
+    dashboard: 'from-emerald-400 to-emerald-600',
+    keywords: 'from-blue-400 to-blue-600',
+    broadcast: 'from-purple-400 to-purple-600',
+    settings: 'from-amber-400 to-amber-600',
+    user: 'from-pink-400 to-pink-600',
+    logs: 'from-slate-400 to-slate-600'
+  };
+
   return (
     <button
       onClick={() => {
@@ -100,16 +115,18 @@ const TabButton = ({
           setActiveTab(id);
         }
       }}
-      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative ${
-        isActive ? "text-emerald-400" : (darkMode ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-800")
+      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative group ${
+        isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? "text-slate-500 hover:text-slate-300" : "text-slate-400 hover:text-slate-700")
       }`}
     >
-      <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110" : ""}`} />
-      <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest mt-1">{label}</span>
+      <div className={`p-2 rounded-xl transition-all duration-300 ${isActive ? `bg-gradient-to-tr ${colors[id]} shadow-lg shadow-emerald-500/20` : "group-hover:bg-slate-500/5"}`}>
+        <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110 text-white" : "group-hover:scale-110"}`} />
+      </div>
+      <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition-all ${isActive ? "opacity-100" : "opacity-60"}`}>{label}</span>
       {isActive && (
         <motion.div 
           layoutId="activeTab"
-          className="absolute -top-1 w-8 h-1 bg-emerald-500 rounded-full"
+          className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${colors[id]} rounded-full`}
           transition={{ type: "spring", stiffness: 500, damping: 30 }}
         />
       )}
@@ -123,11 +140,17 @@ export default function App() {
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
   const [apiIdInput, setApiIdInput] = useState("");
   const [apiHashInput, setApiHashInput] = useState("");
+  const [photoReplyEnabled, setPhotoReplyEnabled] = useState(false);
+  const [photoReplyMessage, setPhotoReplyMessage] = useState("");
+  const [photoReplyMax, setPhotoReplyMax] = useState<number | string>(2);
+  const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
+  const [notificationSoundType, setNotificationSoundType] = useState("default");
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
   const [newKeywords, setNewKeywords] = useState<string[]>([""]); // Changed from single string to array
   const [newReply, setNewReply] = useState("");
+  const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(2);
   
@@ -141,14 +164,232 @@ export default function App() {
   const [touchEnd, setTouchEnd] = useState({ x: 0, y: 0 });
   const [refreshingLogs, setRefreshingLogs] = useState(false);
   const [editingKeywordId, setEditingKeywordId] = useState<string | null>(null);
+  const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem("darkMode");
     return saved !== null ? JSON.parse(saved) : true;
   });
 
+  const showNotification = (type: 'success' | 'error', message: string, duration = 3000) => {
+    setNotification({ type, message });
+    setTimeout(() => setNotification(null), type === 'error' ? 6000 : duration);
+  };
+
+  // Notification Sound
+  const playNotificationSound = (type = notificationSoundType) => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      const now = audioContext.currentTime;
+
+      switch (type) {
+        case 'bell':
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(880, now);
+          oscillator.frequency.exponentialRampToValueAtTime(440, now + 0.5);
+          gainNode.gain.setValueAtTime(0.5, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+          oscillator.start(now);
+          oscillator.stop(now + 0.5);
+          break;
+        case 'chime':
+          oscillator.type = 'triangle';
+          oscillator.frequency.setValueAtTime(660, now);
+          oscillator.frequency.setValueAtTime(880, now + 0.1);
+          oscillator.frequency.setValueAtTime(1100, now + 0.2);
+          gainNode.gain.setValueAtTime(0.3, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+          oscillator.start(now);
+          oscillator.stop(now + 0.4);
+          break;
+        case 'ping':
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(1200, now);
+          gainNode.gain.setValueAtTime(0.4, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+          oscillator.start(now);
+          oscillator.stop(now + 0.2);
+          break;
+        case 'digital':
+          oscillator.type = 'square';
+          oscillator.frequency.setValueAtTime(400, now);
+          oscillator.frequency.setValueAtTime(600, now + 0.05);
+          oscillator.frequency.setValueAtTime(400, now + 0.1);
+          gainNode.gain.setValueAtTime(0.2, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+          oscillator.start(now);
+          oscillator.stop(now + 0.2);
+          break;
+        case 'rising':
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(200, now);
+          oscillator.frequency.exponentialRampToValueAtTime(1000, now + 0.3);
+          gainNode.gain.setValueAtTime(0.4, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+          oscillator.start(now);
+          oscillator.stop(now + 0.3);
+          break;
+        case 'double':
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(800, now);
+          oscillator.frequency.setValueAtTime(800, now + 0.15);
+          gainNode.gain.setValueAtTime(0.3, now);
+          gainNode.gain.setValueAtTime(0, now + 0.1);
+          gainNode.gain.setValueAtTime(0.3, now + 0.15);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+          oscillator.start(now);
+          oscillator.stop(now + 0.3);
+          break;
+        case 'low':
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(300, now);
+          oscillator.frequency.exponentialRampToValueAtTime(150, now + 0.5);
+          gainNode.gain.setValueAtTime(0.6, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+          oscillator.start(now);
+          oscillator.stop(now + 0.5);
+          break;
+        case 'laser':
+          oscillator.type = 'sawtooth';
+          oscillator.frequency.setValueAtTime(2000, now);
+          oscillator.frequency.exponentialRampToValueAtTime(100, now + 0.2);
+          gainNode.gain.setValueAtTime(0.2, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+          oscillator.start(now);
+          oscillator.stop(now + 0.2);
+          break;
+        default:
+          // Original sound
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(880, now);
+          oscillator.frequency.exponentialRampToValueAtTime(440, now + 0.15);
+          gainNode.gain.setValueAtTime(0.5, now);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+          oscillator.start(now);
+          oscillator.stop(now + 0.6);
+      }
+    } catch (e) {
+      console.error("Audio play failed", e);
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if ("Notification" in window) {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        showNotification('success', 'Notifications enabled!');
+        playNotificationSound();
+        
+        const options = { body: "Test notification successful!", icon: "/logo.svg" };
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then(reg => reg.showNotification("UserBot Pro", options));
+        } else {
+          new Notification("UserBot Pro", options);
+        }
+      } else {
+        showNotification('error', 'Permission denied');
+      }
+    }
+  };
+
   useEffect(() => {
     localStorage.setItem("darkMode", JSON.stringify(darkMode));
   }, [darkMode]);
+
+  useEffect(() => {
+    // Register Service Worker for notifications
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then(reg => {
+        console.log('Service Worker registered', reg);
+      }).catch(err => {
+        console.error('Service Worker registration failed', err);
+      });
+    }
+
+    // Request notification permission on mount
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
+    // Connect to SSE
+    console.log("Connecting to SSE notifications...");
+    const eventSource = new EventSource("/api/notifications");
+    
+    eventSource.onopen = () => {
+      console.log("SSE connection established");
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE connection error:", err);
+      // EventSource automatically retries
+    };
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        console.log("Received notification event:", parsed);
+        if (parsed.type === 'photo_received') {
+          const message = parsed.data.message;
+          
+          // Show in-app notification
+          showNotification('success', message);
+          
+          // Play sound if enabled
+          if (notificationSoundEnabled) {
+            playNotificationSound();
+          }
+          
+          // Show system notification
+          if ("Notification" in window && Notification.permission === "granted") {
+            const options = {
+              body: message,
+              icon: "/logo.svg",
+              silent: notificationSoundEnabled,
+              requireInteraction: true,
+              tag: 'photo-received'
+            };
+
+            try {
+              // Try Service Worker notification first (required for Android Chrome)
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(registration => {
+                  registration.showNotification("UserBot Pro", options);
+                }).catch(() => {
+                  // Fallback to constructor
+                  new Notification("UserBot Pro", options);
+                });
+              } else {
+                new Notification("UserBot Pro", options);
+              }
+            } catch (e) {
+              console.error("Notification creation failed", e);
+              // Final fallback attempt
+              try {
+                if (Notification.permission === "granted") {
+                   // Some environments might allow this if the constructor failed
+                   navigator.serviceWorker?.ready?.then(reg => reg.showNotification("UserBot Pro", options));
+                }
+              } catch (innerErr) {
+                console.error("Final notification fallback failed", innerErr);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("SSE Parse Error", e);
+      }
+    };
+
+    return () => {
+      console.log("Closing SSE connection");
+      eventSource.close();
+    };
+  }, [notificationSoundEnabled, notificationSoundType]);
 
   // Auth State
   const [phone, setPhone] = useState("");
@@ -172,6 +413,11 @@ export default function App() {
       setDelaySecondsInput(data.delaySeconds);
       setApiIdInput(data.apiId);
       setApiHashInput(data.apiHash);
+      setPhotoReplyEnabled(data.photoReplyEnabled);
+      setPhotoReplyMessage(data.photoReplyMessage);
+      setPhotoReplyMax(data.photoReplyMax || 2);
+      setNotificationSoundEnabled(data.notificationSoundEnabled);
+      setNotificationSoundType(data.notificationSoundType || "default");
       if (!phone) setPhone(data.defaultPhone);
       
       if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
@@ -251,11 +497,6 @@ export default function App() {
     }
   };
 
-  const showNotification = (type: 'success' | 'error', message: string, duration = 3000) => {
-    setNotification({ type, message });
-    setTimeout(() => setNotification(null), type === 'error' ? 6000 : duration);
-  };
-
   useEffect(() => {
     if (activeTab === 'logs') {
       fetchLogs();
@@ -300,7 +541,12 @@ export default function App() {
           autoReply: autoReplyInput,
           delaySeconds: delaySecondsInput,
           apiId: apiIdInput,
-          apiHash: apiHashInput
+          apiHash: apiHashInput,
+          photoReplyEnabled,
+          photoReplyMessage,
+          photoReplyMax: Number(photoReplyMax) || 2,
+          notificationSoundEnabled,
+          notificationSoundType
         }),
       });
       
@@ -333,7 +579,8 @@ export default function App() {
           keywords: validKeywords,
           reply: newReply, 
           message_links: newMessageLinks.filter(l => l.trim().length > 0),
-          max_replies: Number(newMaxReplies) || 2
+          max_replies: Number(newMaxReplies) || 2,
+          match_mode: newMatchMode
         }),
       });
       if (res.ok) {
@@ -342,6 +589,7 @@ export default function App() {
         setNewReply("");
         setNewMessageLinks([""]);
         setNewMaxReplies(2);
+        setNewMatchMode('exact');
         setEditingKeywordId(null);
         fetchKeywords();
       }
@@ -363,6 +611,7 @@ export default function App() {
       : (kw.message_link ? [kw.message_link] : [""]);
     setNewMessageLinks(links);
     setNewMaxReplies(kw.max_replies || 2);
+    setNewMatchMode(kw.match_mode || 'exact');
     setEditingKeywordId(kw._id);
     // Scroll to top of the keyword section
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -373,6 +622,7 @@ export default function App() {
     setNewReply("");
     setNewMessageLinks([""]);
     setNewMaxReplies(2);
+    setNewMatchMode('exact');
     setEditingKeywordId(null);
   };
 
@@ -420,15 +670,22 @@ export default function App() {
     setNewMessageLinks(newLinks);
   };
 
-  const handleDeleteKeyword = async (id: string) => {
+  const handleDeleteKeyword = (id: string) => {
+    setDeleteConfirmationId(id);
+  };
+
+  const confirmDeleteKeyword = async () => {
+    if (!deleteConfirmationId) return;
     try {
-      const res = await fetch(`/api/keywords/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
       if (res.ok) {
         showNotification('success', 'Keyword deleted');
         fetchKeywords();
       }
     } catch (err) {
       showNotification('error', 'Delete failed');
+    } finally {
+      setDeleteConfirmationId(null);
     }
   };
 
@@ -628,7 +885,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-[#0f172a]' : 'bg-slate-50'}`}>
+      <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-black' : 'bg-slate-50'}`}>
         <motion.div 
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
@@ -640,7 +897,13 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-[#0f172a] text-slate-200' : 'bg-slate-50 text-slate-800'} font-sans pb-24`}>
+    <div className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans pb-24 relative overflow-x-hidden`}>
+      {/* Background Decorative Elements */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className={`absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-emerald-500' : 'bg-emerald-300'}`} />
+        <div className={`absolute top-[20%] -right-[10%] w-[35%] h-[35%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-blue-500' : 'bg-blue-300'}`} />
+        <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
+      </div>
       {/* Offline Warning */}
       {!stats?.isUserBotConnected && (
         <div className="bg-rose-600 text-white text-[10px] font-black uppercase tracking-[0.2em] py-2 text-center sticky top-0 z-[60] shadow-lg">
@@ -649,36 +912,36 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className={`px-6 py-5 flex items-center justify-between sticky top-0 z-50 backdrop-blur-xl border-b rounded-b-[2.5rem] shadow-xl transition-all duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800 shadow-black/20' : 'bg-white/90 border-slate-200 shadow-slate-200/50'}`}>
-        <div className="flex items-center space-x-4">
-          <div className="relative w-12 h-12 group cursor-pointer">
-            <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-cyan-500 rounded-2xl rotate-6 opacity-40 blur-md group-hover:rotate-12 transition-transform duration-500"></div>
-            <div className={`relative w-full h-full rounded-2xl overflow-hidden shadow-inner flex items-center justify-center border transition-colors duration-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
-              <img src="/logo.svg" alt="Logo" className="w-8 h-8 object-contain drop-shadow-sm" />
+      <header className={`px-6 py-4 flex items-center justify-between sticky top-0 z-50 backdrop-blur-xl border-b transition-all duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
+        <div className="flex items-center space-x-3">
+          <div className="relative w-10 h-10 group cursor-pointer">
+            <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-xl rotate-3 opacity-40 group-hover:rotate-6 transition-transform duration-500"></div>
+            <div className={`relative w-full h-full rounded-xl overflow-hidden flex items-center justify-center border transition-colors duration-500 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
+              <img src="/logo.svg" alt="Logo" className="w-6 h-6 object-contain" />
             </div>
           </div>
           <div className="flex flex-col">
-            <h1 className={`font-black text-xl tracking-tighter leading-none transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT</h1>
-            <span className="text-[10px] font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500 tracking-[0.3em] uppercase block">PRO</span>
+            <h1 className={`font-black text-xl tracking-tight leading-none transition-colors duration-500 gradient-text`}>UserBot</h1>
+            <span className="text-[9px] font-black text-emerald-500 tracking-widest uppercase block">Management</span>
           </div>
         </div>
         
-        <div className={`flex items-center space-x-2 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
-          <span className={`w-2 h-2 rounded-full shadow-sm ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse shadow-emerald-500/50' : 'bg-rose-500 shadow-rose-500/50'}`} />
-          <span>{stats?.isUserBotConnected ? 'Online' : 'Offline'}</span>
+        <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+          <span>{stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}</span>
         </div>
       </header>
 
       {/* Floating Dark Mode Button */}
       <button 
         onClick={() => setDarkMode(!darkMode)}
-        className={`fixed bottom-24 right-4 z-50 p-4 rounded-full shadow-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400 hover:bg-slate-700 border border-slate-700' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
+        className={`fixed bottom-24 right-4 z-50 p-4 rounded-full shadow-xl transition-all ${darkMode ? 'bg-neutral-900 text-yellow-400 hover:bg-neutral-800 border border-neutral-800' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
       >
         {darkMode ? <Sun size={24} /> : <Moon size={24} />}
       </button>
 
       <main 
-        className="p-4 max-w-md mx-auto overflow-hidden"
+        className="p-4 max-w-md mx-auto relative z-10"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -695,100 +958,110 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className="grid grid-cols-2 gap-4">
-                <motion.div 
-                  whileHover={{ scale: 1.05, rotateY: 5 }}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="relative overflow-hidden p-5 rounded-3xl bg-gradient-to-br from-violet-600 to-indigo-600 text-white shadow-lg shadow-indigo-500/30 group"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 group-hover:animate-pulse transition-all" />
-                  <div className="absolute bottom-0 left-0 w-20 h-20 bg-purple-500/20 rounded-full blur-xl -ml-5 -mb-5" />
-                  <BarChart3 className="text-white/80 mb-3 relative z-10" size={20} />
-                  <p className="text-xs font-bold text-white/60 uppercase tracking-widest relative z-10">Total Topics</p>
-                  <h3 className="text-3xl font-black mt-1 relative z-10">{stats?.topicCount || 0}</h3>
-                </motion.div>
-
-                <motion.div 
-                  whileHover={{ scale: 1.05, rotateY: -5 }}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: 0.1 }}
-                  className="relative overflow-hidden p-5 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/30 group"
-                >
-                  <div className="absolute bottom-0 right-0 w-24 h-24 bg-white/10 rounded-full blur-xl -mr-5 -mb-5 group-hover:animate-pulse transition-all" />
-                  <div className="absolute top-0 left-0 w-16 h-16 bg-teal-300/20 rounded-full blur-lg -ml-2 -mt-2" />
-                  <LayoutDashboard className="text-white/80 mb-3 relative z-10" size={20} />
-                  <p className="text-xs font-bold text-white/60 uppercase tracking-widest relative z-10">Today</p>
-                  <h3 className="text-3xl font-black mt-1 relative z-10">{stats?.todayTopicCount || 0}</h3>
-                </motion.div>
-
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: 0.2 }}
-                  className="col-span-2 relative overflow-hidden p-6 rounded-3xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/30 group"
-                >
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 group-hover:animate-pulse transition-all" />
-                  <div className="absolute bottom-0 left-0 w-20 h-20 bg-fuchsia-300/20 rounded-full blur-xl -ml-5 -mb-5" />
-                  
-                  <div className="flex items-center justify-between relative z-10">
-                    <div>
-                      <div className="flex items-center space-x-2 mb-1">
-                        <RefreshCw className="text-white/80" size={16} />
-                        <p className="text-xs font-bold text-white/80 uppercase tracking-widest">Response Delay</p>
+                  <motion.div 
+                    whileHover={{ y: -8, scale: 1.02 }}
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, type: "spring" }}
+                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-dots opacity-[0.07] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/20 text-emerald-600'}`}>
+                        <BarChart3 size={24} />
                       </div>
-                      <h3 className="text-4xl font-black mt-2">{stats?.delaySeconds || 0}<span className="text-lg font-bold opacity-60 ml-1">sec</span></h3>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-300/60' : 'text-emerald-600/60'}`}>Total Topics</p>
+                      <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-emerald-900'}`}>{stats?.topicCount || 0}</h3>
                     </div>
-                    <div className="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10">
-                      <BarChart3 className="text-white" size={28} />
+                  </motion.div>
+
+                  <motion.div 
+                    whileHover={{ y: -8, scale: 1.02 }}
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, delay: 0.1, type: "spring" }}
+                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-500/20 text-blue-600'}`}>
+                        <LayoutDashboard size={24} />
+                      </div>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-300/60' : 'text-blue-600/60'}`}>Today</p>
+                      <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-blue-900'}`}>{stats?.todayTopicCount || 0}</h3>
                     </div>
-                  </div>
-                </motion.div>
+                  </motion.div>
+
+                  <motion.div 
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, delay: 0.2, type: "spring" }}
+                    whileHover={{ y: -8 }}
+                    className={`col-span-2 p-8 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between card-3d glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-amber-300/60' : 'text-amber-600/60'}`}>Response Delay</p>
+                      <h3 className={`text-4xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-amber-900'}`}>
+                        {stats?.delaySeconds || 0}<span className="text-lg font-medium opacity-40 ml-1">sec</span>
+                      </h3>
+                    </div>
+                    <div className={`relative z-10 w-14 h-14 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-500/20 text-amber-600'}`}>
+                      <RefreshCw size={28} />
+                    </div>
+                  </motion.div>
               </div>
 
               {/* System Pause/Resume Button */}
               <motion.button
-                whileHover={{ scale: 1.02 }}
+                whileHover={{ scale: 1.02, y: -4 }}
                 whileTap={{ scale: 0.98 }}
                 onClick={handleTogglePause}
-                className={`w-full p-6 rounded-[2.5rem] shadow-xl flex items-center justify-between transition-all duration-500 relative overflow-hidden group ${
+                className={`w-full p-8 rounded-[2.5rem] border flex items-center justify-between transition-all duration-500 relative overflow-hidden group ${
                   stats?.isSystemPaused 
-                    ? 'bg-gradient-to-r from-rose-500 to-pink-600 shadow-rose-500/30' 
-                    : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-500/30'
+                    ? (darkMode ? 'bg-rose-500/10 border-rose-500/20 text-rose-500 glow-rose' : 'bg-rose-50 border-rose-200 text-rose-600 shadow-xl shadow-rose-500/10') 
+                    : (darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500 glow-emerald' : 'bg-emerald-50 border-emerald-200 text-emerald-600 shadow-xl shadow-emerald-500/10')
                 }`}
               >
-                <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-700" />
-                <div className="absolute bottom-0 left-0 w-32 h-32 bg-black/5 rounded-full blur-2xl -ml-10 -mb-10" />
-                
-                <div className="flex items-center space-x-5 relative z-10">
-                  <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-md border border-white/20 shadow-inner">
-                    {stats?.isSystemPaused ? <Play size={28} fill="currentColor" className="text-white ml-1" /> : <Pause size={28} fill="currentColor" className="text-white" />}
+                <div className="flex items-center space-x-4 relative z-10">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border transition-colors ${
+                    stats?.isSystemPaused 
+                      ? (darkMode ? 'bg-rose-500/20 border-rose-500/30' : 'bg-white border-rose-200 shadow-sm') 
+                      : (darkMode ? 'bg-emerald-500/20 border-emerald-500/30' : 'bg-white border-emerald-200 shadow-sm')
+                  }`}>
+                    {stats?.isSystemPaused ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
                   </div>
                   <div className="text-left">
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/70 mb-1">Auto Reply System</p>
-                    <h3 className="text-2xl font-black text-white tracking-tight">{stats?.isSystemPaused ? 'SYSTEM PAUSED' : 'SYSTEM ACTIVE'}</h3>
+                    <p className={`text-[10px] font-bold uppercase tracking-widest mb-0.5 opacity-60`}>Auto Reply System</p>
+                    <h3 className="text-xl font-bold tracking-tight">{stats?.isSystemPaused ? 'System Paused' : 'System Active'}</h3>
                   </div>
                 </div>
-                <div className="bg-white/20 px-5 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest backdrop-blur-md border border-white/10 text-white shadow-sm relative z-10 group-hover:bg-white/30 transition-colors">
-                  {stats?.isSystemPaused ? 'Tap to Resume' : 'Tap to Pause'}
+                <div className={`px-4 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all ${
+                  stats?.isSystemPaused 
+                    ? (darkMode ? 'bg-rose-500/20 border-rose-500/30' : 'bg-white border-rose-200') 
+                    : (darkMode ? 'bg-emerald-500/20 border-emerald-500/30' : 'bg-white border-emerald-200')
+                }`}>
+                  {stats?.isSystemPaused ? 'Resume' : 'Pause'}
                 </div>
               </motion.button>
 
               <motion.div 
-                whileHover={{ scale: 1.02 }}
-                className="relative overflow-hidden p-8 rounded-[2.5rem] bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 text-white shadow-xl shadow-purple-500/30 group"
+                whileHover={{ y: -4, scale: 1.01 }}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.3 }}
+                className={`p-6 rounded-[2rem] border transition-all duration-500 relative overflow-hidden group ${darkMode ? 'bg-indigo-950/40 border-indigo-500/30' : 'bg-indigo-50 border-indigo-200 shadow-xl shadow-indigo-500/10'}`}
               >
-                <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:rotate-45 transition-transform duration-700" />
-                <div className="absolute bottom-0 left-0 w-32 h-32 bg-black/10 rounded-full blur-2xl -ml-10 -mb-10 group-hover:-translate-y-2 transition-transform duration-500" />
-                
-                <div className="relative z-10">
-                  <div className="flex items-center space-x-2 mb-4 opacity-80">
-                    <MessageSquare size={16} className="text-white" />
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Auto Reply Active</p>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
+                <div className="relative z-10 pointer-events-auto">
+                  <div className="flex items-center space-x-2 mb-4">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-500/10 text-indigo-600'}`}>
+                      <MessageSquare size={14} />
+                    </div>
+                    <p className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-indigo-300/60' : 'text-indigo-600/60'}`}>Current Auto Reply</p>
                   </div>
-                  <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-                    <p className="text-lg font-medium leading-relaxed italic text-white/90">
+                  <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-black/20 border-indigo-500/20' : 'bg-white/60 border-indigo-100'}`}>
+                    <p className={`text-sm font-medium leading-relaxed italic ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                       "{stats?.autoReply || 'No message set'}"
                     </p>
                   </div>
@@ -807,61 +1080,172 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              {/* Settings Section */}
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Welcome Message</label>
-                  <textarea
-                    value={autoReplyInput}
-                    onChange={(e) => setAutoReplyInput(e.target.value)}
-                    className={`w-full h-32 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-indigo-500/30 border-indigo-500/30 text-white placeholder-white/50' : 'bg-indigo-500/30 border-indigo-500/30 text-slate-900 placeholder-slate-600'}`}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Delay (Seconds)</label>
-                  <input
-                    type="number"
-                    value={delaySecondsInput}
-                    onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm ${darkMode ? 'bg-amber-500/30 border-amber-500/30 text-white placeholder-white/50' : 'bg-amber-500/30 border-amber-500/30 text-slate-900 placeholder-slate-600'}`}
-                  />
-                </div>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleUpdateSettings}
-                  disabled={saving}
-                  className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20 disabled:opacity-50"
-                >
-                  {saving ? 'Saving...' : 'Save Settings'}
-                </motion.button>
-
-                <div className="pt-6 border-t border-slate-800 space-y-4">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Backup & Restore</label>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      onClick={handleExportData}
-                      className={`flex items-center justify-center space-x-2 p-4 rounded-2xl border font-bold text-xs uppercase tracking-widest transition-all ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-900' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
-                    >
-                      <Download size={16} />
-                      <span>Export</span>
-                    </button>
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={importing}
-                      className={`flex items-center justify-center space-x-2 p-4 rounded-2xl border font-bold text-xs uppercase tracking-widest transition-all ${darkMode ? 'bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-900' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
-                    >
-                      <Upload size={16} />
-                      <span>{importing ? '...' : 'Import'}</span>
-                    </button>
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      onChange={handleImportData}
-                      accept=".json"
-                      className="hidden"
+              <div className={`border p-8 rounded-[2.5rem] space-y-8 transition-colors duration-500 glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="space-y-2">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Welcome Message</label>
+                    <textarea
+                      value={autoReplyInput}
+                      onChange={(e) => setAutoReplyInput(e.target.value)}
+                      placeholder="Message sent to new users..."
+                      rows={3}
+                      className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-all ${darkMode ? 'bg-emerald-500/5 border-emerald-500/20 text-white placeholder-white/20' : 'bg-emerald-50 border-emerald-200 text-slate-900 placeholder-slate-400'}`}
                     />
                   </div>
+                  <div className="space-y-2">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Reply Delay (Seconds)</label>
+                    <input
+                      type="number"
+                      value={delaySecondsInput}
+                      onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
+                      className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
+                        <ImageIcon size={14} />
+                      </div>
+                      <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Photo Reply Settings</h3>
+                    </div>
+                    <button 
+                      onClick={() => setPhotoReplyEnabled(!photoReplyEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${photoReplyEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${photoReplyEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {photoReplyEnabled && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="space-y-6 overflow-hidden"
+                      >
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Reply Message</label>
+                          <textarea
+                            value={photoReplyMessage}
+                            onChange={(e) => setPhotoReplyMessage(e.target.value)}
+                            placeholder="What should the bot say to photos?"
+                            rows={2}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Max Photo Replies per Topic</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={photoReplyMax}
+                            onChange={(e) => setPhotoReplyMax(e.target.value === '' ? '' : parseInt(e.target.value) || 1)}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-500/5 text-blue-600'}`}>
+                        <Bell size={14} />
+                      </div>
+                      <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Notification Settings</h3>
+                    </div>
+                    <button 
+                      onClick={() => setNotificationSoundEnabled(!notificationSoundEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${notificationSoundEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notificationSoundEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {notificationSoundEnabled && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="space-y-4 overflow-hidden"
+                      >
+                        <div className="grid grid-cols-3 gap-2">
+                          {['default', 'bell', 'chime', 'ping', 'digital', 'rising', 'double', 'low', 'laser'].map((type) => (
+                            <button
+                              key={type}
+                              onClick={() => {
+                                setNotificationSoundType(type);
+                                playNotificationSound(type);
+                              }}
+                              className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${
+                                notificationSoundType === type 
+                                  ? (darkMode ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600') 
+                                  : (darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-500 hover:text-slate-300' : 'bg-slate-50 border-slate-100 text-slate-400 hover:text-slate-600')
+                              }`}
+                            >
+                              {type}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          onClick={requestNotificationPermission}
+                          className={`w-full flex items-center justify-center space-x-2 py-3 rounded-xl border font-bold text-[10px] uppercase tracking-widest transition-all ${darkMode ? 'bg-neutral-950 border-neutral-800 text-neutral-400 hover:bg-neutral-900' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <Bell size={14} />
+                          <span>Test Notification</span>
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                <div className="space-y-4 pt-6 border-t border-slate-100 dark:border-neutral-800">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-purple-500/10 text-purple-400' : 'bg-purple-500/5 text-purple-600'}`}>
+                      <Download size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Data Management</h3>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={handleExportData}
+                      className={`flex items-center justify-center space-x-2 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      <Download size={14} />
+                      <span>Export</span>
+                    </button>
+                    <button 
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importing}
+                      className={`flex items-center justify-center space-x-2 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      <Upload size={14} />
+                      <span>{importing ? '...' : 'Import'}</span>
+                    </button>
+                    <input type="file" ref={fileInputRef} onChange={handleImportData} accept=".json" className="hidden" />
+                  </div>
+                </div>
+
+                <div className="pt-4">
+                  <motion.button
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    onClick={handleUpdateSettings}
+                    disabled={saving}
+                    className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all shadow-lg ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500' : 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600'}`}
+                  >
+                    {saving ? 'Saving...' : 'Save All Settings'}
+                  </motion.button>
                 </div>
               </div>
             </motion.div>
@@ -877,119 +1261,141 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-8 rounded-[2.5rem] space-y-4 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between ml-1">
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">New Keywords</label>
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}>
+                <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+                <div className="relative z-10 space-y-4 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Trigger Keywords</label>
                     {newKeywords.length < 20 && (
                       <button 
                         onClick={addKeywordField}
-                        className="text-emerald-500 hover:text-emerald-400 transition-colors"
-                        title="Add more keywords"
+                        className="text-blue-500 hover:text-blue-400 transition-colors flex items-center space-x-1"
                       >
                         <Plus size={14} />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Add</span>
                       </button>
                     )}
                   </div>
                   
-                  {newKeywords.map((kw, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <input
-                        type="text"
-                        value={kw}
-                        onChange={(e) => updateKeywordField(index, e.target.value)}
-                        placeholder="e.g. hello"
-                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-emerald-500/30 border-emerald-500/30 text-white placeholder-white/50' : 'bg-emerald-500/30 border-emerald-500/30 text-slate-900 placeholder-slate-600'}`}
-                      />
-                      {newKeywords.length > 1 && (
-                        <button 
-                          onClick={() => removeKeywordField(index)}
-                          className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <p className="text-[10px] text-slate-500 ml-1 italic">Add up to 20 keywords that trigger this reply.</p>
+                  <div className="grid gap-2">
+                    {newKeywords.map((kw, index) => (
+                      <div key={index} className="flex items-center space-x-2 group">
+                        <input
+                          type="text"
+                          value={kw}
+                          onChange={(e) => updateKeywordField(index, e.target.value)}
+                          placeholder="e.g. hello"
+                          className={`flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
+                        />
+                        {newKeywords.length > 1 && (
+                          <button 
+                            onClick={() => removeKeywordField(index)}
+                            className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-lg transition-all"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Max Replies per Topic</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="100"
-                    value={newMaxReplies}
-                    onChange={(e) => setNewMaxReplies(e.target.value === '' ? '' : parseInt(e.target.value))}
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-orange-500/30 border-orange-500/30 text-white placeholder-white/50' : 'bg-orange-500/30 border-orange-500/30 text-slate-900 placeholder-slate-600'}`}
-                  />
-                  <p className="text-[10px] text-slate-500 ml-1 italic">Maximum times the bot will reply to these keywords in a single topic (Default: 2).</p>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Match Mode</label>
+                    <div className={`flex p-1 rounded-xl w-full ${darkMode ? 'bg-neutral-950/40 border border-white/10' : 'bg-slate-100'}`}>
+                      <button
+                        onClick={() => setNewMatchMode('exact')}
+                        className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${newMatchMode === 'exact' ? (darkMode ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-blue-600 shadow-sm') : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        Exact
+                      </button>
+                      <button
+                        onClick={() => setNewMatchMode('partial')}
+                        className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${newMatchMode === 'partial' ? (darkMode ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-blue-600 shadow-sm') : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        Partial
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Max Replies</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={newMaxReplies}
+                      onChange={(e) => setNewMaxReplies(e.target.value === '' ? '' : parseInt(e.target.value))}
+                      className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reply Message</label>
-                  <input
-                    type="text"
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Reply Message</label>
+                  <textarea
                     value={newReply}
                     onChange={(e) => setNewReply(e.target.value)}
-                    placeholder="e.g. Hi there!"
-                    className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-blue-500/30 border-blue-500/30 text-white placeholder-white/50' : 'bg-blue-500/30 border-blue-500/30 text-slate-900 placeholder-slate-600'}`}
+                    placeholder="What should the bot say?"
+                    rows={2}
+                    className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
                   />
                 </div>
 
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between ml-1">
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Chat Forward URLs (Optional)</label>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Forward Content (Optional)</label>
                     {newMessageLinks.length < 6 && (
                       <button 
                         onClick={addUrlField}
-                        className="text-emerald-500 hover:text-emerald-400 transition-colors"
-                        title="Add more URLs"
+                        className="text-blue-500 hover:text-blue-400 transition-colors flex items-center space-x-1"
                       >
                         <Plus size={14} />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Add</span>
                       </button>
                     )}
                   </div>
                   
-                  {newMessageLinks.map((link, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <input
-                        type="text"
-                        value={link}
-                        onChange={(e) => updateUrlField(index, e.target.value)}
-                        placeholder="https://t.me/c/3672030592/123"
-                        className={`flex-1 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-pink-500/30 border-pink-500/30 text-white placeholder-white/50' : 'bg-pink-500/30 border-pink-500/30 text-slate-900 placeholder-slate-600'}`}
-                      />
-                      {newMessageLinks.length > 1 && (
-                        <button 
-                          onClick={() => removeUrlField(index)}
-                          className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <p className="text-[10px] text-slate-500 ml-1 italic">Paste Telegram message links to forward media/files. Max 6 URLs.</p>
+                  <div className="grid gap-2">
+                    {newMessageLinks.map((link, index) => (
+                      <div key={index} className="flex items-center space-x-2">
+                        <input
+                          type="text"
+                          value={link}
+                          onChange={(e) => updateUrlField(index, e.target.value)}
+                          placeholder="Telegram message link..."
+                          className={`flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
+                        />
+                        {newMessageLinks.length > 1 && (
+                          <button 
+                            onClick={() => removeUrlField(index)}
+                            className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-lg transition-all"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="flex space-x-2">
+                <div className="flex space-x-3 pt-2">
                   <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
                     onClick={handleAddKeyword}
-                    className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                    className={`flex-1 py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500' : 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600'}`}
                   >
-                    {editingKeywordId ? <RefreshCw size={18} /> : <Plus size={18} />}
-                    <span>{editingKeywordId ? 'Update Keyword' : 'Add Keyword'}</span>
+                    {editingKeywordId ? <RefreshCw size={16} /> : <Plus size={16} />}
+                    <span>{editingKeywordId ? 'Update Rule' : 'Create Rule'}</span>
                   </motion.button>
                   {editingKeywordId && (
                     <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
+                      whileHover={{ scale: 1.01 }}
+                      whileTap={{ scale: 0.99 }}
                       onClick={cancelEdit}
-                      className="bg-slate-500 text-white px-6 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-400 transition-all"
+                      className={`px-6 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all ${darkMode ? 'bg-neutral-800 text-slate-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                     >
                       <X size={18} />
                     </motion.button>
@@ -1002,45 +1408,55 @@ export default function App() {
                   <motion.div 
                     layout
                     key={kw._id}
-                    className={`border p-4 rounded-2xl flex items-center justify-between transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}
+                    whileHover={{ scale: 1.01, y: -2 }}
+                    className={`p-6 rounded-[2rem] border transition-all duration-500 flex items-start justify-between relative overflow-hidden ${darkMode ? 'bg-emerald-950/20 border-emerald-500/20 backdrop-blur-sm' : 'bg-emerald-50/50 border-emerald-100 shadow-sm hover:shadow-md'}`}
                   >
-                    <div className="flex items-center space-x-4">
-                      <div>
-                        <div className="flex flex-wrap gap-2">
-                          {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
-                            <span key={i} className="text-xs font-black text-emerald-400 uppercase tracking-widest bg-emerald-400/10 px-2 py-1 rounded-lg">
-                              {k}
-                            </span>
-                          ))}
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-500/10 px-2 py-1 rounded-lg border border-slate-500/20">
-                            Max: {kw.max_replies || 2}
+                    <div className={`absolute inset-0 pattern-dots opacity-[0.03] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                    <div className="relative z-10 flex-1 min-w-0">
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
+                          <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
+                            {k}
                           </span>
-                        </div>
-                        {(kw.message_links && kw.message_links.length > 0) || kw.message_link ? (
-                          <div className="space-y-1 mt-1">
-                            <div className="flex items-center space-x-2">
-                              <FileText size={12} className="text-slate-500" />
-                              <p className="text-[10px] text-slate-500 italic">Forwarding {kw.message_links?.length || 1} content(s)</p>
-                            </div>
-                            {kw.reply && <p className={`text-[10px] transition-colors duration-500 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>{kw.reply}</p>}
+                        ))}
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <p className={`text-sm font-medium leading-relaxed ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                          {kw.reply || <span className="italic opacity-40">No reply message</span>}
+                        </p>
+                        
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                            <RefreshCw size={10} />
+                            <span>Max: {kw.max_replies || 2}</span>
                           </div>
-                        ) : (
-                          <p className={`text-sm mt-1 transition-colors duration-500 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{kw.reply}</p>
-                        )}
+                          <div className={`flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest ${kw.match_mode === 'partial' ? 'text-orange-400' : 'text-blue-400'}`}>
+                            <Hash size={10} />
+                            <span>{kw.match_mode || 'exact'}</span>
+                          </div>
+                          {((kw.message_links && kw.message_links.length > 0) || kw.message_link) && (
+                            <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-pink-400">
+                              <FileText size={10} />
+                              <span>{kw.message_links?.length || 1} Forward</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-2">
+                    
+                    <div className="flex flex-col space-y-2 ml-4">
                       <button 
                         onClick={() => handleEditKeyword(kw)}
-                        className={`p-2 rounded-xl transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
+                        className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-emerald-400' : 'bg-slate-50 text-slate-400 hover:text-emerald-600'}`}
                       >
-                        <Settings size={18} />
+                        <Settings size={16} />
                       </button>
                       <button 
                         onClick={() => handleDeleteKeyword(kw._id)}
-                        className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
+                        className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-rose-400' : 'bg-slate-50 text-slate-400 hover:text-rose-600'}`}
                       >
-                        <Trash2 size={18} />
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </motion.div>
@@ -1059,25 +1475,26 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Broadcast Content</label>
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-purple relative overflow-hidden group ${darkMode ? 'bg-purple-950/40 border-purple-500/30' : 'bg-purple-50 border-purple-200 shadow-xl shadow-purple-500/10'}`}>
+                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
+                <div className="relative z-10 space-y-3 pointer-events-auto">
+                  <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Message</label>
                   <textarea
                     value={broadcastMessage}
                     onChange={(e) => setBroadcastMessage(e.target.value)}
-                    placeholder="What would you like to announce?"
-                    className={`w-full h-40 p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-purple-500/30 border-purple-500/30 text-white placeholder-white/50' : 'bg-purple-500/30 border-purple-500/30 text-slate-900 placeholder-slate-600'}`}
+                    placeholder="Type your announcement here..."
+                    className={`w-full h-48 p-4 border rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none text-sm transition-all ${darkMode ? 'bg-purple-500/5 border-purple-500/20 text-white placeholder-white/20' : 'bg-purple-50 border-purple-200 text-slate-900 placeholder-slate-400'}`}
                   />
                 </div>
                 <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
                   onClick={handleBroadcast}
                   disabled={broadcasting || !broadcastMessage.trim()}
-                  className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center space-x-2 ${darkMode ? 'bg-white text-slate-950 hover:bg-slate-200' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                  className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all disabled:opacity-50 flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-500 hover:to-blue-500' : 'bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 shadow-purple-500/20'}`}
                 >
-                  <Send size={18} />
-                  <span>{broadcasting ? 'Sending...' : 'Send Now'}</span>
+                  <Send size={16} />
+                  <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
                 </motion.button>
               </div>
             </motion.div>
@@ -1093,140 +1510,147 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                {stats?.isUserBotConnected ? (
-                  <div className="text-center py-6 space-y-4">
-                    <div className="bg-emerald-500/10 w-20 h-20 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-                      <CheckCircle2 className="text-emerald-500" size={40} />
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-pink relative overflow-hidden group ${darkMode ? 'bg-pink-950/40 border-pink-500/30' : 'bg-pink-50 border-pink-200 shadow-xl shadow-pink-500/10'}`}>
+                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-pink-400' : 'text-pink-600'}`} />
+                <div className="relative z-10 pointer-events-auto">
+                  {stats?.isUserBotConnected ? (
+                    <div className="text-center py-8 space-y-6">
+                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition-all ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
+                      <CheckCircle2 size={48} />
                     </div>
-                    <h3 className={`text-xl font-black uppercase tracking-tighter transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Linked</h3>
-                    <p className="text-slate-500 text-sm">The Telegram session is active and shared across all users.</p>
-                    <div className="pt-4">
+                    <div>
+                      <h3 className={`text-xl font-bold tracking-tight mb-2 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Connected</h3>
+                      <p className={`text-sm max-w-[200px] mx-auto ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Your Telegram session is active and ready for auto-replies.</p>
+                    </div>
+                    
+                    <div className="pt-4 flex flex-col space-y-3">
                       <button 
                         onClick={fetchStats}
-                        className="text-emerald-500 text-[10px] font-black uppercase tracking-widest hover:underline"
+                        className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
                       >
-                        Refresh Connection Status
+                        Refresh Status
+                      </button>
+                      <button 
+                        onClick={handleLogout}
+                        className={`text-[9px] font-bold uppercase tracking-widest transition-colors pt-4 opacity-40 hover:opacity-100 ${darkMode ? 'text-slate-500 hover:text-rose-400' : 'text-slate-400 hover:text-rose-600'}`}
+                      >
+                        Logout Session
                       </button>
                     </div>
-                    <button 
-                      onClick={handleLogout}
-                      className="text-slate-500 text-[9px] font-bold uppercase tracking-widest hover:text-rose-500 transition-colors mt-8 opacity-30 hover:opacity-100"
-                    >
-                      Reset System Session
-                    </button>
                     
                     {deferredPrompt && (
-                      <div className={`pt-6 border-t mt-6 transition-colors duration-500 ${darkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+                      <div className={`pt-8 border-t transition-colors duration-500 ${darkMode ? 'border-neutral-800' : 'border-slate-100'}`}>
                         <button
                           onClick={handleInstallApp}
-                          className="w-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-600/30 transition-all flex items-center justify-center space-x-2"
+                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
                         >
-                          <Smartphone size={18} />
-                          <span>Install App</span>
+                          <Smartphone size={16} />
+                          <span>Install Application</span>
                         </button>
-                        <p className="text-[10px] text-slate-500 mt-2 text-center">Install USERBOT PRO on your home screen</p>
                       </div>
                     )}
                   </div>
                 ) : (
                   <div className="space-y-6">
                     {authStep === 'credentials' && (
-                      <div className="space-y-4">
+                      <div className="space-y-5">
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API ID</label>
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API ID</label>
                           <input
                             type="text"
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-cyan-500/30 border-cyan-500/30 text-white placeholder-white/50' : 'bg-cyan-500/30 border-cyan-500/30 text-slate-900 placeholder-slate-600'}`}
+                            placeholder="Enter API ID"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API Hash</label>
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API Hash</label>
                           <input
                             type="text"
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-colors duration-500 ${darkMode ? 'bg-teal-500/30 border-teal-500/30 text-white placeholder-white/50' : 'bg-teal-500/30 border-teal-500/30 text-slate-900 placeholder-slate-600'}`}
+                            placeholder="Enter API Hash"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
                           onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
-                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-500 transition-all"
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
-                          Next Step
+                          Continue
                         </motion.button>
                       </div>
                     )}
 
                     {authStep === 'phone' && (
-                      <div className="space-y-4">
+                      <div className="space-y-5">
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Phone Number</label>
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phone Number</label>
                           <input
                             type="text"
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
-                            placeholder="+1234567890"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-green-500/30 border-green-500/30 text-white placeholder-white/50' : 'bg-green-500/30 border-green-500/30 text-slate-900 placeholder-slate-600'}`}
+                            placeholder="+1 234 567 8900"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
                           onClick={handleSendCode}
                           disabled={authLoading}
-                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
-                          {authLoading ? <RefreshCw className="animate-spin" size={20} /> : null}
-                          <span>Send Login Code</span>
+                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
+                          <span>Request Code</span>
                         </motion.button>
-                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-sm">Back to API Settings</button>
+                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back to API Info</button>
                       </div>
                     )}
 
                     {authStep === 'code' && (
-                      <div className="space-y-4">
+                      <div className="space-y-5">
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">Login Code</label>
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Login Code</label>
                           <input
                             type="text"
                             value={code}
                             onChange={(e) => setCode(e.target.value)}
-                            placeholder="Enter code from Telegram"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-rose-500/30 border-rose-500/30 text-white placeholder-white/50' : 'bg-rose-500/30 border-rose-500/30 text-slate-900 placeholder-slate-600'}`}
+                            placeholder="Enter 5-digit code"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold uppercase tracking-wider transition-colors duration-500">2FA Password (Optional)</label>
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>2FA Password (Optional)</label>
                           <input
                             type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="If enabled"
-                            className={`w-full p-4 border rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-colors duration-500 ${darkMode ? 'bg-fuchsia-500/30 border-fuchsia-500/30 text-white placeholder-white/50' : 'bg-fuchsia-500/30 border-fuchsia-500/30 text-slate-900 placeholder-slate-600'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
                           onClick={handleSignIn}
                           disabled={authLoading}
-                          className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-500 transition-all flex items-center justify-center space-x-2"
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
-                          {authLoading ? <RefreshCw className="animate-spin" size={20} /> : null}
-                          <span>Complete Login</span>
+                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
+                          <span>Verify & Connect</span>
                         </motion.button>
-                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-sm">Back</button>
+                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back</button>
                       </div>
                     )}
                   </div>
                 )}
               </div>
-            </motion.div>
+            </div>
+          </motion.div>
           )}
 
           {activeTab === 'logs' && (
@@ -1239,61 +1663,68 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center justify-between px-2">
-                  <h3 className={`text-xl font-black uppercase tracking-tighter ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Logs</h3>
-                  <div className="flex items-center space-x-2">
-                    <button 
-                      onClick={fetchLogs}
-                      disabled={refreshingLogs}
-                      className={`p-2 rounded-full transition-all ${darkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-600'} ${refreshingLogs ? 'opacity-50' : ''}`}
-                      title="Refresh Logs"
-                    >
-                      <RefreshCw size={14} className={refreshingLogs ? 'animate-spin' : ''} />
-                    </button>
-                    <button 
-                      onClick={clearLogs}
-                      className="text-rose-500 text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/10 px-3 py-1 rounded-full transition-colors"
-                    >
-                      Clear All
-                    </button>
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-slate-500/20 text-slate-400' : 'bg-slate-500/10 text-slate-600'}`}>
+                        <FileText size={14} />
+                      </div>
+                      <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>System Logs</h3>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button 
+                        onClick={fetchLogs}
+                        disabled={refreshingLogs}
+                        className={`p-2 rounded-xl transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
+                      >
+                        <RefreshCw size={16} className={refreshingLogs ? 'animate-spin' : ''} />
+                      </button>
+                      <button 
+                        onClick={clearLogs}
+                        className={`text-[9px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${darkMode ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
+                      >
+                        Clear All
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
                   {logs.length === 0 ? (
-                    <div className="text-center py-12 text-slate-500 italic text-sm">No logs found</div>
+                    <div className="text-center py-12 opacity-40 italic text-sm">No logs recorded yet.</div>
                   ) : (
-                    logs.map((log) => (
+                    logs.map(log => (
                       <div 
-                        key={log._id} 
-                        className={`p-4 rounded-2xl border transition-colors ${
-                          darkMode ? 'bg-slate-950/50 border-slate-800' : 'bg-slate-50 border-slate-200'
+                        key={log._id}
+                        className={`p-5 rounded-[1.5rem] border transition-all relative overflow-hidden ${
+                          darkMode ? 'bg-neutral-950/60 border-emerald-500/20' : 'bg-emerald-50/30 border-emerald-100 shadow-sm'
                         }`}
                       >
-                        <div className="flex items-start justify-between mb-2">
-                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
-                            log.level === 'error' ? 'bg-rose-500/20 text-rose-500' : 
-                            log.level === 'warn' ? 'bg-amber-500/20 text-amber-500' : 
-                            'bg-emerald-500/20 text-emerald-500'
-                          }`}>
-                            {log.level}
-                          </span>
-                          <span className="text-[10px] text-slate-500 font-mono">
-                            {new Date(log.timestamp).toLocaleString()}
-                          </span>
+                        <div className={`absolute inset-0 pattern-dots opacity-[0.02] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                        <div className="relative z-10">
+                          <div className="flex items-start justify-between mb-2">
+                            <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg ${
+                              log.level === 'error' ? 'bg-rose-500/20 text-rose-400' : 
+                              log.level === 'warn' ? 'bg-amber-500/20 text-amber-400' : 
+                              'bg-emerald-500/20 text-emerald-400'
+                            }`}>
+                              {log.level}
+                            </span>
+                            <span className="text-[9px] text-slate-500 font-mono opacity-60">
+                              {new Date(log.timestamp).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <p className={`text-xs font-medium mb-1 leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>{log.message}</p>
+                          {log.details && (
+                            <pre className={`mt-2 text-[9px] p-3 rounded-xl overflow-x-auto font-mono ${
+                              darkMode ? 'bg-black/40 text-neutral-500' : 'bg-white border border-black/5 text-slate-500'
+                            }`}>
+                              {log.details}
+                            </pre>
+                          )}
                         </div>
-                        <p className={`text-sm font-bold mb-1 ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>{log.message}</p>
-                        {log.route && (
-                          <p className="text-[10px] font-mono text-slate-500 mb-2">Route: {log.route}</p>
-                        )}
-                        {log.details && (
-                          <pre className={`text-[10px] p-3 rounded-xl overflow-x-auto font-mono ${
-                            darkMode ? 'bg-slate-900 text-slate-400' : 'bg-slate-200 text-slate-600'
-                          }`}>
-                            {log.details}
-                          </pre>
-                        )}
                       </div>
                     ))
                   )}
@@ -1306,7 +1737,7 @@ export default function App() {
       </main>
 
       {/* Bottom Navigation */}
-      <nav className={`fixed bottom-6 left-2 right-2 sm:left-4 sm:right-4 backdrop-blur-xl border rounded-[2rem] p-2 flex items-center justify-around shadow-2xl z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
+      <nav className={`fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t px-4 pb-safe pt-2 flex items-center justify-around z-50 transition-colors duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
         <TabButton id="dashboard" icon={LayoutDashboard} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="keywords" icon={Hash} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="broadcast" icon={Send} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
@@ -1330,6 +1761,44 @@ export default function App() {
           >
             {notification.type === 'success' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
             <span className="font-bold text-sm">{notification.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deleteConfirmationId && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className={`w-full max-w-sm p-6 rounded-3xl shadow-2xl ${darkMode ? 'bg-neutral-900 border border-neutral-800' : 'bg-white'}`}
+            >
+              <h3 className={`text-lg font-black uppercase tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Confirm Delete</h3>
+              <p className={`text-sm mb-6 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                Are you sure you want to delete this keyword rule? This action cannot be undone.
+              </p>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setDeleteConfirmationId(null)}
+                  className={`flex-1 py-3 rounded-xl font-bold uppercase tracking-widest text-xs transition-colors ${darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDeleteKeyword}
+                  className="flex-1 py-3 rounded-xl font-bold uppercase tracking-widest text-xs bg-rose-500 text-white hover:bg-rose-600 transition-colors shadow-lg shadow-rose-500/20"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

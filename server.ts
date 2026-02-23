@@ -37,7 +37,8 @@ const KeywordSchema = new mongoose.Schema({
   photo: { type: String }, // Base64 string (legacy)
   message_link: { type: String }, // Legacy Telegram message link
   message_links: { type: [String], default: [] }, // Multiple Telegram message links
-  max_replies: { type: Number, default: 2 } // Max replies per topic per keyword rule
+  max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
+  match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -59,7 +60,15 @@ const ReplyHistorySchema = new mongoose.Schema({
 ReplyHistorySchema.index({ topic_id: 1, keyword_id: 1 }, { unique: true });
 const ReplyHistory = mongoose.model("ReplyHistory", ReplyHistorySchema);
 
+const PhotoReplyHistorySchema = new mongoose.Schema({
+  topic_id: { type: Number, required: true, unique: true },
+  count: { type: Number, default: 0 },
+  last_updated: { type: Date, default: Date.now }
+});
+const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
+
 // Helper functions
+const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const getSetting = async (key: string) => await Setting.findOne({ key });
 const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
 const getTopicCount = async () => await Topic.countDocuments();
@@ -87,6 +96,15 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
   }
 };
 
+// SSE Clients
+let sseClients: any[] = [];
+
+function sendSseEvent(type: string, data: any) {
+  sseClients.forEach(client => {
+    client.res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+  });
+}
+
 // Initialize default settings
 async function initSettings() {
   const autoReply = await getSetting("auto_reply");
@@ -95,6 +113,21 @@ async function initSettings() {
   const delay = await getSetting("delay_seconds");
   if (!delay) await setSetting("delay_seconds", "0");
   
+  const photoReplyEnabled = await getSetting("photo_reply_enabled");
+  if (!photoReplyEnabled) await setSetting("photo_reply_enabled", "false");
+
+  const photoReplyMessage = await getSetting("photo_reply_message");
+  if (!photoReplyMessage) await setSetting("photo_reply_message", "ok wait");
+
+  const photoReplyMax = await getSetting("photo_reply_max");
+  if (!photoReplyMax) await setSetting("photo_reply_max", "2");
+
+  const notificationSoundEnabled = await getSetting("notification_sound_enabled");
+  if (!notificationSoundEnabled) await setSetting("notification_sound_enabled", "true");
+
+  const notificationSoundType = await getSetting("notification_sound_type");
+  if (!notificationSoundType) await setSetting("notification_sound_type", "default");
+
   const apiId = await getSetting("api_id");
   if (!apiId || apiId.value === "0" || apiId.value === "") {
     await setSetting("api_id", "34669075");
@@ -184,6 +217,64 @@ async function startServer() {
 
       console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
+      // 0. Photo Handler
+      if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType.startsWith('image/')))) {
+        const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
+        
+        if (photoReplyEnabled) {
+          const topicId = message.replyTo?.replyToMsgId || message.id;
+          const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
+
+          // Check photo reply history for this topic
+          let history = await PhotoReplyHistory.findOne({ topic_id: topicId });
+          if (history && history.count >= photoReplyMax) {
+            console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
+            return;
+          }
+
+          const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+          console.log(`Photo detected. Sending auto-reply: "${photoReplyMessage}"`);
+          
+          try {
+            await client.sendMessage(message.peerId, {
+              message: photoReplyMessage,
+              replyTo: message.id,
+            });
+
+            // Update history
+            if (!history) {
+              await PhotoReplyHistory.create({ topic_id: topicId, count: 1 });
+            } else {
+              history.count += 1;
+              history.last_updated = new Date();
+              await history.save();
+            }
+
+            // Fetch Topic Name
+            let topicName = "Unknown Topic";
+            const replyToId = message.replyTo?.replyToMsgId;
+            if (replyToId) {
+              const topic = await Topic.findOne({ telegram_topic_id: replyToId });
+              if (topic && topic.name) {
+                topicName = topic.name;
+              }
+            }
+            
+            // Notify frontend
+            sendSseEvent('photo_received', {
+              message: `${topicName} sent a photo`,
+              topicName: topicName,
+              timestamp: new Date()
+            });
+            
+            await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT');
+          } catch (err: any) {
+            console.error("Failed to send photo auto-reply:", err);
+            await saveLog(`Failed to send photo auto-reply: ${err.message}`, 'error', 'USERBOT');
+          }
+        }
+      }
+
       // 1. Topic Creation Handler
       if (message.action instanceof Api.MessageActionTopicCreate) {
         const topicName = message.action.title;
@@ -210,6 +301,8 @@ async function startServer() {
         const text = message.message.toLowerCase().trim();
         const matches: { kw: any, index: number, matchedWord: string }[] = [];
         
+        console.log(`Checking keywords for: "${text}"`);
+        
         for (const kw of cachedKeywords) {
           // Collect all trigger words for this rule (legacy + new array)
           const triggerWords = [...(kw.keywords || [])];
@@ -222,20 +315,25 @@ async function startServer() {
             const wordLower = word.toLowerCase().trim();
             if (!wordLower) continue;
 
-            const regex = new RegExp(`\\b${wordLower}\\b`, 'gi');
+            const escapedWord = escapeRegExp(wordLower);
+            let regex: RegExp;
+            
+            if (kw.match_mode === 'partial') {
+              regex = new RegExp(escapedWord, 'gi');
+            } else {
+              // Unicode-friendly boundary check: matches if surrounded by non-letters/numbers or at start/end
+              regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+            }
+            
             let match;
             let found = false;
 
             // Regex match
             while ((match = regex.exec(text)) !== null) {
+              console.log(`Keyword "${wordLower}" matched via regex (${kw.match_mode || 'exact'}) at index ${match.index}`);
               matches.push({ kw, index: match.index, matchedWord: wordLower });
               found = true;
               break; // Only match this specific word once per message
-            }
-            
-            // Fallback includes match
-            if (!found && text.includes(wordLower)) {
-              matches.push({ kw, index: text.indexOf(wordLower), matchedWord: wordLower });
             }
           }
         }
@@ -406,6 +504,22 @@ async function startServer() {
     }
   });
 
+  // SSE Endpoint
+  app.get("/api/notifications", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const clientId = Date.now();
+    const newClient = { id: clientId, res };
+    sseClients.push(newClient);
+
+    req.on("close", () => {
+      sseClients = sseClients.filter(client => client.id !== clientId);
+    });
+  });
+
   // API Routes
   app.get("/api/stats", async (req, res) => {
     try {
@@ -414,6 +528,11 @@ async function startServer() {
       const autoReply = (await getSetting("auto_reply"))?.value || "";
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
+      const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+      const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
+      const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
+      const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -450,6 +569,11 @@ async function startServer() {
         autoReply,
         delaySeconds,
         isSystemPaused,
+        photoReplyEnabled,
+        photoReplyMessage,
+        photoReplyMax,
+        notificationSoundEnabled,
+        notificationSoundType,
         isUserBotConnected,
         apiId,
         apiHash,
@@ -464,14 +588,19 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
       if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
       if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
+      if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled));
+      if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage));
+      if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax));
+      if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
+      if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused });
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -491,7 +620,7 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
@@ -503,7 +632,8 @@ async function startServer() {
         photo, 
         message_link, 
         message_links,
-        max_replies: typeof max_replies === 'number' ? max_replies : 2
+        max_replies: typeof max_replies === 'number' ? max_replies : 2,
+        match_mode: match_mode || 'exact'
       };
       
       if (id) {
@@ -550,7 +680,15 @@ async function startServer() {
         for (const kw of keywords) {
           await Keyword.findOneAndUpdate(
             { keyword: kw.keyword },
-            { reply: kw.reply, photo: kw.photo, message_link: kw.message_link },
+            { 
+              keywords: kw.keywords || [kw.keyword],
+              reply: kw.reply, 
+              photo: kw.photo, 
+              message_link: kw.message_link,
+              message_links: kw.message_links || [],
+              max_replies: kw.max_replies || 2,
+              match_mode: kw.match_mode || 'exact'
+            },
             { upsert: true }
           );
         }
