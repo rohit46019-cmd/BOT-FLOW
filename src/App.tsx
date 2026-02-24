@@ -45,6 +45,9 @@ interface Stats {
   apiId: string;
   apiHash: string;
   defaultPhone: string;
+  topicIcon: string;
+  topicRenameKeywords: string;
+  topicRenameMatchMode: 'exact' | 'partial';
 }
 
 interface Keyword {
@@ -143,6 +146,9 @@ export default function App() {
   const [photoReplyEnabled, setPhotoReplyEnabled] = useState(false);
   const [photoReplyMessage, setPhotoReplyMessage] = useState("");
   const [photoReplyMax, setPhotoReplyMax] = useState<number | string>(2);
+  const [topicIcon, setTopicIcon] = useState("🛑");
+  const [topicRenameKeywords, setTopicRenameKeywords] = useState("");
+  const [topicRenameMatchMode, setTopicRenameMatchMode] = useState<'exact' | 'partial'>('exact');
   const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
   const [notificationSoundType, setNotificationSoundType] = useState("default");
   const [broadcastMessage, setBroadcastMessage] = useState("");
@@ -416,6 +422,9 @@ export default function App() {
       setPhotoReplyEnabled(data.photoReplyEnabled);
       setPhotoReplyMessage(data.photoReplyMessage);
       setPhotoReplyMax(data.photoReplyMax || 2);
+      setTopicIcon(data.topicIcon || "🛑");
+      setTopicRenameKeywords(data.topicRenameKeywords || "");
+      setTopicRenameMatchMode(data.topicRenameMatchMode || "exact");
       setNotificationSoundEnabled(data.notificationSoundEnabled);
       setNotificationSoundType(data.notificationSoundType || "default");
       if (!phone) setPhone(data.defaultPhone);
@@ -546,7 +555,10 @@ export default function App() {
           photoReplyMessage,
           photoReplyMax: Number(photoReplyMax) || 2,
           notificationSoundEnabled,
-          notificationSoundType
+          notificationSoundType,
+          topicIcon,
+          topicRenameKeywords,
+          topicRenameMatchMode
         }),
       });
       
@@ -569,32 +581,58 @@ export default function App() {
   const handleAddKeyword = async () => {
     const validKeywords = newKeywords.filter(k => k.trim().length > 0);
     if (validKeywords.length === 0 || (!newReply && newMessageLinks.every(l => !l))) return;
+
+    // Capture current values for the API call
+    const payload = { 
+      id: editingKeywordId,
+      keyword: validKeywords[0], // Legacy support
+      keywords: validKeywords,
+      reply: newReply, 
+      message_links: newMessageLinks.filter(l => l.trim().length > 0),
+      max_replies: Number(newMaxReplies) || 2,
+      match_mode: newMatchMode
+    };
+
+    // Optimistic UI updates
+    showNotification('success', editingKeywordId ? 'Keyword updated!' : 'Keyword added!');
+    
+    // Reset form immediately
+    setNewKeywords([""]);
+    setNewReply("");
+    setNewMessageLinks([""]);
+    setNewMaxReplies(2);
+    setNewMatchMode('exact');
+    setEditingKeywordId(null);
+
+    // If we are editing, we might want to update the local list immediately to reflect changes
+    // If adding, we can append to the list
+    if (editingKeywordId) {
+      setKeywords(prev => prev.map(k => k._id === editingKeywordId ? { ...k, ...payload, _id: k._id } as Keyword : k));
+    } else {
+      // For new items, we don't have an ID yet, so we can't easily add to the list without causing key issues or duplicates when we refetch.
+      // But we can just leave the list as is, and let the background fetch update it.
+      // The user sees the form cleared and "Success", which feels instant.
+    }
+
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          id: editingKeywordId,
-          keyword: validKeywords[0], // Legacy support
-          keywords: validKeywords,
-          reply: newReply, 
-          message_links: newMessageLinks.filter(l => l.trim().length > 0),
-          max_replies: Number(newMaxReplies) || 2,
-          match_mode: newMatchMode
-        }),
+        body: JSON.stringify(payload),
       });
+      
       if (res.ok) {
-        showNotification('success', editingKeywordId ? 'Keyword updated!' : 'Keyword added!');
-        setNewKeywords([""]);
-        setNewReply("");
-        setNewMessageLinks([""]);
-        setNewMaxReplies(2);
-        setNewMatchMode('exact');
-        setEditingKeywordId(null);
+        // Refresh list to get the real ID and ensure consistency
         fetchKeywords();
+      } else {
+        // If failed, we should probably notify the user. 
+        // Since we already cleared the form, this is a bit awkward, but better than blocking.
+        const data = await res.json();
+        showNotification('error', data?.error || 'Failed to save keyword on server');
+        // Optionally restore the form data here if needed, but for now just erroring is enough.
       }
     } catch (err) {
-      showNotification('error', editingKeywordId ? 'Failed to update keyword' : 'Failed to add keyword');
+      showNotification('error', 'Connection error: Failed to save keyword');
     }
   };
 
@@ -1137,6 +1175,52 @@ export default function App() {
                             rows={2}
                             className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
                           />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Topic Icon (Appended twice)</label>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="text"
+                              value={topicIcon}
+                              onChange={(e) => setTopicIcon(e.target.value)}
+                              placeholder="🛑"
+                              className={`w-1/2 p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
+                            />
+                            <div className={`flex-1 p-3 rounded-xl border text-sm ${darkMode ? 'bg-neutral-900 border-neutral-800 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                              Preview: Name {topicIcon}{topicIcon}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Topic Rename Trigger Keywords</label>
+                          <div className="flex flex-col space-y-2">
+                            <input
+                              type="text"
+                              value={topicRenameKeywords}
+                              onChange={(e) => setTopicRenameKeywords(e.target.value)}
+                              placeholder="e.g. done, completed, finished (leave empty for all photos)"
+                              className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
+                            />
+                            <div className="flex items-center space-x-2">
+                              <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Match Mode:</span>
+                              <div className="flex bg-slate-100 dark:bg-neutral-900 rounded-lg p-1">
+                                <button
+                                  onClick={() => setTopicRenameMatchMode('exact')}
+                                  className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${topicRenameMatchMode === 'exact' ? (darkMode ? 'bg-amber-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                >
+                                  Exact
+                                </button>
+                                <button
+                                  onClick={() => setTopicRenameMatchMode('partial')}
+                                  className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${topicRenameMatchMode === 'partial' ? (darkMode ? 'bg-amber-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                >
+                                  Partial
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
                         <div className="space-y-2">

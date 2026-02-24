@@ -96,6 +96,154 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
   }
 };
 
+// Helper function for topic renaming
+const handleTopicRenaming = async (client: TelegramClient, message: any, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
+  const replyToId = message.replyTo?.replyToMsgId;
+  if (!replyToId) return;
+
+  // Fetch Topic Name
+  let topicName = "Unknown Topic";
+  
+  // 1. Try DB
+  const topic = await Topic.findOne({ telegram_topic_id: replyToId });
+  if (topic && topic.name) {
+    topicName = topic.name;
+  } 
+  
+  // 2. Try fetching the topic creation message
+  if (topicName === "Unknown Topic") {
+    try {
+      const messages = await client.getMessages(message.peerId, { ids: [replyToId] });
+      if (messages && messages.length > 0) {
+        const topicMsg = messages[0];
+        if (topicMsg.action && topicMsg.action instanceof Api.MessageActionTopicCreate) {
+          topicName = topicMsg.action.title;
+          await logTopic(replyToId, topicName);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch topic info from message", e);
+    }
+  }
+
+  // 3. Try fetching from Forum Topics list (most reliable for existing topics)
+  if (topicName === "Unknown Topic") {
+    try {
+      console.log(`Fetching forum topics to find name for ${replyToId}...`);
+      const result = await client.invoke(
+        new Api.channels.GetForumTopics({
+          channel: await client.getInputEntity(message.peerId),
+          q: "", // Empty query
+          offsetDate: 0,
+          offsetId: 0,
+          offsetTopic: 0,
+          limit: 100
+        })
+      );
+      
+      if (result && result.topics) {
+        // Cache all topics found to avoid future lookups
+        for (const t of result.topics) {
+          if (t instanceof Api.ForumTopic && t.title) {
+            // Update DB with found topic
+            await Topic.findOneAndUpdate(
+              { telegram_topic_id: t.id },
+              { name: t.title },
+              { upsert: true }
+            );
+            
+            if (t.id === replyToId) {
+              topicName = t.title;
+              console.log(`Found topic name via GetForumTopics: ${topicName}`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch topic info from GetForumTopics", e);
+    }
+  }
+
+  // Rename Logic
+  try {
+    let shouldRename = true;
+    
+    // If keywords are set, check if message matches (UNLESS bypassed)
+    if (!bypassKeywordCheck && renameKeywordsStr.trim()) {
+      const keywords = renameKeywordsStr.split(",").map(k => k.trim()).filter(k => k);
+      if (keywords.length > 0) {
+        // Check both message (caption) and text (if different)
+        const text = (message.message || message.text || "").toLowerCase();
+        let matchFound = false;
+        
+        for (const kw of keywords) {
+          const kwLower = kw.toLowerCase();
+          if (renameMatchMode === 'partial') {
+            if (text.includes(kwLower)) {
+              matchFound = true;
+              break;
+            }
+          } else {
+            // Exact match (word boundary)
+            const regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapeRegExp(kwLower)}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+            if (regex.test(text)) {
+              matchFound = true;
+              break;
+            }
+          }
+        }
+        
+        if (!matchFound) {
+          shouldRename = false;
+          console.log(`Topic rename skipped: Message "${text}" did not match keywords [${keywords.join(", ")}] with mode ${renameMatchMode}`);
+        }
+      }
+    }
+
+    if (topicName === "Unknown Topic") {
+       console.log(`Skipping rename for topic ${replyToId}: Name is unknown`);
+       shouldRename = false;
+    }
+
+    topicName = topicName.trim();
+    const suffix = `${topicIcon}${topicIcon}`;
+
+    if (shouldRename && !topicName.endsWith(suffix)) {
+      let newTopicName = `${topicName} ${suffix}`;
+      // Telegram limit is 128 chars
+      if (newTopicName.length > 128) {
+          newTopicName = newTopicName.substring(0, 128);
+      }
+
+      console.log(`Renaming topic ${replyToId} to "${newTopicName}"`);
+      
+      await client.invoke(
+        new Api.channels.EditForumTopic({
+          channel: await client.getInputEntity(message.peerId),
+          topicId: replyToId,
+          title: newTopicName
+        })
+      );
+      
+      // Update DB
+      await Topic.findOneAndUpdate(
+        { telegram_topic_id: replyToId },
+        { name: newTopicName },
+        { upsert: true }
+      );
+      
+      await saveLog(`Renamed topic ${replyToId} to "${newTopicName}"`, 'info', 'USERBOT');
+    } else if (shouldRename && topicName.endsWith(suffix)) {
+      console.log(`Topic ${replyToId} already has suffix "${suffix}". Skipping.`);
+    }
+  } catch (renameErr: any) {
+    console.error("Failed to rename topic:", renameErr);
+    await saveLog(`Failed to rename topic ${replyToId}: ${renameErr.message}`, 'error', 'USERBOT');
+  }
+  
+  return topicName;
+};
+
 // SSE Clients
 let sseClients: any[] = [];
 
@@ -127,6 +275,9 @@ async function initSettings() {
 
   const notificationSoundType = await getSetting("notification_sound_type");
   if (!notificationSoundType) await setSetting("notification_sound_type", "default");
+
+  const topicIcon = await getSetting("topic_icon");
+  if (!topicIcon) await setSetting("topic_icon", "✅");
 
   const apiId = await getSetting("api_id");
   if (!apiId || apiId.value === "0" || apiId.value === "") {
@@ -250,15 +401,13 @@ async function startServer() {
               await history.save();
             }
 
-            // Fetch Topic Name
-            let topicName = "Unknown Topic";
-            const replyToId = message.replyTo?.replyToMsgId;
-            if (replyToId) {
-              const topic = await Topic.findOne({ telegram_topic_id: replyToId });
-              if (topic && topic.name) {
-                topicName = topic.name;
-              }
-            }
+            // Fetch Topic Name & Rename if needed
+            const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+            const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
+            const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+
+            // Pass true to bypass keyword check for photos
+            const topicName = await handleTopicRenaming(client, message, topicIcon, renameKeywordsStr, renameMatchMode, true);
             
             // Notify frontend
             sendSseEvent('photo_received', {
@@ -365,8 +514,26 @@ async function startServer() {
               if (topicId) {
                 const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
                 const maxReplies = kw.max_replies || 2;
-                if (history && history.count >= maxReplies) {
-                  console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${history.count}/${maxReplies}).`);
+                
+                let currentCount = 0;
+                if (history) {
+                  const lastUpdated = new Date(history.last_updated);
+                  const today = new Date();
+                  
+                  // Check if same day in IST (Indian Standard Time)
+                  const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+                  const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+                  
+                  if (lastUpdatedIST === todayIST) {
+                    currentCount = history.count;
+                  } else {
+                    // It's a new day, count is effectively 0
+                    currentCount = 0;
+                  }
+                }
+
+                if (currentCount >= maxReplies) {
+                  console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${currentCount}/${maxReplies}).`);
                   continue;
                 }
               }
@@ -466,14 +633,51 @@ async function startServer() {
               
               // Update reply history count
               if (topicId) {
-                await ReplyHistory.findOneAndUpdate(
-                  { topic_id: topicId, keyword_id: kw._id },
-                  { $inc: { count: 1 }, last_updated: new Date() },
-                  { upsert: true }
-                );
+                const today = new Date();
+                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
+                let isSameDay = false;
+                
+                if (history) {
+                  const lastUpdated = new Date(history.last_updated);
+                  const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+                  const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+                  
+                  if (lastUpdatedIST === todayIST) {
+                    isSameDay = true;
+                  }
+                }
+
+                if (history && isSameDay) {
+                   await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
+                } else {
+                   // Upsert with set count 1 (resets if exists but old, creates if new)
+                   await ReplyHistory.findOneAndUpdate(
+                      { topic_id: topicId, keyword_id: kw._id },
+                      { count: 1, last_updated: today },
+                      { upsert: true }
+                   );
+                }
               }
               
               await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
+
+              // Trigger Topic Renaming for Keyword Match
+              try {
+                const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+                const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
+                const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+                
+                // For keyword matches, we also bypass the check because the fact that we are here means a keyword matched!
+                // Wait, "topic_rename_keywords" might be different from "auto_reply_keywords".
+                // If the user wants rename ONLY on specific keywords, we should NOT bypass.
+                // But the user said "Jb koi photo ya keyword send Karega tab vote use topic mein jo maine icon set Kiya Hai vah icon rename Karega"
+                // This implies that if an Auto-Reply Keyword is triggered, it SHOULD rename.
+                // So we should bypass the "topic_rename_keywords" check here too, effectively treating the Auto-Reply keyword as a valid trigger.
+                
+                await handleTopicRenaming(client, message, topicIcon, renameKeywordsStr, renameMatchMode, true);
+              } catch (renameErr) {
+                console.error("Topic rename on keyword match failed", renameErr);
+              }
               
               // Add a small delay between replies to avoid spamming/rate limits
               if (matches.length > 1) {
@@ -533,6 +737,9 @@ async function startServer() {
       const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
       const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
       const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
+      const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+      const topicRenameKeywords = (await getSetting("topic_rename_keywords"))?.value || "";
+      const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -574,6 +781,9 @@ async function startServer() {
         photoReplyMax,
         notificationSoundEnabled,
         notificationSoundType,
+        topicIcon,
+        topicRenameKeywords,
+        topicRenameMatchMode,
         isUserBotConnected,
         apiId,
         apiHash,
@@ -588,7 +798,7 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
@@ -599,8 +809,11 @@ async function startServer() {
       if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax));
       if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
       if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
+      if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon));
+      if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords));
+      if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType });
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -644,7 +857,10 @@ async function startServer() {
         // Or just create new. Let's just create/update.
         await Keyword.create(updateData);
       }
-      await refreshKeywordCache();
+      
+      // Refresh cache in background to speed up response
+      refreshKeywordCache().catch(err => console.error("Background cache refresh failed:", err));
+      
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/keywords] ${err.message}` });
@@ -654,7 +870,7 @@ async function startServer() {
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
       await Keyword.findByIdAndDelete(req.params.id);
-      await refreshKeywordCache();
+      refreshKeywordCache().catch(err => console.error("Background cache refresh failed:", err));
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[DELETE /api/keywords] ${err.message}` });
