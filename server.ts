@@ -660,24 +660,6 @@ async function startServer() {
               }
               
               await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
-
-              // Trigger Topic Renaming for Keyword Match
-              try {
-                const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
-                const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
-                const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
-                
-                // For keyword matches, we also bypass the check because the fact that we are here means a keyword matched!
-                // Wait, "topic_rename_keywords" might be different from "auto_reply_keywords".
-                // If the user wants rename ONLY on specific keywords, we should NOT bypass.
-                // But the user said "Jb koi photo ya keyword send Karega tab vote use topic mein jo maine icon set Kiya Hai vah icon rename Karega"
-                // This implies that if an Auto-Reply Keyword is triggered, it SHOULD rename.
-                // So we should bypass the "topic_rename_keywords" check here too, effectively treating the Auto-Reply keyword as a valid trigger.
-                
-                await handleTopicRenaming(client, message, topicIcon, renameKeywordsStr, renameMatchMode, true);
-              } catch (renameErr) {
-                console.error("Topic rename on keyword match failed", renameErr);
-              }
               
               // Add a small delay between replies to avoid spamming/rate limits
               if (matches.length > 1) {
