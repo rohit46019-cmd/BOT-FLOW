@@ -21,13 +21,22 @@ import {
   Moon,
   Image as ImageIcon,
   X,
+  Search,
   Folder,
   ArrowLeft,
+  ArrowUp,
+  ArrowDown,
   FileText,
   Download,
   Upload,
   Play,
-  Pause
+  Pause,
+  ShieldAlert,
+  ShieldCheck,
+  Link,
+  RotateCcw,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 
 interface Stats {
@@ -48,6 +57,13 @@ interface Stats {
   topicIcon: string;
   topicRenameKeywords: string;
   topicRenameMatchMode: 'exact' | 'partial';
+  autoResetKeywords: boolean;
+  autoBlockKeywords: string; // JSON string
+}
+
+interface AutoBlockKeyword {
+  keyword: string;
+  matchMode: 'exact' | 'partial';
 }
 
 interface Keyword {
@@ -151,6 +167,9 @@ export default function App() {
   const [topicRenameMatchMode, setTopicRenameMatchMode] = useState<'exact' | 'partial'>('exact');
   const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
   const [notificationSoundType, setNotificationSoundType] = useState("default");
+  const [autoResetKeywords, setAutoResetKeywords] = useState(true);
+  const [autoBlockKeywords, setAutoBlockKeywords] = useState<AutoBlockKeyword[]>([]);
+  const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(true);
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
@@ -159,11 +178,16 @@ export default function App() {
   const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(2);
+  const [keywordSearch, setKeywordSearch] = useState("");
+  const [blockedTopics, setBlockedTopics] = useState<any[]>([]);
+  const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
+  const [blockedTopicSearch, setBlockedTopicSearch] = useState("");
+  const [blockingTopic, setBlockingTopic] = useState(false);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
-  const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'warn', message: string } | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [direction, setDirection] = useState(0);
   const [touchStart, setTouchStart] = useState({ x: 0, y: 0 });
@@ -171,14 +195,87 @@ export default function App() {
   const [refreshingLogs, setRefreshingLogs] = useState(false);
   const [editingKeywordId, setEditingKeywordId] = useState<string | null>(null);
   const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
+  const keywordsTopRef = useRef<HTMLDivElement>(null);
+  const keywordsBottomRef = useRef<HTMLDivElement>(null);
+  const castTopRef = useRef<HTMLDivElement>(null);
+  const castBottomRef = useRef<HTMLDivElement>(null);
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem("darkMode");
     return saved !== null ? JSON.parse(saved) : true;
   });
 
-  const showNotification = (type: 'success' | 'error', message: string, duration = 3000) => {
+  const scrollToKeywordsTop = () => {
+    keywordsTopRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const scrollToKeywordsBottom = () => {
+    keywordsBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const scrollToCastTop = () => {
+    castTopRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const scrollToCastBottom = () => {
+    castBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const fetchBlockedTopics = React.useCallback(async () => {
+    try {
+      const response = await fetch('/api/blocked-topics');
+      const data = await response.json();
+      setBlockedTopics(data);
+    } catch (err) {
+      console.error("Failed to fetch blocked topics:", err);
+    }
+  }, []);
+
+  const handleBlockTopic = async () => {
+    if (!newBlockedTopicLink) return;
+    setBlockingTopic(true);
+    try {
+      const response = await fetch('/api/blocked-topics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: newBlockedTopicLink }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        if (data.action === 'unblocked') {
+          showNotification('success', 'Topic unblocked successfully');
+        } else {
+          showNotification('success', `Topic "${data.name}" blocked successfully`);
+        }
+        setNewBlockedTopicLink("");
+        fetchBlockedTopics();
+      } else {
+        showNotification('error', data.error || 'Failed to process request');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to process request');
+    } finally {
+      setBlockingTopic(false);
+    }
+  };
+
+  const handleUnblockTopic = async (id: string, name?: string) => {
+    if (!confirm(`Are you sure you want to unblock ${name || 'this topic'}?`)) return;
+    try {
+      const response = await fetch(`/api/blocked-topics/${id}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        showNotification('success', 'Topic unblocked successfully');
+        fetchBlockedTopics();
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to unblock topic');
+    }
+  };
+
+  const showNotification = (type: 'success' | 'error' | 'warn', message: string, duration = 3000) => {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), type === 'error' ? 6000 : duration);
+    setTimeout(() => setNotification(null), (type === 'error' || type === 'warn') ? 6000 : duration);
   };
 
   // Notification Sound
@@ -385,6 +482,13 @@ export default function App() {
               }
             }
           }
+        } else if (parsed.type === 'topic_blocked') {
+          const message = parsed.data.message;
+          showNotification('warn', message);
+          if (notificationSoundEnabled) {
+            playNotificationSound();
+          }
+          fetchBlockedTopics();
         }
       } catch (e) {
         console.error("SSE Parse Error", e);
@@ -395,7 +499,7 @@ export default function App() {
       console.log("Closing SSE connection");
       eventSource.close();
     };
-  }, [notificationSoundEnabled, notificationSoundType]);
+  }, [notificationSoundEnabled, notificationSoundType, fetchBlockedTopics]);
 
   // Auth State
   const [phone, setPhone] = useState("");
@@ -425,6 +529,18 @@ export default function App() {
       setTopicIcon(data.topicIcon || "🛑");
       setTopicRenameKeywords(data.topicRenameKeywords || "");
       setTopicRenameMatchMode(data.topicRenameMatchMode || "exact");
+      setAutoResetKeywords(data.autoResetKeywords ?? true);
+      try {
+        const parsed = JSON.parse(data.autoBlockKeywords || "[]");
+        setAutoBlockKeywords(Array.isArray(parsed) ? parsed : []);
+      } catch (e) {
+        // Fallback for old comma format
+        if (data.autoBlockKeywords) {
+          setAutoBlockKeywords(data.autoBlockKeywords.split(",").map((k: string) => ({ keyword: k.trim(), matchMode: 'partial' })).filter((k: any) => k.keyword));
+        } else {
+          setAutoBlockKeywords([]);
+        }
+      }
       setNotificationSoundEnabled(data.notificationSoundEnabled);
       setNotificationSoundType(data.notificationSoundType || "default");
       if (!phone) setPhone(data.defaultPhone);
@@ -490,6 +606,7 @@ export default function App() {
     fetchStats();
     fetchKeywords();
     fetchLogs();
+    fetchBlockedTopics();
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
@@ -538,6 +655,65 @@ export default function App() {
       setStats({ ...stats, isSystemPaused: !newPausedState });
       showNotification('error', 'Connection error');
     }
+  };
+
+  const handleToggleAutoReset = async () => {
+    const newState = !autoResetKeywords;
+    setAutoResetKeywords(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoResetKeywords: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'Auto Reset Enabled' : 'Auto Reset Disabled');
+        fetchStats();
+      } else {
+        setAutoResetKeywords(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setAutoResetKeywords(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleUpdateAutoBlockKeywords = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoBlockKeywords: JSON.stringify(autoBlockKeywords) }),
+      });
+      if (res.ok) {
+        showNotification('success', 'Auto-block keywords updated');
+        fetchStats();
+      } else {
+        showNotification('error', 'Failed to update keywords');
+      }
+    } catch (err) {
+      showNotification('error', 'Connection error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addAutoBlockKeyword = () => {
+    setAutoBlockKeywords([{ keyword: "", matchMode: 'partial' }, ...autoBlockKeywords]);
+  };
+
+  const removeAutoBlockKeyword = (index: number) => {
+    const newList = [...autoBlockKeywords];
+    newList.splice(index, 1);
+    setAutoBlockKeywords(newList);
+  };
+
+  const updateAutoBlockKeyword = (index: number, field: keyof AutoBlockKeyword, value: string) => {
+    const newList = [...autoBlockKeywords];
+    newList[index] = { ...newList[index], [field]: value };
+    setAutoBlockKeywords(newList);
   };
 
   const handleUpdateSettings = async () => {
@@ -1345,7 +1521,7 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}>
+              <div ref={keywordsTopRef} className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}>
                 <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
                 <div className="relative z-10 space-y-4 pointer-events-auto">
                   <div className="flex items-center justify-between">
@@ -1487,65 +1663,131 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="space-y-3">
-                {keywords.map(kw => (
-                  <motion.div 
-                    layout
-                    key={kw._id}
-                    whileHover={{ scale: 1.01, y: -2 }}
-                    className={`p-6 rounded-[2rem] border transition-all duration-500 flex items-start justify-between relative overflow-hidden ${darkMode ? 'bg-emerald-950/20 border-emerald-500/20 backdrop-blur-sm' : 'bg-emerald-50/50 border-emerald-100 shadow-sm hover:shadow-md'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-dots opacity-[0.03] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
-                    <div className="relative z-10 flex-1 min-w-0">
-                      <div className="flex flex-wrap gap-1.5 mb-3">
-                        {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
-                          <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
-                            {k}
-                          </span>
-                        ))}
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <p className={`text-sm font-medium leading-relaxed ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                          {kw.reply || <span className="italic opacity-40">No reply message</span>}
-                        </p>
+              {keywords.length > 0 && (
+                <div className="space-y-4">
+                  <div className="relative">
+                    <div className={`absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                      <Search size={18} />
+                    </div>
+                    <input
+                      type="text"
+                      value={keywordSearch}
+                      onChange={(e) => setKeywordSearch(e.target.value)}
+                      placeholder="Search keywords or replies..."
+                      className={`w-full pl-11 pr-4 py-3.5 border rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
+                    />
+                    {keywordSearch && (
+                      <button 
+                        onClick={() => setKeywordSearch("")}
+                        className={`absolute inset-y-0 right-0 pr-4 flex items-center ${darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-3">
+                    {keywords.filter(kw => {
+                      const searchLower = keywordSearch.toLowerCase();
+                      const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
+                      const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
+                      const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
+                      return matchesKeyword || matchesReply;
+                    }).map(kw => (
+                      <motion.div 
+                      layout
+                      key={kw._id}
+                      whileHover={{ scale: 1.01, y: -2 }}
+                      className={`p-6 rounded-[2rem] border transition-all duration-500 flex items-start justify-between relative overflow-hidden ${darkMode ? 'bg-emerald-950/20 border-emerald-500/20 backdrop-blur-sm' : 'bg-emerald-50/50 border-emerald-100 shadow-sm hover:shadow-md'}`}
+                    >
+                      <div className={`absolute inset-0 pattern-dots opacity-[0.03] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                      <div className="relative z-10 flex-1 min-w-0">
+                        <div className="flex flex-wrap gap-1.5 mb-3">
+                          {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
+                            <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
+                              {k}
+                            </span>
+                          ))}
+                        </div>
                         
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                            <RefreshCw size={10} />
-                            <span>Max: {kw.max_replies || 2}</span>
-                          </div>
-                          <div className={`flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest ${kw.match_mode === 'partial' ? 'text-orange-400' : 'text-blue-400'}`}>
-                            <Hash size={10} />
-                            <span>{kw.match_mode || 'exact'}</span>
-                          </div>
-                          {((kw.message_links && kw.message_links.length > 0) || kw.message_link) && (
-                            <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-pink-400">
-                              <FileText size={10} />
-                              <span>{kw.message_links?.length || 1} Forward</span>
+                        <div className="space-y-2">
+                          <p className={`text-sm font-medium leading-relaxed ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                            {kw.reply || <span className="italic opacity-40">No reply message</span>}
+                          </p>
+                          
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                              <RefreshCw size={10} />
+                              <span>Max: {kw.max_replies || 2}</span>
                             </div>
-                          )}
+                            <div className={`flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest ${kw.match_mode === 'partial' ? 'text-orange-400' : 'text-blue-400'}`}>
+                              <Hash size={10} />
+                              <span>{kw.match_mode || 'exact'}</span>
+                            </div>
+                            {((kw.message_links && kw.message_links.length > 0) || kw.message_link) && (
+                              <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-pink-400">
+                                <FileText size={10} />
+                                <span>{kw.message_links?.length || 1} Forward</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
+                      
+                      <div className="flex flex-col space-y-2 ml-4">
+                        <button 
+                          onClick={() => handleEditKeyword(kw)}
+                          className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-emerald-400' : 'bg-slate-50 text-slate-400 hover:text-emerald-600'}`}
+                        >
+                          <Settings size={16} />
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteKeyword(kw._id)}
+                          className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-rose-400' : 'bg-slate-50 text-slate-400 hover:text-rose-600'}`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+
+                  {keywords.filter(kw => {
+                    const searchLower = keywordSearch.toLowerCase();
+                    const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
+                    const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
+                    const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
+                    return matchesKeyword || matchesReply;
+                  }).length === 0 && keywordSearch && (
+                    <div className={`text-center py-12 rounded-[2rem] border border-dashed ${darkMode ? 'border-white/10 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
+                      <Search size={32} className="mx-auto mb-3 opacity-20" />
+                      <p className="text-sm font-medium">No keywords found matching "{keywordSearch}"</p>
                     </div>
-                    
-                    <div className="flex flex-col space-y-2 ml-4">
-                      <button 
-                        onClick={() => handleEditKeyword(kw)}
-                        className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-emerald-400' : 'bg-slate-50 text-slate-400 hover:text-emerald-600'}`}
-                      >
-                        <Settings size={16} />
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteKeyword(kw._id)}
-                        className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-neutral-800 text-slate-400 hover:text-rose-400' : 'bg-slate-50 text-slate-400 hover:text-rose-600'}`}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </motion.div>
-                ))}
+                  )}
+                </div>
+                <div ref={keywordsBottomRef} />
               </div>
+              )}
+
+              {keywords.length > 5 && (
+                <div className="fixed bottom-24 left-4 flex flex-col space-y-2 z-40">
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={scrollToKeywordsTop}
+                    className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-blue-400' : 'bg-white border-slate-200 text-blue-600'}`}
+                  >
+                    <ArrowUp size={20} />
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={scrollToKeywordsBottom}
+                    className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-blue-400' : 'bg-white border-slate-200 text-blue-600'}`}
+                  >
+                    <ArrowDown size={20} />
+                  </motion.button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -1559,6 +1801,7 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
+              <div ref={castTopRef} />
               <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-purple relative overflow-hidden group ${darkMode ? 'bg-purple-950/40 border-purple-500/30' : 'bg-purple-50 border-purple-200 shadow-xl shadow-purple-500/10'}`}>
                 <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
                 <div className="relative z-10 space-y-3 pointer-events-auto">
@@ -1579,6 +1822,232 @@ export default function App() {
                 >
                   <Send size={16} />
                   <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
+                </motion.button>
+              </div>
+
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}>
+                <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                <div className="relative z-10 space-y-4 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Keyword Reset Settings</label>
+                    <RotateCcw size={16} className="text-amber-500" />
+                  </div>
+                  
+                  <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
+                    <div className="space-y-1">
+                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset keyword limits daily at 12:00 AM IST</p>
+                    </div>
+                    <button
+                      onClick={handleToggleAutoReset}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoResetKeywords ? 'translate-x-6' : 'translate-x-1'}`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
+                <div className="relative z-10 space-y-4 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Auto-Block Keywords</label>
+                      <ShieldAlert size={16} className="text-rose-500" />
+                    </div>
+                    <button
+                      onClick={() => setAutoBlockKeywordsExpanded(!autoBlockKeywordsExpanded)}
+                      className={`p-2 rounded-xl transition-all ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-black/5 text-slate-500'}`}
+                    >
+                      {autoBlockKeywordsExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <div className="flex flex-col space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <motion.button
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={addAutoBlockKeyword}
+                          className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500' : 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600 shadow-emerald-500/20'}`}
+                        >
+                          <Plus size={14} />
+                          <span>Add Keyword</span>
+                        </motion.button>
+
+                        <motion.button
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={handleUpdateAutoBlockKeywords}
+                          disabled={saving}
+                          className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 flex items-center justify-center space-x-2 shadow-lg ${saving ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                        >
+                          {saving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                          <span>Save Rules</span>
+                        </motion.button>
+                      </div>
+                    </div>
+
+                    <AnimatePresence>
+                      {autoBlockKeywordsExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="space-y-4 overflow-hidden"
+                        >
+                          <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>If these keywords are found in a topic, the bot will automatically block it.</p>
+                          
+                          <div className="space-y-3">
+                            {autoBlockKeywords.map((item, index) => (
+                              <div key={index} className={`p-4 rounded-2xl border space-y-3 ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                <div className="flex items-center space-x-2 w-full">
+                                  <input
+                                    type="text"
+                                    value={item.keyword}
+                                    onChange={(e) => updateAutoBlockKeyword(index, 'keyword', e.target.value)}
+                                    placeholder="Keyword..."
+                                    className={`flex-1 min-w-0 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition-all ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                                  />
+                                  <button
+                                    onClick={() => removeAutoBlockKeyword(index)}
+                                    className={`flex-shrink-0 p-2.5 rounded-xl transition-all ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-600 hover:bg-rose-200'}`}
+                                    title="Delete Keyword"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                                
+                                <div className="flex items-center space-x-2">
+                                  <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Match:</span>
+                                  <div className="flex bg-slate-100 dark:bg-neutral-900 rounded-lg p-1">
+                                    <button
+                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'exact')}
+                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${item.matchMode === 'exact' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                    >
+                                      Exact
+                                    </button>
+                                    <button
+                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'partial')}
+                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${item.matchMode === 'partial' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                    >
+                                      Partial
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
+                <div className="relative z-10 space-y-4 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Block Topics (No Auto-Reply)</label>
+                    <ShieldAlert size={16} className="text-rose-500" />
+                  </div>
+                  
+                  <div className="flex space-x-2">
+                    <div className="relative flex-1">
+                      <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                        <Link size={14} />
+                      </div>
+                      <input
+                        type="text"
+                        value={newBlockedTopicLink}
+                        onChange={(e) => setNewBlockedTopicLink(e.target.value)}
+                        placeholder="Paste topic link here..."
+                        className={`w-full pl-9 p-3 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition-all ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                      />
+                    </div>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleBlockTopic}
+                      disabled={blockingTopic || !newBlockedTopicLink.trim()}
+                      className={`px-6 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center space-x-2 ${blockingTopic || !newBlockedTopicLink.trim() ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                    >
+                      {blockingTopic ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
+                      <span>{blockedTopics.some(t => t.link === newBlockedTopicLink) ? 'Unblock' : 'Block'}</span>
+                    </motion.button>
+                  </div>
+
+                  {blockedTopics.length > 0 && (
+                    <div className="space-y-4 pt-2">
+                      <div className="relative">
+                        <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                          <Search size={14} />
+                        </div>
+                        <input
+                          type="text"
+                          value={blockedTopicSearch}
+                          onChange={(e) => setBlockedTopicSearch(e.target.value)}
+                          placeholder="Search blocked topics..."
+                          className={`w-full pl-9 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-[10px] transition-all ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Blocked Topics List</label>
+                        <div className="grid gap-2 max-h-60 overflow-y-auto pr-2 no-scrollbar">
+                          {blockedTopics.filter(t => 
+                            t.name?.toLowerCase().includes(blockedTopicSearch.toLowerCase()) || 
+                            t.telegram_topic_id.toString().includes(blockedTopicSearch) ||
+                            t.link?.toLowerCase().includes(blockedTopicSearch.toLowerCase())
+                          ).map((topic) => (
+                            <div key={topic._id} className={`flex items-center justify-between p-3 rounded-xl border ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                              <div className="flex items-center space-x-3 min-w-0">
+                                <div className={`p-2 rounded-lg ${darkMode ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-500'}`}>
+                                  <ShieldAlert size={14} />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className={`text-xs font-bold truncate ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>{topic.name && topic.name !== "Unknown Topic" ? topic.name : `Topic ID: ${topic.telegram_topic_id}`}</p>
+                                  <p className={`text-[10px] truncate opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{topic.link}</p>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleUnblockTopic(topic._id, topic.name)}
+                                className={`p-2 rounded-lg transition-all ${darkMode ? 'hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400' : 'hover:bg-emerald-50 text-slate-400 hover:text-emerald-600'}`}
+                                title="Unblock Topic"
+                              >
+                                <ShieldCheck size={16} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div ref={castBottomRef} />
+
+              <div className="fixed bottom-24 left-4 flex flex-col space-y-2 z-40">
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={scrollToCastTop}
+                  className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-purple-400' : 'bg-white border-slate-200 text-purple-600'}`}
+                >
+                  <ArrowUp size={20} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={scrollToCastBottom}
+                  className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-purple-400' : 'bg-white border-slate-200 text-purple-600'}`}
+                >
+                  <ArrowDown size={20} />
                 </motion.button>
               </div>
             </motion.div>
@@ -1840,10 +2309,12 @@ export default function App() {
             className={`fixed bottom-28 left-4 right-4 z-50 px-6 py-4 rounded-2xl shadow-2xl flex items-center space-x-3 border ${
               notification.type === 'success' 
                 ? 'bg-emerald-600 text-white border-emerald-500' 
+                : notification.type === 'warn'
+                ? 'bg-amber-600 text-white border-amber-500'
                 : 'bg-rose-600 text-white border-rose-500'
             }`}
           >
-            {notification.type === 'success' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
+            {notification.type === 'success' ? <CheckCircle2 size={20} /> : notification.type === 'warn' ? <ShieldAlert size={20} /> : <AlertCircle size={20} />}
             <span className="font-bold text-sm">{notification.message}</span>
           </motion.div>
         )}

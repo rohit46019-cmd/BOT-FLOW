@@ -67,6 +67,14 @@ const PhotoReplyHistorySchema = new mongoose.Schema({
 });
 const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
 
+const BlockedTopicSchema = new mongoose.Schema({
+  telegram_topic_id: { type: Number, required: true, unique: true },
+  name: { type: String },
+  link: { type: String },
+  created_at: { type: Date, default: Date.now }
+});
+const BlockedTopic = mongoose.model("BlockedTopic", BlockedTopicSchema);
+
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const getSetting = async (key: string) => await Setting.findOne({ key });
@@ -302,6 +310,24 @@ async function initSettings() {
     await setSetting("system_paused", "false");
     console.log("System Paused setting initialized.");
   }
+
+  const autoResetKeywords = await getSetting("auto_reset_keywords");
+  if (!autoResetKeywords) {
+    await setSetting("auto_reset_keywords", "true");
+    console.log("Auto Reset Keywords setting initialized.");
+  }
+
+  const autoBlockKeywords = await getSetting("auto_block_keywords");
+  if (!autoBlockKeywords) {
+    await setSetting("auto_block_keywords", JSON.stringify([]));
+    console.log("Auto Block Keywords setting initialized.");
+  }
+
+  const autoBlockMatchMode = await getSetting("auto_block_match_mode");
+  if (!autoBlockMatchMode) {
+    await setSetting("auto_block_match_mode", "partial");
+    console.log("Auto Block Match Mode setting initialized.");
+  }
 }
 initSettings();
 
@@ -367,6 +393,77 @@ async function startServer() {
       }
 
       console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
+
+      // Check if topic is blocked
+      const topicId = message.replyTo?.replyToMsgId || message.id;
+      const isBlocked = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+      if (isBlocked) {
+        console.log(`Topic ${topicId} is blocked. Skipping processing.`);
+        return;
+      }
+
+      // Check keyword reset logic
+      const autoResetEnabled = (await getSetting("auto_reset_keywords"))?.value === "true";
+
+      // Auto-Block Keywords Logic
+      const autoBlockKeywordsStr = (await getSetting("auto_block_keywords"))?.value || "[]";
+      let blockKeywords: { keyword: string, matchMode: 'exact' | 'partial' }[] = [];
+      try {
+        blockKeywords = JSON.parse(autoBlockKeywordsStr);
+      } catch (e) {
+        // Fallback for old comma-separated format
+        if (autoBlockKeywordsStr.trim()) {
+          blockKeywords = autoBlockKeywordsStr.split(",").map(k => ({ keyword: k.trim(), matchMode: 'partial' as const })).filter(k => k.keyword);
+        }
+      }
+
+      if (blockKeywords.length > 0 && message.message && !message.out) {
+        const msgText = message.message.toLowerCase();
+        let shouldBlock = false;
+
+        for (const item of blockKeywords) {
+          const kw = item.keyword.toLowerCase();
+          if (item.matchMode === 'exact') {
+            // Exact match (case insensitive)
+            if (msgText === kw) {
+              shouldBlock = true;
+              break;
+            }
+          } else {
+            // Partial match
+            if (msgText.includes(kw)) {
+              shouldBlock = true;
+              break;
+            }
+          }
+        }
+
+        if (shouldBlock) {
+          console.log(`Auto-blocking topic ${topicId} due to keyword match.`);
+          
+          // Get topic name
+          const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
+          const name = topicInfo ? topicInfo.name : "Unknown Topic";
+          const link = `https://t.me/c/${targetGroupId.replace("-100", "")}/${topicId}`;
+
+          await BlockedTopic.findOneAndUpdate(
+            { telegram_topic_id: topicId },
+            { name, link },
+            { upsert: true }
+          );
+
+          await saveLog(`Topic ${topicId} auto-blocked due to keyword match`, 'warn', 'USERBOT', { topicName: name });
+          
+          // Notify frontend
+          sendSseEvent('topic_blocked', {
+            message: `Topic "${name}" auto-blocked`,
+            topicName: name,
+            timestamp: new Date()
+          });
+
+          return; // Stop processing this message
+        }
+      }
 
       // 0. Photo Handler
       if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType.startsWith('image/')))) {
@@ -524,10 +621,10 @@ async function startServer() {
                   const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
                   const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
                   
-                  if (lastUpdatedIST === todayIST) {
+                  if (lastUpdatedIST === todayIST || !autoResetEnabled) {
                     currentCount = history.count;
                   } else {
-                    // It's a new day, count is effectively 0
+                    // It's a new day and reset is enabled
                     currentCount = 0;
                   }
                 }
@@ -722,6 +819,8 @@ async function startServer() {
       const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
       const topicRenameKeywords = (await getSetting("topic_rename_keywords"))?.value || "";
       const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+      const autoResetKeywords = (await getSetting("auto_reset_keywords"))?.value === "true";
+      const autoBlockKeywords = (await getSetting("auto_block_keywords"))?.value || "";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -766,6 +865,8 @@ async function startServer() {
         topicIcon,
         topicRenameKeywords,
         topicRenameMatchMode,
+        autoResetKeywords,
+        autoBlockKeywords,
         isUserBotConnected,
         apiId,
         apiHash,
@@ -780,7 +881,7 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
@@ -794,8 +895,10 @@ async function startServer() {
       if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon));
       if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords));
       if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
+      if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords));
+      if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode });
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -1069,6 +1172,62 @@ async function startServer() {
     try {
       const logs = await Log.find().sort({ timestamp: -1 }).limit(100);
       res.json(logs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Blocked Topics Routes
+  app.get("/api/blocked-topics", async (req, res) => {
+    try {
+      const blocked = await BlockedTopic.find().sort({ created_at: -1 });
+      res.json(blocked);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/blocked-topics", async (req, res) => {
+    const { link } = req.body;
+    if (!link) return res.status(400).json({ error: "Link required" });
+
+    try {
+      const parts = link.split("/").filter((p: string) => p.length > 0);
+      const topicId = parseInt(parts[parts.length - 1], 10);
+
+      if (isNaN(topicId)) {
+        return res.status(400).json({ error: "Invalid topic link" });
+      }
+
+      // Toggle behavior: If already blocked, unblock it
+      const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+      if (existing) {
+        await BlockedTopic.findByIdAndDelete(existing._id);
+        await saveLog(`Topic ${topicId} unblocked via link`, 'info', '/api/blocked-topics', { link });
+        return res.json({ success: true, action: 'unblocked' });
+      }
+
+      // Try to find topic name from our Topic collection
+      const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
+      const name = topicInfo ? topicInfo.name : "Unknown Topic";
+
+      await BlockedTopic.create({
+        telegram_topic_id: topicId,
+        name,
+        link
+      });
+      
+      await saveLog(`Topic ${topicId} blocked`, 'info', '/api/blocked-topics', { link, name });
+      res.json({ success: true, action: 'blocked', name });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/blocked-topics/:id", async (req, res) => {
+    try {
+      await BlockedTopic.findByIdAndDelete(req.params.id);
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
