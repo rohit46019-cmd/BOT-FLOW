@@ -1271,8 +1271,7 @@ async function startServer() {
     // Connect UserBot in background
     (async () => {
       try {
-        const sessionString = process.env.TELEGRAM_SESSION || "";
-        const stringSession = new StringSession(sessionString);
+        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
         let sessionString = (await getSetting("session_string"))?.value;
         
         // Use hardcoded session if database session is missing
@@ -1282,14 +1281,8 @@ async function startServer() {
           console.log("Using hardcoded Telegram session.");
         }
 
-        const apiIdRaw = process.env.API_ID;
-        const apiHash = process.env.API_HASH;
-
-       if (!apiIdRaw || !apiHash) {
-         throw new Error("API_ID or API_HASH missing");
-        }
-
-const apiId = parseInt(apiIdRaw);
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
         const apiId = parseInt(apiIdRaw.trim(), 10);
 
         if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
