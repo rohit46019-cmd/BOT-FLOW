@@ -1125,12 +1125,25 @@ async function startServer() {
       if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
       if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
+      try {
+        await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
+      } catch (logErr) {
+        console.error("Failed to save log (non-fatal):", logErr);
+      }
       res.json({ success: true });
     } catch (err: any) {
-      console.error("Error in /api/settings:", err);
-      await saveLog(err.message, 'error', '/api/settings', req.body);
-      res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
+      console.error("CRITICAL Error in /api/settings:", err);
+      // Try to save log, but don't let it block the error response
+      try {
+        await saveLog(err.message, 'error', '/api/settings', req.body);
+      } catch (logErr) {
+        console.error("Failed to save error log:", logErr);
+      }
+      
+      res.status(500).json({ 
+        error: `Settings Update Failed: ${err.message || String(err)}`,
+        details: err.stack 
+      });
     }
   });
 

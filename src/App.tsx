@@ -757,7 +757,15 @@ export default function App() {
         }),
       });
       
-      const data = await res.json().catch(() => null);
+      let data;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        // Response was not JSON (likely HTML error page from Vercel/Proxy)
+        console.error("Non-JSON response:", text);
+        data = { error: `Server Error (${res.status}): ${text.slice(0, 100)}...` };
+      }
       
       if (res.ok) {
         showNotification('success', 'Settings updated!');
