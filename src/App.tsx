@@ -59,6 +59,9 @@ interface Stats {
   topicRenameMatchMode: 'exact' | 'partial';
   autoResetKeywords: boolean;
   autoBlockKeywords: string; // JSON string
+  aiModeEnabled: boolean;
+  aiPersona: string;
+  geminiApiKeys: string; // JSON string
 }
 
 interface AutoBlockKeyword {
@@ -183,6 +186,9 @@ export default function App() {
   const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
   const [blockedTopicSearch, setBlockedTopicSearch] = useState("");
   const [blockingTopic, setBlockingTopic] = useState(false);
+  const [aiModeEnabled, setAiModeEnabled] = useState(false);
+  const [aiPersona, setAiPersona] = useState("");
+  const [geminiApiKeys, setGeminiApiKeys] = useState<string[]>([]);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -529,6 +535,14 @@ export default function App() {
       setTopicIcon(data.topicIcon || "🛑");
       setTopicRenameKeywords(data.topicRenameKeywords || "");
       setTopicRenameMatchMode(data.topicRenameMatchMode || "exact");
+      setAiModeEnabled(data.aiModeEnabled);
+      setAiPersona(data.aiPersona);
+      try {
+        const parsedKeys = JSON.parse(data.geminiApiKeys || "[]");
+        setGeminiApiKeys(Array.isArray(parsedKeys) ? parsedKeys : []);
+      } catch (e) {
+        setGeminiApiKeys([]);
+      }
       setAutoResetKeywords(data.autoResetKeywords ?? true);
       try {
         const parsed = JSON.parse(data.autoBlockKeywords || "[]");
@@ -734,7 +748,10 @@ export default function App() {
           notificationSoundType,
           topicIcon,
           topicRenameKeywords,
-          topicRenameMatchMode
+          topicRenameMatchMode,
+          aiModeEnabled,
+          aiPersona,
+          geminiApiKeys: JSON.stringify(geminiApiKeys)
         }),
       });
       
@@ -809,6 +826,26 @@ export default function App() {
       }
     } catch (err) {
       showNotification('error', 'Connection error: Failed to save keyword');
+    }
+  };
+
+  const verifyKey = async (key: string) => {
+    if (!key) return;
+    showNotification('warn', 'Verifying key...');
+    try {
+      const res = await fetch("/api/verify-gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: key }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotification('success', 'API Key is valid and connected!');
+      } else {
+        showNotification('error', `Invalid Key: ${data.error}`);
+      }
+    } catch (err) {
+      showNotification('error', 'Verification failed: Network error');
     }
   };
 
@@ -1316,6 +1353,97 @@ export default function App() {
                       className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-blue-500/5 border-blue-500/20 text-white placeholder-white/20' : 'bg-blue-50 border-blue-200 text-slate-900 placeholder-slate-400'}`}
                     />
                   </div>
+                </div>
+
+                <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-purple-500/10 text-purple-400' : 'bg-purple-500/5 text-purple-600'}`}>
+                        <MessageSquare size={14} />
+                      </div>
+                      <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>AI Smart Reply</h3>
+                    </div>
+                    <button 
+                      onClick={() => setAiModeEnabled(!aiModeEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${aiModeEnabled ? 'bg-purple-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${aiModeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {aiModeEnabled && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="space-y-4 overflow-hidden"
+                      >
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Gemini API Keys (Rotation)</label>
+                          <div className="space-y-2">
+                            {geminiApiKeys.map((key, index) => (
+                              <div key={index} className="flex items-center space-x-2">
+                                <input
+                                  type="text"
+                                  value={key}
+                                  onChange={(e) => {
+                                    const newKeys = [...geminiApiKeys];
+                                    newKeys[index] = e.target.value;
+                                    setGeminiApiKeys(newKeys);
+                                  }}
+                                  placeholder="AIzaSy..."
+                                  className={`flex-1 p-2 border rounded-lg outline-none text-sm ${darkMode ? 'bg-purple-500/5 border-purple-500/20 text-white' : 'bg-purple-50 border-purple-200 text-slate-900'}`}
+                                />
+                                <button
+                                  onClick={() => verifyKey(key)}
+                                  disabled={!key}
+                                  className={`p-2 rounded-lg ${!key ? 'opacity-50 cursor-not-allowed' : ''} ${darkMode ? 'text-emerald-400 hover:bg-emerald-500/10' : 'text-emerald-600 hover:bg-emerald-50'}`}
+                                  title="Verify Key"
+                                >
+                                  <CheckCircle2 size={16} />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const newKeys = [...geminiApiKeys];
+                                    newKeys.splice(index, 1);
+                                    setGeminiApiKeys(newKeys);
+                                  }}
+                                  className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            ))}
+                            <button
+                              onClick={() => setGeminiApiKeys([...geminiApiKeys, ""])}
+                              className={`flex items-center space-x-1 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-purple-400 hover:text-purple-300' : 'text-purple-600 hover:text-purple-700'}`}
+                            >
+                              <Plus size={12} />
+                              <span>Add API Key</span>
+                            </button>
+                          </div>
+                          <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                            Add multiple keys to rotate automatically if one hits the rate limit.
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>AI Persona / System Prompt</label>
+                          <textarea
+                            value={aiPersona}
+                            onChange={(e) => setAiPersona(e.target.value)}
+                            placeholder="You are a smart assistant for a Telegram store..."
+                            rows={6}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-purple-500 outline-none text-sm transition-all ${darkMode ? 'bg-purple-500/5 border-purple-500/20 text-white placeholder-white/20' : 'bg-purple-50 border-purple-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                          <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                            The AI will only reply if no keywords match. It can reply in Hinglish, Hindi, or English based on this persona.
+                          </p>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">

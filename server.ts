@@ -6,11 +6,23 @@ import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { CustomFile } from "telegram/client/uploads";
+import { GoogleGenAI } from "@google/genai";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialize Gemini
+// const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selling paid study batches (SSC, Railway, etc.) for 87rs each. You have leaked batches from many top teachers. Your goal is to answer user queries about price, availability, and payment.
+- Context: Users are students preparing for exams.
+- Language: Reply in the same language as the user (Hindi, English, or Hinglish).
+- Robustness: Users may use slang or misspell words; interpret their intent correctly.
+- Pricing: Each batch is 87rs.
+- Behavior: Be helpful, concise, and polite.
+- Constraint: If the message is generic (e.g., 'ok', 'hmm') or doesn't need a reply, strictly output 'NO_REPLY'.`;
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
@@ -287,6 +299,27 @@ async function initSettings() {
   const topicIcon = await getSetting("topic_icon");
   if (!topicIcon) await setSetting("topic_icon", "✅");
 
+  const aiModeEnabled = await getSetting("ai_mode_enabled");
+  if (!aiModeEnabled) await setSetting("ai_mode_enabled", "false");
+
+  const aiPersona = await getSetting("ai_persona");
+  if (!aiPersona) {
+    await setSetting("ai_persona", DEFAULT_AI_PERSONA);
+  } else {
+    // Optional: Update legacy default to new default if it matches the old generic one
+    const oldDefault = "You are a helpful assistant. Reply in Hinglish, Hindi, or English. Be casual and friendly. If the message doesn't require a response, reply with 'NO_REPLY'.";
+    if (aiPersona.value === oldDefault) {
+      await setSetting("ai_persona", DEFAULT_AI_PERSONA);
+      console.log("Updated AI Persona to new sales context.");
+    }
+  }
+
+  const geminiApiKeys = await getSetting("gemini_api_keys");
+  if (!geminiApiKeys) {
+    await setSetting("gemini_api_keys", JSON.stringify([]));
+    console.log("Gemini API Keys setting initialized.");
+  }
+
   const apiId = await getSetting("api_id");
   if (!apiId || apiId.value === "0" || apiId.value === "") {
     await setSetting("api_id", "34669075");
@@ -543,6 +576,7 @@ async function startServer() {
       }
 
       // 2. Keyword Handler
+      let keywordMatched = false;
       if (message.message && !message.out) {
         const text = message.message.toLowerCase().trim();
         const matches: { kw: any, index: number, matchedWord: string }[] = [];
@@ -588,6 +622,7 @@ async function startServer() {
         matches.sort((a, b) => a.index - b.index);
 
         if (matches.length > 0) {
+          keywordMatched = true;
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
           
           const processedRuleIds = new Set<string>();
@@ -769,6 +804,106 @@ async function startServer() {
           }
         }
       }
+
+      // 3. AI Smart Reply (Fallback)
+      if (!keywordMatched && message.message && !message.out) {
+        const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+        if (aiModeEnabled) {
+          // Fetch keys from settings
+          const geminiApiKeysSetting = await getSetting("gemini_api_keys");
+          let apiKeys: string[] = [];
+          try {
+            apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
+          } catch (e) {
+            console.error("Failed to parse gemini_api_keys setting", e);
+          }
+
+          // Add environment variable key as fallback/primary if not in list
+          const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+          if (envKey && !apiKeys.includes(envKey)) {
+            apiKeys.push(envKey);
+          }
+
+          if (apiKeys.length === 0) {
+            console.warn("AI Mode is enabled but no Gemini API Keys found (neither in settings nor environment).");
+            return;
+          }
+
+          const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+          
+          let aiReply = null;
+          let success = false;
+
+          // Try keys one by one
+          for (const apiKey of apiKeys) {
+            try {
+              console.log(`Attempting AI reply with key ending in ...${apiKey.slice(-4)}`);
+              const genAI = new GoogleGenAI({ apiKey });
+              const response = await genAI.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: [
+                  {
+                    role: "user",
+                    parts: [
+                      { text: `System Instruction: ${aiPersona}` },
+                      { text: `User Message: "${message.message}"` },
+                      { text: `Context: This is a Telegram group chat. Reply naturally. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
+                    ]
+                  }
+                ]
+              });
+              
+              aiReply = response.text.trim();
+              success = true;
+              break; // Success! Stop trying keys.
+            } catch (aiErr: any) {
+              let errorMsg = aiErr.message || String(aiErr);
+              
+              // Try to parse JSON error message if possible
+              try {
+                if (typeof errorMsg === 'string' && errorMsg.startsWith('{')) {
+                  const parsed = JSON.parse(errorMsg);
+                  if (parsed.error && parsed.error.message) {
+                    errorMsg = parsed.error.message;
+                  }
+                }
+              } catch (e) {
+                // Ignore parse error
+              }
+
+              console.error(`AI Generation failed with key ...${apiKey.slice(-4)}:`, errorMsg);
+              
+              // Log specific critical errors to the dashboard so the user knows WHICH key is bad
+              if (errorMsg.includes("leaked") || errorMsg.includes("not valid") || errorMsg.includes("API_KEY_INVALID")) {
+                await saveLog(`Invalid API Key (...${apiKey.slice(-4)}): ${errorMsg}`, 'error', 'AI_SYSTEM');
+              }
+            }
+          }
+
+          if (success) {
+            if (aiReply && aiReply !== "NO_REPLY") {
+              console.log(`AI Reply generated: "${aiReply}"`);
+              await client.sendMessage(message.peerId, {
+                message: aiReply,
+                replyTo: message.id,
+              });
+              await saveLog(`AI Auto-Reply: "${aiReply}"`, 'info', 'USERBOT');
+              
+              // Notify frontend
+              sendSseEvent('ai_reply', {
+                message: `AI Replied: ${aiReply}`,
+                originalMessage: message.message,
+                timestamp: new Date()
+              });
+            } else {
+              console.log("AI decided not to reply (NO_REPLY).");
+            }
+          } else {
+            const errorMessage = "All Gemini API Keys failed. Please check your keys in settings.";
+            await saveLog(`AI Generation failed: ${errorMessage}`, 'error', 'USERBOT');
+          }
+        }
+      }
     });
   }
 
@@ -821,6 +956,9 @@ async function startServer() {
       const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
       const autoResetKeywords = (await getSetting("auto_reset_keywords"))?.value === "true";
       const autoBlockKeywords = (await getSetting("auto_block_keywords"))?.value || "";
+      const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+      const aiPersona = (await getSetting("ai_persona"))?.value || "";
+      const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -867,6 +1005,9 @@ async function startServer() {
         topicRenameMatchMode,
         autoResetKeywords,
         autoBlockKeywords,
+        aiModeEnabled,
+        aiPersona,
+        geminiApiKeys,
         isUserBotConnected,
         apiId,
         apiHash,
@@ -881,7 +1022,7 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
@@ -897,13 +1038,44 @@ async function startServer() {
       if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
       if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords));
       if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords));
+      if (typeof aiModeEnabled !== "undefined") await setSetting("ai_mode_enabled", String(aiModeEnabled));
+      if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
+      if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords });
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
       await saveLog(err.message, 'error', '/api/settings', req.body);
       res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
+    }
+  });
+
+  app.post("/api/verify-gemini", async (req, res) => {
+    try {
+      const { apiKey } = req.body;
+      if (!apiKey) {
+        return res.status(400).json({ success: false, error: "API Key is required" });
+      }
+
+      const genAI = new GoogleGenAI({ apiKey });
+      const response = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: "Hello" }] }]
+      });
+      
+      if (response && response.text) {
+        res.json({ success: true });
+      } else {
+        res.json({ success: false, error: "No response from Gemini" });
+      }
+    } catch (err: any) {
+      console.error("Gemini Verification Error:", err);
+      let errorMessage = err.message;
+      if (err.message?.includes("API key not valid") || err.toString().includes("API_KEY_INVALID")) {
+        errorMessage = "Invalid API Key";
+      }
+      res.json({ success: false, error: errorMessage });
     }
   });
 
