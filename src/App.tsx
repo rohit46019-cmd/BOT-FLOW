@@ -39,6 +39,16 @@ import {
   ChevronUp
 } from "lucide-react";
 
+interface Account {
+  phoneNumber: string;
+  isActive: boolean;
+  isConnected: boolean;
+  apiId: number;
+  name?: string;
+  username?: string;
+  targetGroupIds: string[];
+}
+
 interface Stats {
   topicCount: number;
   todayTopicCount: number;
@@ -50,7 +60,7 @@ interface Stats {
   photoReplyMax: number;
   notificationSoundEnabled: boolean;
   notificationSoundType: string;
-  isUserBotConnected: boolean;
+  accounts: Account[];
   apiId: string;
   apiHash: string;
   defaultPhone: string;
@@ -158,6 +168,8 @@ const TabButton = ({
 };
 
 export default function App() {
+  const [ownerId, setOwnerId] = useState<string | null>(() => localStorage.getItem("ownerId"));
+  const [loginInput, setLoginInput] = useState("");
   const [stats, setStats] = useState<Stats | null>(null);
   const [autoReplyInput, setAutoReplyInput] = useState("");
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
@@ -229,22 +241,28 @@ export default function App() {
   };
 
   const fetchBlockedTopics = React.useCallback(async () => {
+    if (!ownerId) return;
     try {
-      const response = await fetch('/api/blocked-topics');
+      const response = await fetch('/api/blocked-topics', {
+        headers: { 'x-owner-id': ownerId }
+      });
       const data = await response.json();
       setBlockedTopics(data);
     } catch (err) {
       console.error("Failed to fetch blocked topics:", err);
     }
-  }, []);
+  }, [ownerId]);
 
   const handleBlockTopic = async () => {
-    if (!newBlockedTopicLink) return;
+    if (!newBlockedTopicLink || !ownerId) return;
     setBlockingTopic(true);
     try {
       const response = await fetch('/api/blocked-topics', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-owner-id': ownerId
+        },
         body: JSON.stringify({ link: newBlockedTopicLink }),
       });
       const data = await response.json();
@@ -267,10 +285,11 @@ export default function App() {
   };
 
   const handleUnblockTopic = async (id: string, name?: string) => {
-    if (!confirm(`Are you sure you want to unblock ${name || 'this topic'}?`)) return;
+    if (!confirm(`Are you sure you want to unblock ${name || 'this topic'}?`) || !ownerId) return;
     try {
       const response = await fetch(`/api/blocked-topics/${id}`, {
         method: 'DELETE',
+        headers: { 'x-owner-id': ownerId }
       });
       if (response.ok) {
         showNotification('success', 'Topic unblocked successfully');
@@ -428,8 +447,9 @@ export default function App() {
     }
 
     // Connect to SSE
-    console.log("Connecting to SSE notifications...");
-    const eventSource = new EventSource("/api/notifications");
+    if (!ownerId) return;
+    console.log(`Connecting to SSE notifications for ${ownerId}...`);
+    const eventSource = new EventSource(`/api/notifications?ownerId=${ownerId}`);
     
     eventSource.onopen = () => {
       console.log("SSE connection established");
@@ -518,8 +538,11 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   const fetchStats = async () => {
+    if (!ownerId) return;
     try {
-      const res = await fetch("/api/stats");
+      const res = await fetch("/api/stats", {
+        headers: { 'x-owner-id': ownerId }
+      });
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -572,8 +595,11 @@ export default function App() {
   };
 
   const fetchKeywords = async () => {
+    if (!ownerId) return;
     try {
-      const res = await fetch("/api/keywords");
+      const res = await fetch("/api/keywords", {
+        headers: { 'x-owner-id': ownerId }
+      });
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -587,9 +613,12 @@ export default function App() {
   };
 
   const fetchLogs = async () => {
+    if (!ownerId) return;
     setRefreshingLogs(true);
     try {
-      const res = await fetch("/api/logs");
+      const res = await fetch("/api/logs", {
+        headers: { 'x-owner-id': ownerId }
+      });
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -606,9 +635,12 @@ export default function App() {
   };
 
   const clearLogs = async () => {
-    if (!confirm("Clear all logs?")) return;
+    if (!confirm("Clear all logs?") || !ownerId) return;
     try {
-      const res = await fetch("/api/logs", { method: "DELETE" });
+      const res = await fetch("/api/logs", { 
+        method: "DELETE",
+        headers: { 'x-owner-id': ownerId }
+      });
       if (res.ok) {
         setLogs([]);
         showNotification('success', 'Logs cleared');
@@ -733,11 +765,15 @@ export default function App() {
   };
 
   const handleUpdateSettings = async () => {
+    if (!ownerId) return;
     setSaving(true);
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId
+        },
         body: JSON.stringify({ 
           autoReply: autoReplyInput,
           delaySeconds: delaySecondsInput,
@@ -757,15 +793,7 @@ export default function App() {
         }),
       });
       
-      let data;
-      const text = await res.text();
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        // Response was not JSON (likely HTML error page from Vercel/Proxy)
-        console.error("Non-JSON response:", text);
-        data = { error: `Server Error (${res.status}): ${text.slice(0, 100)}...` };
-      }
+      const data = await res.json().catch(() => null);
       
       if (res.ok) {
         showNotification('success', 'Settings updated!');
@@ -822,7 +850,10 @@ export default function App() {
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId!
+        },
         body: JSON.stringify(payload),
       });
       
@@ -842,12 +873,15 @@ export default function App() {
   };
 
   const verifyKey = async (key: string) => {
-    if (!key) return;
+    if (!key || !ownerId) return;
     showNotification('warn', 'Verifying key...');
     try {
       const res = await fetch("/api/verify-gemini", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId
+        },
         body: JSON.stringify({ apiKey: key }),
       });
       const data = await res.json();
@@ -940,9 +974,12 @@ export default function App() {
   };
 
   const confirmDeleteKeyword = async () => {
-    if (!deleteConfirmationId) return;
+    if (!deleteConfirmationId || !ownerId) return;
     try {
-      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
+      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { 
+        method: "DELETE",
+        headers: { 'x-owner-id': ownerId }
+      });
       if (res.ok) {
         showNotification('success', 'Keyword deleted');
         fetchKeywords();
@@ -954,14 +991,16 @@ export default function App() {
     }
   };
 
-  const [phoneCodeHash, setPhoneCodeHash] = useState<string>("");
-
   const handleSendCode = async () => {
+    if (!ownerId) return;
     setAuthLoading(true);
     try {
       const res = await fetch("/api/auth/send-code", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId
+        },
         body: JSON.stringify({ phone }),
       });
       
@@ -969,9 +1008,6 @@ export default function App() {
 
       if (res.ok) {
         setAuthStep('code');
-        if (data.phoneCodeHash) {
-          setPhoneCodeHash(data.phoneCodeHash);
-        }
         showNotification('success', 'Code sent!');
       } else {
         showNotification('error', data?.error || `Failed to send code: ${res.statusText}`);
@@ -985,12 +1021,16 @@ export default function App() {
   };
 
   const handleSignIn = async () => {
+    if (!ownerId) return;
     setAuthLoading(true);
     try {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, password, phone, phoneCodeHash }),
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId
+        },
+        body: JSON.stringify({ code, password }),
       });
       
       const data = await res.json().catch(() => null);
@@ -1016,8 +1056,11 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExportData = async () => {
+    if (!ownerId) return;
     try {
-      const res = await fetch("/api/data/export");
+      const res = await fetch("/api/data/export", {
+        headers: { 'x-owner-id': ownerId }
+      });
       if (res.ok) {
         const data = await res.json();
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -1049,7 +1092,10 @@ export default function App() {
         
         const res = await fetch("/api/data/import", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "x-owner-id": ownerId!
+          },
           body: JSON.stringify(data),
         });
 
@@ -1070,11 +1116,19 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  const handleLogout = async () => {
+  const handleLogout = async (phoneToLogout?: string) => {
+    if (!confirm(phoneToLogout ? `Logout account ${phoneToLogout}?` : "Logout all accounts?") || !ownerId) return;
     try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
+      const res = await fetch("/api/auth/logout", { 
+        method: "POST",
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-owner-id': ownerId
+        },
+        body: JSON.stringify({ phoneNumber: phoneToLogout })
+      });
       if (res.ok) {
-        showNotification('success', 'Logged out');
+        showNotification('success', phoneToLogout ? `Account ${phoneToLogout} logged out` : 'All accounts logged out');
         fetchStats();
       }
     } catch (err) {
@@ -1083,12 +1137,15 @@ export default function App() {
   };
 
   const handleBroadcast = async () => {
-    if (!broadcastMessage.trim()) return;
+    if (!broadcastMessage.trim() || !ownerId) return;
     setBroadcasting(true);
     try {
       const res = await fetch("/api/broadcast", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-owner-id": ownerId
+        },
         body: JSON.stringify({ message: broadcastMessage }),
       });
       if (res.ok) {
@@ -1152,6 +1209,54 @@ export default function App() {
       transition: { type: 'spring', stiffness: 300, damping: 30 }
     })
   };
+
+  if (!ownerId) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center p-6 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-900'}`}>
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className={`w-full max-w-md p-8 rounded-[2.5rem] border shadow-2xl ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}
+        >
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-emerald-500/20">
+              <User className="text-white" size={32} />
+            </div>
+            <h2 className="text-2xl font-black tracking-tight">Welcome Back</h2>
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mt-1">Enter your Owner ID to continue</p>
+          </div>
+          
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-60">Owner ID</label>
+              <div className="relative">
+                <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                <input
+                  type="text"
+                  value={loginInput}
+                  onChange={(e) => setLoginInput(e.target.value)}
+                  placeholder="e.g. user_123"
+                  className={`w-full pl-12 pr-4 py-4 rounded-2xl outline-none border transition-all ${darkMode ? 'bg-black border-white/10 focus:border-emerald-500' : 'bg-slate-50 border-black/5 focus:border-emerald-500'}`}
+                />
+              </div>
+            </div>
+            
+            <button
+              onClick={() => {
+                if (loginInput.trim()) {
+                  localStorage.setItem("ownerId", loginInput.trim());
+                  setOwnerId(loginInput.trim());
+                }
+              }}
+              className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-black uppercase tracking-widest shadow-lg shadow-emerald-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
+            >
+              Login
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -1995,14 +2100,14 @@ export default function App() {
                     <RotateCcw size={16} className="text-amber-500" />
                   </div>
                   
-                  <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
-                    <div className="space-y-1">
-                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
-                      <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset keyword limits daily at 12:00 AM IST</p>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10 gap-4">
+                    <div className="space-y-1 flex-1 min-w-0">
+                      <p className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
+                      <p className={`text-[10px] break-words ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset keyword limits daily at 12:00 AM IST</p>
                     </div>
                     <button
                       onClick={handleToggleAutoReset}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
                     >
                       <span
                         className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoResetKeywords ? 'translate-x-6' : 'translate-x-1'}`}
@@ -2228,144 +2333,288 @@ export default function App() {
               <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-pink relative overflow-hidden group ${darkMode ? 'bg-pink-950/40 border-pink-500/30' : 'bg-pink-50 border-pink-200 shadow-xl shadow-pink-500/10'}`}>
                 <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-pink-400' : 'text-pink-600'}`} />
                 <div className="relative z-10 pointer-events-auto">
-                  {stats?.isUserBotConnected ? (
-                    <div className="text-center py-8 space-y-6">
-                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition-all ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
-                      <CheckCircle2 size={48} />
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 bg-pink-500/10 rounded-2xl">
+                        <User className="w-6 h-6 text-pink-500" />
+                      </div>
+                      <div>
+                        <h2 className={`text-xl font-black ${darkMode ? "text-white" : "text-slate-900"}`}>Telegram Accounts</h2>
+                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>Manage your connected userbots</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className={`text-xl font-bold tracking-tight mb-2 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Connected</h3>
-                      <p className={`text-sm max-w-[200px] mx-auto ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Your Telegram session is active and ready for auto-replies.</p>
-                    </div>
-                    
-                    <div className="pt-4 flex flex-col space-y-3">
-                      <button 
-                        onClick={fetchStats}
-                        className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
+                    <button
+                      onClick={() => {
+                        localStorage.removeItem("ownerId");
+                        setOwnerId(null);
+                        setStats(null);
+                        setKeywords([]);
+                        setLogs([]);
+                      }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold transition-all shadow-lg ${darkMode ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 border border-rose-100 hover:bg-rose-100'}`}
+                    >
+                      <X className="w-4 h-4" />
+                      Logout ID
+                    </button>
+                    {(!stats?.accounts || stats.accounts.length === 0) && (
+                      <button
+                        onClick={() => setAuthStep('phone')}
+                        className="flex items-center gap-2 px-4 py-2 bg-pink-500 hover:bg-pink-600 text-white rounded-xl font-bold transition-all shadow-lg shadow-pink-500/20"
                       >
-                        Refresh Status
+                        <Plus className="w-4 h-4" />
+                        Add Account
                       </button>
-                      <button 
-                        onClick={handleLogout}
-                        className={`text-[9px] font-bold uppercase tracking-widest transition-colors pt-4 opacity-40 hover:opacity-100 ${darkMode ? 'text-slate-500 hover:text-rose-400' : 'text-slate-400 hover:text-rose-600'}`}
-                      >
-                        Logout Session
-                      </button>
-                    </div>
-                    
-                    {deferredPrompt && (
-                      <div className={`pt-8 border-t transition-colors duration-500 ${darkMode ? 'border-neutral-800' : 'border-slate-100'}`}>
-                        <button
-                          onClick={handleInstallApp}
-                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                    )}
+                  </div>
+
+                  <div className="space-y-4">
+                    {stats?.accounts && stats.accounts.length > 0 ? (
+                      stats.accounts.map((acc) => (
+                        <div 
+                          key={acc.phoneNumber}
+                          className={`p-4 rounded-2xl border transition-all ${
+                            darkMode ? "bg-slate-900/50 border-slate-700" : "bg-slate-50 border-slate-200"
+                          }`}
                         >
-                          <Smartphone size={16} />
-                          <span>Install Application</span>
-                        </button>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="flex items-center gap-4 min-w-0">
+                              <div className={`w-12 h-12 rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold text-lg ${
+                                acc.isConnected ? "bg-emerald-500 shadow-lg shadow-emerald-500/20" : "bg-slate-500"
+                              }`}>
+                                {acc.name ? acc.name.charAt(0) : acc.phoneNumber.slice(-2)}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`font-bold truncate ${darkMode ? "text-white" : "text-slate-900"}`}>
+                                    {acc.name || acc.phoneNumber}
+                                  </span>
+                                  {acc.isConnected ? (
+                                    <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded-full whitespace-nowrap">
+                                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                                      Connected
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-slate-500/10 text-slate-500 text-[10px] font-black uppercase rounded-full whitespace-nowrap">
+                                      Disconnected
+                                    </span>
+                                  )}
+                                </div>
+                                <div className={`text-xs mt-1 truncate ${darkMode ? "text-slate-500" : "text-slate-400"}`}>
+                                  {acc.username ? `@${acc.username} • ` : ''}API ID: {acc.apiId}
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {acc.targetGroupIds?.map((gid, idx) => (
+                                    <span key={idx} className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${darkMode ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
+                                      {gid}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 self-end sm:self-center">
+                              <button
+                                onClick={() => {
+                                  const newGid = prompt("Enter new Group ID:");
+                                  if (newGid && ownerId) {
+                                    const updatedGroups = [...(acc.targetGroupIds || []), newGid];
+                                    fetch('/api/accounts/update-groups', {
+                                      method: 'POST',
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'x-owner-id': ownerId
+                                      },
+                                      body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
+                                    }).then(() => fetchStats());
+                                  }
+                                }}
+                                className={`p-2 rounded-xl transition-all ${
+                                  darkMode ? "hover:bg-pink-500/10 text-slate-400 hover:text-pink-500" : "hover:bg-pink-50 text-slate-400 hover:text-pink-600"
+                                }`}
+                                title="Add Group ID"
+                              >
+                                <Plus className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (acc.targetGroupIds && acc.targetGroupIds.length > 0 && ownerId) {
+                                    const updatedGroups = acc.targetGroupIds.slice(0, -1);
+                                    fetch('/api/accounts/update-groups', {
+                                      method: 'POST',
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'x-owner-id': ownerId
+                                      },
+                                      body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
+                                    }).then(() => fetchStats());
+                                  }
+                                }}
+                                className={`p-2 rounded-xl transition-all ${
+                                  darkMode ? "hover:bg-amber-500/10 text-slate-400 hover:text-amber-500" : "hover:bg-amber-50 text-slate-400 hover:text-amber-600"
+                                }`}
+                                title="Remove Last Group ID"
+                              >
+                                <RotateCcw className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => handleLogout(acc.phoneNumber)}
+                                className={`p-2 rounded-xl transition-all ${
+                                  darkMode ? "hover:bg-red-500/10 text-slate-400 hover:text-red-500" : "hover:bg-red-50 text-slate-400 hover:text-red-600"
+                                }`}
+                                title="Logout Account"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className={`text-center py-12 rounded-2xl border-2 border-dashed ${
+                        darkMode ? "border-slate-700 text-slate-500" : "border-slate-200 text-slate-400"
+                      }`}>
+                        <Smartphone className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                        <p className="font-bold">No accounts connected</p>
+                        <p className="text-sm">Click "Add Account" to get started</p>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <div className="space-y-6">
-                    {authStep === 'credentials' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API ID</label>
+
+                  <AnimatePresence>
+                    {authStep !== 'credentials' && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className={`mt-8 p-6 rounded-3xl shadow-xl ${darkMode ? "bg-slate-800/50 border border-slate-700" : "bg-white border border-slate-100"}`}
+                      >
+                        <div className="flex items-center justify-between mb-6">
+                          <h3 className={`text-lg font-black ${darkMode ? "text-white" : "text-slate-900"}`}>
+                            {authStep === 'phone' ? 'Step 1: Phone Number' : 'Step 2: Verification'}
+                          </h3>
+                          <button 
+                            onClick={() => setAuthStep('credentials')}
+                            className={`p-2 rounded-xl ${darkMode ? "hover:bg-slate-700 text-slate-400" : "hover:bg-slate-100 text-slate-500"}`}
+                          >
+                            <X className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        {authStep === 'phone' ? (
+                          <div className="space-y-4">
+                            <div className="relative group">
+                              <Smartphone className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
+                              <input
+                                type="text"
+                                value={phone}
+                                onChange={(e) => setPhone(e.target.value)}
+                                placeholder="Phone (e.g. +919006334503)"
+                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
+                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
+                                }`}
+                              />
+                            </div>
+                            <button
+                              onClick={handleSendCode}
+                              disabled={authLoading || !phone}
+                              className="w-full py-4 bg-pink-500 hover:bg-pink-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-pink-500/20 transition-all flex items-center justify-center gap-2"
+                            >
+                              {authLoading ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Send Code"}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="relative group">
+                              <Key className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
+                              <input
+                                type="text"
+                                value={code}
+                                onChange={(e) => setCode(e.target.value)}
+                                placeholder="Verification Code"
+                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
+                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
+                                }`}
+                              />
+                            </div>
+                            <div className="relative group">
+                              <Lock className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
+                              <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="2FA Password (if any)"
+                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
+                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
+                                }`}
+                              />
+                            </div>
+                            <button
+                              onClick={handleSignIn}
+                              disabled={authLoading || !code}
+                              className="w-full py-4 bg-pink-500 hover:bg-pink-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-pink-500/20 transition-all flex items-center justify-center gap-2"
+                            >
+                              {authLoading ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Verify & Connect"}
+                            </button>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div className={`mt-8 p-6 rounded-3xl shadow-xl ${darkMode ? "bg-slate-800/50 border border-slate-700" : "bg-white border border-slate-100"}`}>
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="p-3 bg-amber-500/10 rounded-2xl">
+                        <Key className="w-6 h-6 text-amber-500" />
+                      </div>
+                      <div>
+                        <h2 className={`text-xl font-black ${darkMode ? "text-white" : "text-slate-900"}`}>API Configuration</h2>
+                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>Telegram API credentials for new logins</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className={`text-xs font-black uppercase tracking-widest ml-1 ${darkMode ? "text-slate-500" : "text-slate-400"}`}>API ID</label>
+                        <div className="relative group">
+                          <Hash className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-amber-500" : "text-slate-400 group-focus-within:text-amber-500"}`} />
                           <input
                             type="text"
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
                             placeholder="Enter API ID"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full pl-11 pr-4 py-3 rounded-xl font-bold transition-all outline-none border-2 ${
+                              darkMode ? "bg-slate-900/50 border-slate-700 focus:border-amber-500 text-white" : "bg-slate-50 border-slate-100 focus:border-amber-500 text-slate-900"
+                            }`}
                           />
                         </div>
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API Hash</label>
+                      </div>
+                      <div className="space-y-2">
+                        <label className={`text-xs font-black uppercase tracking-widest ml-1 ${darkMode ? "text-slate-500" : "text-slate-400"}`}>API Hash</label>
+                        <div className="relative group">
+                          <ShieldCheck className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-amber-500" : "text-slate-400 group-focus-within:text-amber-500"}`} />
                           <input
                             type="text"
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
                             placeholder="Enter API Hash"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full pl-11 pr-4 py-3 rounded-xl font-bold transition-all outline-none border-2 ${
+                              darkMode ? "bg-slate-900/50 border-slate-700 focus:border-amber-500 text-white" : "bg-slate-50 border-slate-100 focus:border-amber-500 text-slate-900"
+                            }`}
                           />
                         </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          Continue
-                        </motion.button>
                       </div>
-                    )}
+                    </div>
 
-                    {authStep === 'phone' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phone Number</label>
-                          <input
-                            type="text"
-                            value={phone}
-                            onChange={(e) => setPhone(e.target.value)}
-                            placeholder="+1 234 567 8900"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={handleSendCode}
-                          disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
-                          <span>Request Code</span>
-                        </motion.button>
-                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back to API Info</button>
-                      </div>
-                    )}
-
-                    {authStep === 'code' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Login Code</label>
-                          <input
-                            type="text"
-                            value={code}
-                            onChange={(e) => setCode(e.target.value)}
-                            placeholder="Enter 5-digit code"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>2FA Password (Optional)</label>
-                          <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="If enabled"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={handleSignIn}
-                          disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
-                          <span>Verify & Connect</span>
-                        </motion.button>
-                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back</button>
-                      </div>
-                    )}
+                    <button
+                      onClick={handleUpdateSettings}
+                      disabled={saving}
+                      className="w-full mt-6 py-4 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2"
+                    >
+                      {saving ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Save API Config"}
+                    </button>
                   </div>
-                )}
+                </div>
               </div>
-            </div>
-          </motion.div>
+            </motion.div>
           )}
 
           {activeTab === 'logs' && (
