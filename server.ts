@@ -1,5 +1,5 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
+// import { createServer as createViteServer } from "vite"; // Dynamic import used instead
 import mongoose from "mongoose";
 import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
@@ -16,7 +16,26 @@ const __dirname = path.dirname(__filename);
 // Initialize Gemini
 // const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selling paid study batches (SSC, Railway, etc.) for 87rs each. You have leaked batches from many top teachers. Your goal is to answer user queries about price, availability, and payment.
+export const app = express();
+app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+const PORT = 3000;
+const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
+const groupId = "-1003672030592"; // Strictly enforced Group ID
+
+const bot = new TelegramBot(token, { polling: false }); // Polling false initially, enabled in startServer
+
+// Handle polling errors to prevent crash and clean up logs
+bot.on("polling_error", (error: any) => {
+  if (error.message && error.message.includes("409 Conflict")) {
+    return;
+  }
+  console.error("Telegram Bot Polling Error:", error);
+});
+
+// UserBot client placeholder
+let userClient: TelegramClient | null = null;
 - Context: Users are students preparing for exams.
 - Language: Reply in the same language as the user (Hindi, English, or Hinglish).
 - Robustness: Users may use slang or misspell words; interpret their intent correctly.
@@ -388,7 +407,8 @@ async function initSettings() {
 }
 initSettings();
 
-let userClient: TelegramClient | null = null;
+
+// UserBot client placeholder (removed duplicate)
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
 let cachedKeywords: any[] = [];
@@ -402,27 +422,7 @@ async function refreshKeywordCache() {
   }
 }
 
-async function startServer() {
-  const app = express();
-  app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  const PORT = 3000;
-
-  const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
-  const groupId = "-1003672030592"; // Strictly enforced Group ID
-
-  const bot = new TelegramBot(token, { polling: true });
-
-  // Handle polling errors to prevent crash and clean up logs
-  bot.on("polling_error", (error: any) => {
-    if (error.message && error.message.includes("409 Conflict")) {
-      // This is expected during rapid restarts in this environment
-      return;
-    }
-    console.error("Telegram Bot Polling Error:", error);
-  });
-
-  function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
+function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
       const message = event.message;
       if (!message) return;
@@ -1518,6 +1518,7 @@ async function startServer() {
 
   // Vite middleware
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1585,6 +1586,49 @@ async function startServer() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-}
 
-startServer();
+  // Start Server immediately if running directly
+  if (process.env.VITE_RUN_SERVER === 'true' || process.argv[1] === fileURLToPath(import.meta.url)) {
+      app.listen(PORT, "0.0.0.0", async () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+        
+        // Start polling only when running as server
+        bot.startPolling();
+
+        // Initial keyword cache load
+        await refreshKeywordCache();
+        
+        // Connect UserBot in background
+        (async () => {
+          try {
+            const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
+            let sessionString = (await getSetting("session_string"))?.value;
+            
+            // Use hardcoded session if database session is missing
+            if (!sessionString) {
+              sessionString = hardcodedSession;
+              await setSetting("session_string", hardcodedSession);
+              console.log("Using hardcoded Telegram session.");
+            }
+
+            const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+            const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+            const apiId = parseInt(apiIdRaw.trim(), 10);
+
+            if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+              console.log("Attempting to connect UserBot...");
+              userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+                connectionRetries: 5,
+              });
+              await userClient.connect();
+              console.log("UserBot connected successfully.");
+              setupUserBotHandlers(userClient, groupId);
+              await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+            }
+          } catch (err: any) {
+            console.error("Failed to connect UserBot on startup:", err);
+            await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
+          }
+        })();
+      });
+  }
