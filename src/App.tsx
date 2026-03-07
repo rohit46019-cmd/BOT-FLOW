@@ -1243,9 +1243,13 @@ export default function App() {
             
             <button
               onClick={() => {
-                if (loginInput.trim()) {
-                  localStorage.setItem("ownerId", loginInput.trim());
-                  setOwnerId(loginInput.trim());
+                const input = loginInput.trim();
+                const allowedIds = ['ROHIT2004', 'PRAKASH2006'];
+                if (input && allowedIds.includes(input)) {
+                  localStorage.setItem("ownerId", input);
+                  setOwnerId(input);
+                } else {
+                  alert("Invalid Owner ID. Access Restricted.");
                 }
               }}
               className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-black uppercase tracking-widest shadow-lg shadow-emerald-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
@@ -1280,7 +1284,7 @@ export default function App() {
         <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
       </div>
       {/* Offline Warning */}
-      {!stats?.isUserBotConnected && (
+      {(!stats?.accounts?.some((a: any) => a.isConnected)) && (
         <div className="bg-rose-600 text-white text-[10px] font-black uppercase tracking-[0.2em] py-2 text-center sticky top-0 z-[60] shadow-lg">
           ⚠️ Please login Telegram ID to enable auto-replies
         </div>
@@ -1301,9 +1305,9 @@ export default function App() {
           </div>
         </div>
         
-        <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-          <span>{stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}</span>
+        <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.accounts?.some((a: any) => a.isConnected) ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${stats?.accounts?.some((a: any) => a.isConnected) ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+          <span>{stats?.accounts?.some((a: any) => a.isConnected) ? 'Connected' : 'Disconnected'}</span>
         </div>
       </header>
 
@@ -2340,7 +2344,9 @@ export default function App() {
                       </div>
                       <div>
                         <h2 className={`text-xl font-black ${darkMode ? "text-white" : "text-slate-900"}`}>Telegram Accounts</h2>
-                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>Manage your connected userbots</p>
+                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
+                          Logged in as: <span className="font-bold text-emerald-500">{ownerId}</span>
+                        </p>
                       </div>
                     </div>
                     <button

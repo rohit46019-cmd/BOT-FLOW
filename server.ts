@@ -424,8 +424,9 @@ async function refreshKeywordCache() {
   }
 }
 
+export const app = express();
+
 async function startServer() {
-  const app = express();
   app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
