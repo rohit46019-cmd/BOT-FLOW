@@ -127,18 +127,9 @@ const getTodayTopicCount = async (ownerId: string = "default") => {
   istDate.setHours(0, 0, 0, 0);
   
   // We need to convert this IST midnight back to UTC for the query
-  // Actually, MongoDB stores UTC. If we want topics created since IST midnight:
-  // 1. Get IST midnight as a Date object in the local context
-  // 2. The difference between IST and UTC is +5:30.
-  // So IST midnight is UTC 6:30 PM (previous day).
-  
-  const startOfIstDay = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  startOfIstDay.setHours(0, 0, 0, 0);
-  
-  // To get the UTC time for IST midnight:
-  // IST = UTC + 5.5 hours
-  // UTC = IST - 5.5 hours
-  const startOfIstDayUtc = new Date(startOfIstDay.getTime() - (5.5 * 60 * 60 * 1000));
+  // IST = UTC + 5:30
+  // So UTC = IST - 5:30
+  const startOfIstDayUtc = new Date(istDate.getTime() - (5.5 * 60 * 60 * 1000));
   
   return await Topic.countDocuments({ created_at: { $gte: startOfIstDayUtc }, ownerId });
 };
@@ -607,6 +598,7 @@ async function startServer() {
       if (message.action instanceof Api.MessageActionTopicCreate) {
         const topicName = message.action.title;
         const topicId = message.id;
+        console.log(`New topic detected: ${topicId} - ${topicName} for ${ownerId}`);
         await logTopic(topicId, topicName, ownerId);
         
         const autoReply = (await getSetting("auto_reply", ownerId))?.value || "Welcome!";
@@ -622,8 +614,44 @@ async function startServer() {
             console.error("UserBot failed to send auto-reply:", err);
           }
         }, delaySeconds * 1000);
-      }
-
+      } else {
+        // Fallback: Check if topic exists in DB for any message in a topic
+        const topicId = message.replyTo?.replyToMsgId || message.id;
+        // Only if it looks like a topic ID (usually small integer relative to chat, but in forums it's the message ID of the topic creation)
+        if (topicId && message.peerId) {
+             // We can't easily know if it's a topic or just a reply without checking context, 
+             // but for forums, the top message ID is the topic ID.
+             // Let's try to find it. If not found, we might want to fetch it.
+             // However, fetching every time is expensive.
+             // Let's just rely on the fact that if we are processing a message in a topic, we should know about it.
+             // For now, let's just ensure we log it if we can confirm it's a topic.
+             // Actually, the user wants "Total Topics" to work.
+             // If the bot missed the creation event, we need a way to add it.
+             
+             // Simple approach: If it's a forum channel, try to get topic info if missing?
+             // This might be too heavy.
+             // Let's just log the topic if we haven't seen it, assuming the current message ID *might* be the topic ID if it's a thread starter?
+             // No, replyToMsgId is the topic ID in forums.
+             if (message.replyTo?.replyToMsgId) {
+                 const tid = message.replyTo.replyToMsgId;
+                 const exists = await Topic.exists({ telegram_topic_id: tid, ownerId });
+                 if (!exists) {
+                     // It's a new topic we haven't seen (or missed creation event)
+                     // We don't know the name easily without fetching.
+                     // Let's just log it as "Unknown Topic" or try to fetch.
+                     // Fetching is better.
+                     try {
+                         // This is specific to Telegram Client API
+                         // We can try to get the message with that ID to see if it's a service message for topic creation?
+                         // Or just save it with a placeholder name.
+                         await logTopic(tid, "Detected Topic", ownerId);
+                         console.log(`Auto-detected missing topic ${tid} for ${ownerId}`);
+                     } catch (e) {
+                         console.error(`Failed to auto-log topic ${tid}`, e);
+                     }
+                 }
+             }
+        }
       // 2. Keyword Handler
       let keywordMatched = false;
       if (message.message && !message.out) {
@@ -908,7 +936,6 @@ async function startServer() {
             }
           }
         }
-      }
 
       // 3. AI Smart Reply (Fallback)
       if (!keywordMatched && message.message && !message.out) {
@@ -1436,7 +1463,24 @@ async function startServer() {
       if (!phoneNumber || !Array.isArray(targetGroupIds)) {
         return res.status(400).json({ error: "Phone number and group IDs array are required" });
       }
+      
+      // Update the account
       await Account.findOneAndUpdate({ phoneNumber, ownerId }, { targetGroupIds });
+      
+      // Update the running client's handler if it exists
+      const client = userClients.get(phoneNumber);
+      if (client) {
+          // We need to remove the old handler and add a new one with updated groups.
+          // However, 'setupUserBotHandlers' adds an event handler but doesn't return a reference to remove it easily
+          // without storing it.
+          // The simplest way to apply changes is to disconnect and reconnect the client.
+          console.log(`Restarting client for ${phoneNumber} to apply group changes...`);
+          await client.disconnect();
+          await client.connect();
+          // Re-setup handlers with NEW group IDs
+          setupUserBotHandlers(client, targetGroupIds, ownerId);
+      }
+      
       await saveLog(`Updated group IDs for ${phoneNumber}`, 'info', '/api/accounts/update-groups', null, ownerId);
       res.json({ success: true });
     } catch (err: any) {

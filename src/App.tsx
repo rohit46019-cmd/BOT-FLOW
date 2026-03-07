@@ -2405,66 +2405,74 @@ export default function App() {
                                     </span>
                                   )}
                                 </div>
-                                <div className={`text-xs mt-1 truncate ${darkMode ? "text-slate-500" : "text-slate-400"}`}>
-                                  {acc.username ? `@${acc.username} • ` : ''}API ID: {acc.apiId}
+                              <div className="mt-4 pt-4 border-t border-dashed border-slate-200 dark:border-slate-700">
+                                <div className="flex items-center justify-between mb-2">
+                                   <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? "text-slate-500" : "text-slate-400"}`}>Target Groups</span>
+                                   <button 
+                                     onClick={() => {
+                                        const newGid = prompt("Enter new Group ID (e.g. -100123456789):");
+                                        if (newGid && ownerId) {
+                                          const cleanGid = newGid.trim();
+                                          if (!acc.targetGroupIds?.includes(cleanGid)) {
+                                            const updatedGroups = [...(acc.targetGroupIds || []), cleanGid];
+                                            fetch('/api/accounts/update-groups', {
+                                              method: 'POST',
+                                              headers: { 
+                                                'Content-Type': 'application/json',
+                                                'x-owner-id': ownerId
+                                              },
+                                              body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
+                                            }).then(() => {
+                                                fetchStats();
+                                                alert("Group added! Bot is restarting to apply changes...");
+                                            });
+                                          }
+                                        }
+                                     }}
+                                     className="text-[10px] text-blue-500 hover:text-blue-400 font-bold uppercase tracking-widest flex items-center gap-1"
+                                   >
+                                     <Plus size={10} /> Add Group
+                                   </button>
                                 </div>
-                                <div className="mt-2 flex flex-wrap gap-1">
+                                <div className="flex flex-wrap gap-2">
                                   {acc.targetGroupIds?.map((gid, idx) => (
-                                    <span key={idx} className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${darkMode ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
-                                      {gid}
-                                    </span>
+                                    <div key={idx} className={`flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all ${darkMode ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                                      <span>{gid}</span>
+                                      <button 
+                                        onClick={() => {
+                                          if (confirm(`Remove group ${gid}?`) && ownerId) {
+                                            const updatedGroups = acc.targetGroupIds.filter(g => g !== gid);
+                                            fetch('/api/accounts/update-groups', {
+                                              method: 'POST',
+                                              headers: { 
+                                                'Content-Type': 'application/json',
+                                                'x-owner-id': ownerId
+                                              },
+                                              body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
+                                            }).then(() => {
+                                                fetchStats();
+                                                alert("Group removed! Bot is restarting to apply changes...");
+                                            });
+                                          }
+                                        }}
+                                        className="text-slate-400 hover:text-rose-500 transition-colors"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    </div>
                                   ))}
+                                  {(!acc.targetGroupIds || acc.targetGroupIds.length === 0) && (
+                                     <span className={`text-[10px] italic ${darkMode ? "text-slate-600" : "text-slate-400"}`}>No groups set. Bot will ignore all messages.</span>
+                                  )}
                                 </div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-2 self-end sm:self-center">
-                              <button
-                                onClick={() => {
-                                  const newGid = prompt("Enter new Group ID:");
-                                  if (newGid && ownerId) {
-                                    const updatedGroups = [...(acc.targetGroupIds || []), newGid];
-                                    fetch('/api/accounts/update-groups', {
-                                      method: 'POST',
-                                      headers: { 
-                                        'Content-Type': 'application/json',
-                                        'x-owner-id': ownerId
-                                      },
-                                      body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
-                                    }).then(() => fetchStats());
-                                  }
-                                }}
-                                className={`p-2 rounded-xl transition-all ${
-                                  darkMode ? "hover:bg-pink-500/10 text-slate-400 hover:text-pink-500" : "hover:bg-pink-50 text-slate-400 hover:text-pink-600"
-                                }`}
-                                title="Add Group ID"
-                              >
-                                <Plus className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  if (acc.targetGroupIds && acc.targetGroupIds.length > 0 && ownerId) {
-                                    const updatedGroups = acc.targetGroupIds.slice(0, -1);
-                                    fetch('/api/accounts/update-groups', {
-                                      method: 'POST',
-                                      headers: { 
-                                        'Content-Type': 'application/json',
-                                        'x-owner-id': ownerId
-                                      },
-                                      body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
-                                    }).then(() => fetchStats());
-                                  }
-                                }}
-                                className={`p-2 rounded-xl transition-all ${
-                                  darkMode ? "hover:bg-amber-500/10 text-slate-400 hover:text-amber-500" : "hover:bg-amber-50 text-slate-400 hover:text-amber-600"
-                                }`}
-                                title="Remove Last Group ID"
-                              >
-                                <RotateCcw className="w-5 h-5" />
-                              </button>
+                            </div>
+                            <div className="flex items-center gap-2 self-end sm:self-start">
                               <button
                                 onClick={() => handleLogout(acc.phoneNumber)}
                                 className={`p-2 rounded-xl transition-all ${
-                                  darkMode ? "hover:bg-red-500/10 text-slate-400 hover:text-red-500" : "hover:bg-red-50 text-slate-400 hover:text-red-600"
+                                  darkMode ? "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20" : "bg-rose-50 text-rose-500 hover:bg-rose-100"
                                 }`}
                                 title="Logout Account"
                               >
