@@ -26,7 +26,30 @@ const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selli
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
-mongoose.connect(MONGODB_URI).then(() => console.log("Connected to MongoDB")).catch(err => console.error("MongoDB connection error:", err));
+
+let cachedDb: typeof mongoose | null = null;
+
+async function connectToDatabase() {
+  if (cachedDb) {
+    return cachedDb;
+  }
+
+  try {
+    const db = await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000, // Fail fast if connection is bad
+      socketTimeoutMS: 45000,
+    });
+    console.log("Connected to MongoDB");
+    cachedDb = db;
+    return db;
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+    throw err;
+  }
+}
+
+// Connect immediately (for local dev) but also ensure connection in routes
+connectToDatabase().catch(console.error);
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
@@ -50,7 +73,8 @@ const KeywordSchema = new mongoose.Schema({
   message_link: { type: String }, // Legacy Telegram message link
   message_links: { type: [String], default: [] }, // Multiple Telegram message links
   max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
-  match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' }
+  match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
+  ai_reply_enabled: { type: Boolean, default: false }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -678,6 +702,63 @@ async function startServer() {
                 linksToProcess.push(kw.message_link);
               }
 
+              // 1. AI Reply (if enabled)
+              if (kw.ai_reply_enabled) {
+                console.log(`Triggering AI reply for keyword: ${match.matchedWord}`);
+                const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+                
+                // Only proceed if global AI mode is also enabled? 
+                // The user request implies this is a specific override/feature.
+                // Let's assume it works even if global AI mode is disabled, OR we check global mode.
+                // Usually "AI Mode" toggle is a master switch. Let's respect it.
+                if (aiModeEnabled) {
+                   const geminiApiKeysSetting = await getSetting("gemini_api_keys");
+                   let apiKeys: string[] = [];
+                   try {
+                     apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
+                   } catch (e) {}
+                   
+                   const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+                   if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
+                   
+                   if (apiKeys.length > 0) {
+                     const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+                     
+                     for (const apiKey of apiKeys) {
+                       try {
+                         const genAI = new GoogleGenAI({ apiKey });
+                         const response = await genAI.models.generateContent({
+                           model: "gemini-2.5-flash",
+                           contents: [
+                             {
+                               role: "user",
+                               parts: [
+                                 { text: `System Instruction: ${aiPersona}` },
+                                 { text: `User Message: "${message.message}"` },
+                                 { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
+                               ]
+                             }
+                           ]
+                         });
+                         
+                         const aiReply = response.text.trim();
+                         if (aiReply && aiReply !== "NO_REPLY") {
+                           console.log(`AI Reply (Keyword Triggered): "${aiReply}"`);
+                           await client.sendMessage(message.peerId, {
+                             message: aiReply,
+                             replyTo: message.id,
+                           });
+                           await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
+                           break; // Success
+                         }
+                       } catch (e) {
+                         console.error("AI Keyword Reply failed:", e);
+                       }
+                     }
+                   }
+                }
+              }
+
               if (linksToProcess.length > 0) {
                 console.log(`Handling ${linksToProcess.length} message links for keyword: ${match.matchedWord}`);
                 
@@ -941,6 +1022,7 @@ async function startServer() {
   // API Routes
   app.get("/api/stats", async (req, res) => {
     try {
+      await connectToDatabase(); // Ensure DB is connected
       const topicCount = await getTopicCount();
       const todayTopicCount = await getTodayTopicCount();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
@@ -1022,6 +1104,7 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
+      await connectToDatabase(); // Ensure DB is connected
       const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
@@ -1090,7 +1173,7 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
@@ -1103,7 +1186,8 @@ async function startServer() {
         message_link, 
         message_links,
         max_replies: typeof max_replies === 'number' ? max_replies : 2,
-        match_mode: match_mode || 'exact'
+        match_mode: match_mode || 'exact',
+        ai_reply_enabled: !!ai_reply_enabled
       };
       
       if (id) {

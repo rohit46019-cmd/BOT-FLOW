@@ -79,6 +79,7 @@ interface Keyword {
   message_links?: string[];
   max_replies?: number;
   match_mode?: 'exact' | 'partial';
+  ai_reply_enabled?: boolean;
 }
 
 interface Topic {
@@ -181,6 +182,7 @@ export default function App() {
   const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(2);
+  const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
   const [keywordSearch, setKeywordSearch] = useState("");
   const [blockedTopics, setBlockedTopics] = useState<any[]>([]);
   const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
@@ -773,7 +775,7 @@ export default function App() {
 
   const handleAddKeyword = async () => {
     const validKeywords = newKeywords.filter(k => k.trim().length > 0);
-    if (validKeywords.length === 0 || (!newReply && newMessageLinks.every(l => !l))) return;
+    if (validKeywords.length === 0 || (!newReply && newMessageLinks.every(l => !l) && !newAiReplyEnabled)) return;
 
     // Capture current values for the API call
     const payload = { 
@@ -783,7 +785,8 @@ export default function App() {
       reply: newReply, 
       message_links: newMessageLinks.filter(l => l.trim().length > 0),
       max_replies: Number(newMaxReplies) || 2,
-      match_mode: newMatchMode
+      match_mode: newMatchMode,
+      ai_reply_enabled: newAiReplyEnabled
     };
 
     // Optimistic UI updates
@@ -795,6 +798,7 @@ export default function App() {
     setNewMessageLinks([""]);
     setNewMaxReplies(2);
     setNewMatchMode('exact');
+    setNewAiReplyEnabled(false);
     setEditingKeywordId(null);
 
     // If we are editing, we might want to update the local list immediately to reflect changes
@@ -863,6 +867,7 @@ export default function App() {
     setNewMessageLinks(links);
     setNewMaxReplies(kw.max_replies || 2);
     setNewMatchMode(kw.match_mode || 'exact');
+    setNewAiReplyEnabled(!!kw.ai_reply_enabled);
     setEditingKeywordId(kw._id);
     // Scroll to top of the keyword section
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -874,6 +879,7 @@ export default function App() {
     setNewMessageLinks([""]);
     setNewMaxReplies(2);
     setNewMatchMode('exact');
+    setNewAiReplyEnabled(false);
     setEditingKeywordId(null);
   };
 
@@ -1766,6 +1772,21 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>AI Reply Override</label>
+                    <button 
+                      onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${newAiReplyEnabled ? 'bg-purple-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${newAiReplyEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+                  <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                    If enabled, the AI will also try to reply to this keyword (using your persona).
+                  </p>
                 </div>
 
                 <div className="flex space-x-3 pt-2">
