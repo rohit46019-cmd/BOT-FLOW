@@ -1286,62 +1286,97 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
 
   // UserBot Auth Routes
   app.post("/api/auth/send-code", async (req, res) => {
-    const { phone } = req.body;
-    let apiIdRaw = (await getSetting("api_id"))?.value || "";
-    let apiHash = (await getSetting("api_hash"))?.value || "";
-
-    // Trim whitespace
-    apiIdRaw = apiIdRaw.trim();
-    apiHash = apiHash.trim();
-
-    const apiId = parseInt(apiIdRaw, 10);
-
-    if (!apiId || isNaN(apiId) || !apiHash) {
-      return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
-    }
-
-    console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
-
     try {
-      userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
+      await connectToDatabase(); // Ensure DB is connected
+      const { phone } = req.body;
+      let apiIdRaw = (await getSetting("api_id"))?.value || "";
+      let apiHash = (await getSetting("api_hash"))?.value || "";
+
+      // Trim whitespace
+      apiIdRaw = apiIdRaw.trim();
+      apiHash = apiHash.trim();
+
+      const apiId = parseInt(apiIdRaw, 10);
+
+      if (!apiId || isNaN(apiId) || !apiHash) {
+        return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
+      }
+
+      console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
+
+      // Create a temporary client just for sending the code
+      const tempClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 5,
+        useWSS: false, // Ensure standard TCP
       });
-      await userClient.connect();
-      const result = await userClient.sendCode({ apiId, apiHash }, phone);
+      
+      await tempClient.connect();
+      
+      const result = await tempClient.sendCode({ apiId, apiHash }, phone);
+      
+      // Store these temporarily in memory (fallback) but ideally return to client
       phoneCodeHash = result.phoneCodeHash;
       phoneNumber = phone;
+      
       await saveLog(`Auth code sent to ${phone}`, 'info', '/api/auth/send-code');
-      res.json({ success: true });
+      
+      // Return the hash to the client for stateless auth
+      res.json({ success: true, phoneCodeHash: result.phoneCodeHash });
+      
+      // Disconnect temp client to free resources
+      await tempClient.disconnect();
+      
     } catch (err: any) {
       console.error("SendCode error:", err);
-      await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId });
+      try {
+        await saveLog(err.message, 'error', '/api/auth/send-code', { phone: req.body.phone });
+      } catch (logErr) {
+        console.error("Failed to save error log:", logErr);
+      }
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     }
   });
 
   app.post("/api/auth/signin", async (req, res) => {
-    const { code, password } = req.body;
-    if (!userClient || !phoneNumber || !phoneCodeHash) return res.status(400).json({ error: "Session not initialized" });
-
     try {
+      await connectToDatabase(); // Ensure DB is connected
+      const { code, password, phone, phoneCodeHash: clientPhoneCodeHash } = req.body;
+      
+      // Use client provided hash/phone if available (stateless), otherwise fallback to memory
+      const targetPhone = phone || phoneNumber;
+      const targetHash = clientPhoneCodeHash || phoneCodeHash;
+
+      if (!targetPhone || !targetHash) {
+        return res.status(400).json({ error: "Session context lost. Please request code again." });
+      }
+
+      const apiIdRaw = (await getSetting("api_id"))?.value || "";
+      const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+      const apiId = parseInt(apiIdRaw.trim(), 10);
+
+      // Create a new client for signing in
+      const tempClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
+        connectionRetries: 5,
+      });
+      
+      await tempClient.connect();
+
       try {
-        await userClient.invoke(
+        await tempClient.invoke(
           new Api.auth.SignIn({
-            phoneNumber: phoneNumber,
-            phoneCodeHash: phoneCodeHash,
+            phoneNumber: targetPhone,
+            phoneCodeHash: targetHash,
             phoneCode: code,
           })
         );
       } catch (err: any) {
         if (err.errorMessage === "SESSION_PASSWORD_NEEDED") {
           if (!password) {
+            await tempClient.disconnect();
             return res.status(401).json({ error: "2FA Password required" });
           }
-          const apiIdRaw = (await getSetting("api_id"))?.value || "";
-          const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-          const apiId = parseInt(apiIdRaw.trim(), 10);
           
-          await userClient.signInWithPassword({ apiId, apiHash }, {
+          await tempClient.signInWithPassword({ apiId, apiHash }, {
             password: async () => password,
             onError: (err) => { throw err; }
           });
@@ -1350,13 +1385,21 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
         }
       }
 
-      const sessionString = (userClient.session as StringSession).save();
+      const sessionString = (tempClient.session as StringSession).save();
       await setSetting("session_string", sessionString);
+      
+      // Now initialize the global userClient with this session
+      if (userClient) await userClient.disconnect();
+      userClient = tempClient; // Keep this one connected
       setupUserBotHandlers(userClient, groupId);
-      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin');
+      
+      await saveLog(`UserBot signed in: ${targetPhone}`, 'info', '/api/auth/signin');
       res.json({ success: true });
     } catch (err: any) {
-      await saveLog(err.message, 'error', '/api/auth/signin', { phoneNumber });
+      console.error("SignIn error:", err);
+      try {
+        await saveLog(err.message, 'error', '/api/auth/signin', { phone: req.body.phone });
+      } catch (logErr) {}
       res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
