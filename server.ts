@@ -1,5 +1,5 @@
 import express from "express";
-// import { createServer as createViteServer } from "vite"; // Dynamic import used instead
+import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
 import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
@@ -16,26 +16,7 @@ const __dirname = path.dirname(__filename);
 // Initialize Gemini
 // const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-export const app = express();
-app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-const PORT = 3000;
-const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
-const groupId = "-1003672030592"; // Strictly enforced Group ID
-
-const bot = new TelegramBot(token, { polling: false }); // Polling false initially, enabled in startServer
-
-// Handle polling errors to prevent crash and clean up logs
-bot.on("polling_error", (error: any) => {
-  if (error.message && error.message.includes("409 Conflict")) {
-    return;
-  }
-  console.error("Telegram Bot Polling Error:", error);
-});
-
-// UserBot client placeholder
-let userClient: TelegramClient | null = null;
+const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selling paid study batches (SSC, Railway, etc.) for 87rs each. You have leaked batches from many top teachers. Your goal is to answer user queries about price, availability, and payment.
 - Context: Users are students preparing for exams.
 - Language: Reply in the same language as the user (Hindi, English, or Hinglish).
 - Robustness: Users may use slang or misspell words; interpret their intent correctly.
@@ -44,31 +25,8 @@ let userClient: TelegramClient | null = null;
 - Constraint: If the message is generic (e.g., 'ok', 'hmm') or doesn't need a reply, strictly output 'NO_REPLY'.`;
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/botdb";
-
-let cachedDb: typeof mongoose | null = null;
-
-async function connectToDatabase() {
-  if (cachedDb) {
-    return cachedDb;
-  }
-
-  try {
-    const db = await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000, // Fail fast if connection is bad
-      socketTimeoutMS: 45000,
-    });
-    console.log("Connected to MongoDB");
-    cachedDb = db;
-    return db;
-  } catch (err) {
-    console.error("MongoDB connection error:", err);
-    throw err;
-  }
-}
-
-// Connect immediately (for local dev) but also ensure connection in routes
-connectToDatabase().catch(console.error);
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
+mongoose.connect(MONGODB_URI).then(() => console.log("Connected to MongoDB")).catch(err => console.error("MongoDB connection error:", err));
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
@@ -407,8 +365,7 @@ async function initSettings() {
 }
 initSettings();
 
-
-// UserBot client placeholder (removed duplicate)
+let userClient: TelegramClient | null = null;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
 let cachedKeywords: any[] = [];
@@ -422,7 +379,27 @@ async function refreshKeywordCache() {
   }
 }
 
-function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
+async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  const PORT = 3000;
+
+  const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
+  const groupId = "-1003672030592"; // Strictly enforced Group ID
+
+  const bot = new TelegramBot(token, { polling: true });
+
+  // Handle polling errors to prevent crash and clean up logs
+  bot.on("polling_error", (error: any) => {
+    if (error.message && error.message.includes("409 Conflict")) {
+      // This is expected during rapid restarts in this environment
+      return;
+    }
+    console.error("Telegram Bot Polling Error:", error);
+  });
+
+  function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
       const message = event.message;
       if (!message) return;
@@ -1022,7 +999,6 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
   // API Routes
   app.get("/api/stats", async (req, res) => {
     try {
-      await connectToDatabase(); // Ensure DB is connected
       const topicCount = await getTopicCount();
       const todayTopicCount = await getTodayTopicCount();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
@@ -1104,7 +1080,6 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      await connectToDatabase(); // Ensure DB is connected
       const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
@@ -1125,25 +1100,12 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
       if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
       if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       
-      try {
-        await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
-      } catch (logErr) {
-        console.error("Failed to save log (non-fatal):", logErr);
-      }
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
       res.json({ success: true });
     } catch (err: any) {
-      console.error("CRITICAL Error in /api/settings:", err);
-      // Try to save log, but don't let it block the error response
-      try {
-        await saveLog(err.message, 'error', '/api/settings', req.body);
-      } catch (logErr) {
-        console.error("Failed to save error log:", logErr);
-      }
-      
-      res.status(500).json({ 
-        error: `Settings Update Failed: ${err.message || String(err)}`,
-        details: err.stack 
-      });
+      console.error("Error in /api/settings:", err);
+      await saveLog(err.message, 'error', '/api/settings', req.body);
+      res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
     }
   });
 
@@ -1286,97 +1248,62 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
 
   // UserBot Auth Routes
   app.post("/api/auth/send-code", async (req, res) => {
+    const { phone } = req.body;
+    let apiIdRaw = (await getSetting("api_id"))?.value || "";
+    let apiHash = (await getSetting("api_hash"))?.value || "";
+
+    // Trim whitespace
+    apiIdRaw = apiIdRaw.trim();
+    apiHash = apiHash.trim();
+
+    const apiId = parseInt(apiIdRaw, 10);
+
+    if (!apiId || isNaN(apiId) || !apiHash) {
+      return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
+    }
+
+    console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
+
     try {
-      await connectToDatabase(); // Ensure DB is connected
-      const { phone } = req.body;
-      let apiIdRaw = (await getSetting("api_id"))?.value || "";
-      let apiHash = (await getSetting("api_hash"))?.value || "";
-
-      // Trim whitespace
-      apiIdRaw = apiIdRaw.trim();
-      apiHash = apiHash.trim();
-
-      const apiId = parseInt(apiIdRaw, 10);
-
-      if (!apiId || isNaN(apiId) || !apiHash) {
-        return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
-      }
-
-      console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
-
-      // Create a temporary client just for sending the code
-      const tempClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
+      userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 5,
-        useWSS: false, // Ensure standard TCP
       });
-      
-      await tempClient.connect();
-      
-      const result = await tempClient.sendCode({ apiId, apiHash }, phone);
-      
-      // Store these temporarily in memory (fallback) but ideally return to client
+      await userClient.connect();
+      const result = await userClient.sendCode({ apiId, apiHash }, phone);
       phoneCodeHash = result.phoneCodeHash;
       phoneNumber = phone;
-      
       await saveLog(`Auth code sent to ${phone}`, 'info', '/api/auth/send-code');
-      
-      // Return the hash to the client for stateless auth
-      res.json({ success: true, phoneCodeHash: result.phoneCodeHash });
-      
-      // Disconnect temp client to free resources
-      await tempClient.disconnect();
-      
+      res.json({ success: true });
     } catch (err: any) {
       console.error("SendCode error:", err);
-      try {
-        await saveLog(err.message, 'error', '/api/auth/send-code', { phone: req.body.phone });
-      } catch (logErr) {
-        console.error("Failed to save error log:", logErr);
-      }
+      await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId });
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     }
   });
 
   app.post("/api/auth/signin", async (req, res) => {
+    const { code, password } = req.body;
+    if (!userClient || !phoneNumber || !phoneCodeHash) return res.status(400).json({ error: "Session not initialized" });
+
     try {
-      await connectToDatabase(); // Ensure DB is connected
-      const { code, password, phone, phoneCodeHash: clientPhoneCodeHash } = req.body;
-      
-      // Use client provided hash/phone if available (stateless), otherwise fallback to memory
-      const targetPhone = phone || phoneNumber;
-      const targetHash = clientPhoneCodeHash || phoneCodeHash;
-
-      if (!targetPhone || !targetHash) {
-        return res.status(400).json({ error: "Session context lost. Please request code again." });
-      }
-
-      const apiIdRaw = (await getSetting("api_id"))?.value || "";
-      const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-      const apiId = parseInt(apiIdRaw.trim(), 10);
-
-      // Create a new client for signing in
-      const tempClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
-        connectionRetries: 5,
-      });
-      
-      await tempClient.connect();
-
       try {
-        await tempClient.invoke(
+        await userClient.invoke(
           new Api.auth.SignIn({
-            phoneNumber: targetPhone,
-            phoneCodeHash: targetHash,
+            phoneNumber: phoneNumber,
+            phoneCodeHash: phoneCodeHash,
             phoneCode: code,
           })
         );
       } catch (err: any) {
         if (err.errorMessage === "SESSION_PASSWORD_NEEDED") {
           if (!password) {
-            await tempClient.disconnect();
             return res.status(401).json({ error: "2FA Password required" });
           }
+          const apiIdRaw = (await getSetting("api_id"))?.value || "";
+          const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+          const apiId = parseInt(apiIdRaw.trim(), 10);
           
-          await tempClient.signInWithPassword({ apiId, apiHash }, {
+          await userClient.signInWithPassword({ apiId, apiHash }, {
             password: async () => password,
             onError: (err) => { throw err; }
           });
@@ -1385,21 +1312,13 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
         }
       }
 
-      const sessionString = (tempClient.session as StringSession).save();
+      const sessionString = (userClient.session as StringSession).save();
       await setSetting("session_string", sessionString);
-      
-      // Now initialize the global userClient with this session
-      if (userClient) await userClient.disconnect();
-      userClient = tempClient; // Keep this one connected
       setupUserBotHandlers(userClient, groupId);
-      
-      await saveLog(`UserBot signed in: ${targetPhone}`, 'info', '/api/auth/signin');
+      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin');
       res.json({ success: true });
     } catch (err: any) {
-      console.error("SignIn error:", err);
-      try {
-        await saveLog(err.message, 'error', '/api/auth/signin', { phone: req.body.phone });
-      } catch (logErr) {}
+      await saveLog(err.message, 'error', '/api/auth/signin', { phoneNumber });
       res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
@@ -1561,7 +1480,6 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
 
   // Vite middleware
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1578,6 +1496,43 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
   app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
+    // Initial keyword cache load
+    await refreshKeywordCache();
+    
+    // Connect UserBot in background
+    (async () => {
+      try {
+        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
+        let sessionString = (await getSetting("session_string"))?.value;
+        
+        // Use hardcoded session if database session is missing
+        if (!sessionString) {
+          sessionString = hardcodedSession;
+          await setSetting("session_string", hardcodedSession);
+          console.log("Using hardcoded Telegram session.");
+        }
+
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiId = parseInt(apiIdRaw.trim(), 10);
+
+        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+          console.log("Attempting to connect UserBot...");
+          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+            connectionRetries: 5,
+          });
+          await userClient.connect();
+          console.log("UserBot connected successfully.");
+          setupUserBotHandlers(userClient, groupId);
+          await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+        }
+      } catch (err: any) {
+        console.error("Failed to connect UserBot on startup:", err);
+        await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
+      }
+    })();
+  });
+
   // Graceful shutdown
   const shutdown = async () => {
     console.log("Shutting down...");
@@ -1592,58 +1547,6 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
 
-  // Start Server immediately if running directly
-  // In Vercel, this file is imported, so we don't want to listen.
-  // In local dev (tsx server.ts) or container start (node server.ts), we do.
-  const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-  const isDev = process.env.npm_lifecycle_event === 'dev';
-  const isStart = process.env.npm_lifecycle_event === 'start';
-  
-  if (isMainModule || isDev || isStart) {
-      app.listen(PORT, "0.0.0.0", async () => {
-        console.log(`Server running on http://localhost:${PORT}`);
-        
-        // Connect DB first
-        await connectToDatabase().catch(console.error);
-
-        // Start polling only when running as server
-        bot.startPolling();
-
-        // Initial keyword cache load
-        await refreshKeywordCache();
-        
-        // Connect UserBot in background
-        (async () => {
-          try {
-            const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
-            let sessionString = (await getSetting("session_string"))?.value;
-            
-            // Use hardcoded session if database session is missing
-            if (!sessionString) {
-              sessionString = hardcodedSession;
-              await setSetting("session_string", hardcodedSession);
-              console.log("Using hardcoded Telegram session.");
-            }
-
-            const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
-            const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
-            const apiId = parseInt(apiIdRaw.trim(), 10);
-
-            if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-              console.log("Attempting to connect UserBot...");
-              userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-                connectionRetries: 5,
-              });
-              await userClient.connect();
-              console.log("UserBot connected successfully.");
-              setupUserBotHandlers(userClient, groupId);
-              await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
-            }
-          } catch (err: any) {
-            console.error("Failed to connect UserBot on startup:", err);
-            await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
-          }
-        })();
-      });
-  }
+startServer();

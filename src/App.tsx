@@ -757,15 +757,7 @@ export default function App() {
         }),
       });
       
-      let data;
-      const text = await res.text();
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        // Response was not JSON (likely HTML error page from Vercel/Proxy)
-        console.error("Non-JSON response:", text);
-        data = { error: `Server Error (${res.status}): ${text.slice(0, 100)}...` };
-      }
+      const data = await res.json().catch(() => null);
       
       if (res.ok) {
         showNotification('success', 'Settings updated!');
@@ -954,8 +946,6 @@ export default function App() {
     }
   };
 
-  const [phoneCodeHash, setPhoneCodeHash] = useState<string>("");
-
   const handleSendCode = async () => {
     setAuthLoading(true);
     try {
@@ -969,9 +959,6 @@ export default function App() {
 
       if (res.ok) {
         setAuthStep('code');
-        if (data.phoneCodeHash) {
-          setPhoneCodeHash(data.phoneCodeHash);
-        }
         showNotification('success', 'Code sent!');
       } else {
         showNotification('error', data?.error || `Failed to send code: ${res.statusText}`);
@@ -990,7 +977,7 @@ export default function App() {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, password, phone, phoneCodeHash }),
+        body: JSON.stringify({ code, password }),
       });
       
       const data = await res.json().catch(() => null);
