@@ -68,7 +68,7 @@ async function connectToDatabase() {
 }
 
 // Connect immediately (for local dev) but also ensure connection in routes
-connectToDatabase().catch(console.error);
+// connectToDatabase().catch(console.error);
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
@@ -1578,43 +1578,6 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
   app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
-    // Initial keyword cache load
-    await refreshKeywordCache();
-    
-    // Connect UserBot in background
-    (async () => {
-      try {
-        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
-        let sessionString = (await getSetting("session_string"))?.value;
-        
-        // Use hardcoded session if database session is missing
-        if (!sessionString) {
-          sessionString = hardcodedSession;
-          await setSetting("session_string", hardcodedSession);
-          console.log("Using hardcoded Telegram session.");
-        }
-
-        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
-        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
-        const apiId = parseInt(apiIdRaw.trim(), 10);
-
-        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-          console.log("Attempting to connect UserBot...");
-          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-            connectionRetries: 5,
-          });
-          await userClient.connect();
-          console.log("UserBot connected successfully.");
-          setupUserBotHandlers(userClient, groupId);
-          await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
-        }
-      } catch (err: any) {
-        console.error("Failed to connect UserBot on startup:", err);
-        await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
-      }
-    })();
-  });
-
   // Graceful shutdown
   const shutdown = async () => {
     console.log("Shutting down...");
@@ -1631,10 +1594,19 @@ function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
   process.on("SIGTERM", shutdown);
 
   // Start Server immediately if running directly
-  if (process.env.VITE_RUN_SERVER === 'true' || process.argv[1] === fileURLToPath(import.meta.url)) {
+  // In Vercel, this file is imported, so we don't want to listen.
+  // In local dev (tsx server.ts) or container start (node server.ts), we do.
+  const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+  const isDev = process.env.npm_lifecycle_event === 'dev';
+  const isStart = process.env.npm_lifecycle_event === 'start';
+  
+  if (isMainModule || isDev || isStart) {
       app.listen(PORT, "0.0.0.0", async () => {
         console.log(`Server running on http://localhost:${PORT}`);
         
+        // Connect DB first
+        await connectToDatabase().catch(console.error);
+
         // Start polling only when running as server
         bot.startPolling();
 
