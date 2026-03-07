@@ -44,7 +44,7 @@ let userClient: TelegramClient | null = null;
 - Constraint: If the message is generic (e.g., 'ok', 'hmm') or doesn't need a reply, strictly output 'NO_REPLY'.`;
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/botdb";
 
 let cachedDb: typeof mongoose | null = null;
 
@@ -68,7 +68,7 @@ async function connectToDatabase() {
 }
 
 // Connect immediately (for local dev) but also ensure connection in routes
-// connectToDatabase().catch(console.error);
+connectToDatabase().catch(console.error);
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
