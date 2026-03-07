@@ -5,7 +5,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
-import { CustomFile } from "telegram/client/uploads";
+import { CustomFile } from "telegram/client/uploads.js";
 import { GoogleGenAI } from "@google/genai";
 import path from "path";
 import { fileURLToPath } from "url";
