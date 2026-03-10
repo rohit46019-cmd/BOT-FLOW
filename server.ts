@@ -5,7 +5,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
-import { CustomFile } from "telegram/client/uploads.js";
+import { CustomFile } from "telegram/client/uploads";
 import { GoogleGenAI } from "@google/genai";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -26,24 +26,19 @@ const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selli
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
-mongoose.connect(MONGODB_URI).then(() => console.log("Connected to MongoDB")).catch(err => console.error("MongoDB connection error:", err));
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
-  key: { type: String, required: true },
-  value: { type: String, required: true },
-  ownerId: { type: String, required: true, default: "default" }
+  key: { type: String, required: true, unique: true },
+  value: { type: String, required: true }
 });
-SettingSchema.index({ key: 1, ownerId: 1 }, { unique: true });
 const Setting = mongoose.model("Setting", SettingSchema);
 
 const TopicSchema = new mongoose.Schema({
-  telegram_topic_id: { type: Number, required: true },
+  telegram_topic_id: { type: Number, required: true, unique: true },
   name: { type: String },
-  ownerId: { type: String, required: true, default: "default" },
   created_at: { type: Date, default: Date.now }
 });
-TopicSchema.index({ telegram_topic_id: 1, ownerId: 1 }, { unique: true });
 const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
@@ -55,8 +50,7 @@ const KeywordSchema = new mongoose.Schema({
   message_links: { type: [String], default: [] }, // Multiple Telegram message links
   max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
   match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
-  ai_reply_enabled: { type: Boolean, default: false },
-  ownerId: { type: String, required: true, default: "default" }
+  ai_reply_enabled: { type: Boolean, default: false }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -65,7 +59,6 @@ const LogSchema = new mongoose.Schema({
   message: { type: String, required: true },
   details: { type: String },
   route: { type: String },
-  ownerId: { type: String, required: true, default: "default" },
   timestamp: { type: Date, default: Date.now }
 });
 const Log = mongoose.model("Log", LogSchema);
@@ -74,78 +67,48 @@ const ReplyHistorySchema = new mongoose.Schema({
   topic_id: { type: Number, required: true },
   keyword_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword', required: true },
   count: { type: Number, default: 0 },
-  ownerId: { type: String, required: true, default: "default" },
   last_updated: { type: Date, default: Date.now }
 });
-ReplyHistorySchema.index({ topic_id: 1, keyword_id: 1, ownerId: 1 }, { unique: true });
+ReplyHistorySchema.index({ topic_id: 1, keyword_id: 1 }, { unique: true });
 const ReplyHistory = mongoose.model("ReplyHistory", ReplyHistorySchema);
 
 const PhotoReplyHistorySchema = new mongoose.Schema({
-  topic_id: { type: Number, required: true },
+  topic_id: { type: Number, required: true, unique: true },
   count: { type: Number, default: 0 },
-  ownerId: { type: String, required: true, default: "default" },
   last_updated: { type: Date, default: Date.now }
 });
-PhotoReplyHistorySchema.index({ topic_id: 1, ownerId: 1 }, { unique: true });
 const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
 
-const AccountSchema = new mongoose.Schema({
-  phoneNumber: { type: String, required: true },
-  sessionString: { type: String, required: true },
-  apiId: { type: Number, required: true },
-  apiHash: { type: String, required: true },
-  name: { type: String },
-  username: { type: String },
-  targetGroupIds: { type: [String], default: ["-1003672030592"] },
-  isActive: { type: Boolean, default: true },
-  ownerId: { type: String, required: true, default: "default" },
-  createdAt: { type: Date, default: Date.now }
-});
-AccountSchema.index({ phoneNumber: 1, ownerId: 1 }, { unique: true });
-const Account = mongoose.model("Account", AccountSchema);
-
 const BlockedTopicSchema = new mongoose.Schema({
-  telegram_topic_id: { type: Number, required: true },
+  telegram_topic_id: { type: Number, required: true, unique: true },
   name: { type: String },
   link: { type: String },
-  ownerId: { type: String, required: true, default: "default" },
   created_at: { type: Date, default: Date.now }
 });
-BlockedTopicSchema.index({ telegram_topic_id: 1, ownerId: 1 }, { unique: true });
 const BlockedTopic = mongoose.model("BlockedTopic", BlockedTopicSchema);
 
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const getSetting = async (key: string, ownerId: string = "default") => await Setting.findOne({ key, ownerId });
-const setSetting = async (key: string, value: string, ownerId: string = "default") => await Setting.findOneAndUpdate({ key, ownerId }, { value }, { upsert: true, new: true });
-const getTopicCount = async (ownerId: string = "default") => await Topic.countDocuments({ ownerId });
-const getTodayTopicCount = async (ownerId: string = "default") => {
-  const now = new Date();
-  // Convert to IST (Asia/Kolkata)
-  const istDateStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-  const istDate = new Date(istDateStr);
-  istDate.setHours(0, 0, 0, 0);
-  
-  // We need to convert this IST midnight back to UTC for the query
-  // IST = UTC + 5:30
-  // So UTC = IST - 5:30
-  const startOfIstDayUtc = new Date(istDate.getTime() - (5.5 * 60 * 60 * 1000));
-  
-  return await Topic.countDocuments({ created_at: { $gte: startOfIstDayUtc }, ownerId });
+const getSetting = async (key: string) => await Setting.findOne({ key });
+const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
+const getTopicCount = async () => await Topic.countDocuments();
+const getTodayTopicCount = async () => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  return await Topic.countDocuments({ created_at: { $gte: startOfDay } });
 };
-const logTopic = async (topicId: number, name: string, ownerId: string = "default") => {
+const logTopic = async (topicId: number, name: string) => {
   try {
-    await Topic.create({ telegram_topic_id: topicId, name, ownerId });
+    await Topic.create({ telegram_topic_id: topicId, name });
   } catch (err) {}
 };
 
-const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info', route?: string, details?: any, ownerId: string = "default") => {
+const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info', route?: string, details?: any) => {
   try {
     await Log.create({
       message,
       level,
       route,
-      ownerId,
       details: details ? (typeof details === 'string' ? details : JSON.stringify(details, null, 2)) : undefined
     });
   } catch (err) {
@@ -154,7 +117,7 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
 };
 
 // Helper function for topic renaming
-const handleTopicRenaming = async (client: TelegramClient, message: any, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, ownerId: string, bypassKeywordCheck: boolean = false) => {
+const handleTopicRenaming = async (client: TelegramClient, message: any, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
   const replyToId = message.replyTo?.replyToMsgId;
   if (!replyToId) return;
 
@@ -162,7 +125,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicIc
   let topicName = "Unknown Topic";
   
   // 1. Try DB
-  const topic = await Topic.findOne({ telegram_topic_id: replyToId, ownerId });
+  const topic = await Topic.findOne({ telegram_topic_id: replyToId });
   if (topic && topic.name) {
     topicName = topic.name;
   } 
@@ -175,7 +138,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicIc
         const topicMsg = messages[0];
         if (topicMsg.action && topicMsg.action instanceof Api.MessageActionTopicCreate) {
           topicName = topicMsg.action.title;
-          await logTopic(replyToId, topicName, ownerId);
+          await logTopic(replyToId, topicName);
         }
       }
     } catch (e) {
@@ -204,7 +167,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicIc
           if (t instanceof Api.ForumTopic && t.title) {
             // Update DB with found topic
             await Topic.findOneAndUpdate(
-              { telegram_topic_id: t.id, ownerId },
+              { telegram_topic_id: t.id },
               { name: t.title },
               { upsert: true }
             );
@@ -284,18 +247,18 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicIc
       
       // Update DB
       await Topic.findOneAndUpdate(
-        { telegram_topic_id: replyToId, ownerId },
+        { telegram_topic_id: replyToId },
         { name: newTopicName },
         { upsert: true }
       );
       
-      await saveLog(`Renamed topic ${replyToId} to "${newTopicName}"`, 'info', 'USERBOT', null, ownerId);
+      await saveLog(`Renamed topic ${replyToId} to "${newTopicName}"`, 'info', 'USERBOT');
     } else if (shouldRename && topicName.endsWith(suffix)) {
       console.log(`Topic ${replyToId} already has suffix "${suffix}". Skipping.`);
     }
   } catch (renameErr: any) {
     console.error("Failed to rename topic:", renameErr);
-    await saveLog(`Failed to rename topic ${replyToId}: ${renameErr.message}`, 'error', 'USERBOT', null, ownerId);
+    await saveLog(`Failed to rename topic ${replyToId}: ${renameErr.message}`, 'error', 'USERBOT');
   }
   
   return topicName;
@@ -399,9 +362,8 @@ async function initSettings() {
     console.log("Auto Block Match Mode setting initialized.");
   }
 }
-initSettings();
 
-let userClients = new Map<string, TelegramClient>();
+let userClient: TelegramClient | null = null;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
 let cachedKeywords: any[] = [];
@@ -415,12 +377,23 @@ async function refreshKeywordCache() {
   }
 }
 
-export const app = express();
-
 async function startServer() {
+  const app = express();
   app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
+
+  // Connect to MongoDB
+  try {
+    await mongoose.connect(MONGODB_URI);
+    console.log("Connected to MongoDB");
+    await initSettings();
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+  }
+
+  // Health check endpoint
+  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
   const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
   const groupId = "-1003672030592"; // Strictly enforced Group ID
@@ -436,7 +409,38 @@ async function startServer() {
     console.error("Telegram Bot Polling Error:", error);
   });
 
-  function setupUserBotHandlers(client: TelegramClient, targetGroupIds: string[], ownerId: string) {
+  async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
+    if (!topicId) return "";
+    try {
+      const historyMessages = await client.getMessages(peerId, {
+        replyTo: topicId,
+        limit: 10, // Fetch last 10 messages for context
+      });
+      
+      if (!historyMessages || historyMessages.length === 0) return "";
+      
+      let contextStr = "--- Recent Conversation History in this Topic ---\n";
+      const reversed = [...historyMessages].reverse();
+      for (const msg of reversed) {
+        if (msg.message) {
+          let senderName = "User";
+          if (msg.out) {
+            senderName = "Bot (You)";
+          } else if (msg.sender) {
+            senderName = (msg.sender as any).firstName || (msg.sender as any).username || "User";
+          }
+          contextStr += `[${senderName}]: ${msg.message}\n`;
+        }
+      }
+      contextStr += "-------------------------------------------------\n";
+      return contextStr;
+    } catch (e) {
+      console.error("Failed to fetch conversation context:", e);
+      return "";
+    }
+  }
+
+  function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
       const message = event.message;
       if (!message) return;
@@ -450,34 +454,54 @@ async function startServer() {
       }
 
       const normalizedChatId = chatId.replace("-100", "");
-      const isTargetGroup = targetGroupIds.some(gid => gid.replace("-100", "") === normalizedChatId);
+      const normalizedTargetId = targetGroupId.replace("-100", "");
       
-      if (!isTargetGroup) {
+      if (normalizedChatId !== normalizedTargetId) {
         return;
       }
 
       // Check if system is paused
-      const isSystemPaused = (await getSetting("system_paused", ownerId))?.value === "true";
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
       if (isSystemPaused) {
-        console.log(`System is paused for ${ownerId}. Skipping message processing.`);
+        console.log("System is paused. Skipping message processing.");
         return;
       }
 
-      console.log(`UserBot (${ownerId}) processing message in ${chatId}: "${message.message || '[No text]'}"`);
+      console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
       // Check if topic is blocked
-      const topicId = message.replyTo?.replyToMsgId || message.id;
-      const isBlocked = await BlockedTopic.findOne({ telegram_topic_id: topicId, ownerId });
-      if (isBlocked) {
-        console.log(`Topic ${topicId} is blocked for ${ownerId}. Skipping processing.`);
+      // Important: For forum topics, the 'topicId' is usually the ID of the first message in the thread (the "create topic" message).
+      // Incoming messages in a topic have a 'replyTo.replyToMsgId' pointing to that topic ID.
+      // However, sometimes (rarely) or for the topic creation message itself, message.id is the topic ID.
+      // We must check BOTH to be safe, because sometimes `replyToMsgId` might be missing or different in edge cases.
+      
+      const replyToId = message.replyTo?.replyToMsgId;
+      const messageId = message.id;
+      
+      // Check if the topic ID (replyToId) is blocked
+      if (replyToId) {
+        const isBlocked = await BlockedTopic.findOne({ telegram_topic_id: replyToId });
+        if (isBlocked) {
+          console.log(`Topic ${replyToId} is blocked. Skipping processing.`);
+          return;
+        }
+      }
+
+      // Also check if the message ID itself is blocked (in case it IS the topic start message)
+      const isMessageBlocked = await BlockedTopic.findOne({ telegram_topic_id: messageId });
+      if (isMessageBlocked) {
+        console.log(`Topic (Message ID) ${messageId} is blocked. Skipping processing.`);
         return;
       }
 
+      // Use replyToId as the primary topic ID for logic below, falling back to messageId only if necessary
+      const topicId = replyToId || messageId;
+
       // Check keyword reset logic
-      const autoResetEnabled = (await getSetting("auto_reset_keywords", ownerId))?.value === "true";
+      const autoResetEnabled = (await getSetting("auto_reset_keywords"))?.value === "true";
 
       // Auto-Block Keywords Logic
-      const autoBlockKeywordsStr = (await getSetting("auto_block_keywords", ownerId))?.value || "[]";
+      const autoBlockKeywordsStr = (await getSetting("auto_block_keywords"))?.value || "[]";
       let blockKeywords: { keyword: string, matchMode: 'exact' | 'partial' }[] = [];
       try {
         blockKeywords = JSON.parse(autoBlockKeywordsStr);
@@ -510,26 +534,25 @@ async function startServer() {
         }
 
         if (shouldBlock) {
-          console.log(`Auto-blocking topic ${topicId} due to keyword match for ${ownerId}.`);
+          console.log(`Auto-blocking topic ${topicId} due to keyword match.`);
           
           // Get topic name
-          const topicInfo = await Topic.findOne({ telegram_topic_id: topicId, ownerId });
+          const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
           const name = topicInfo ? topicInfo.name : "Unknown Topic";
-          const link = `https://t.me/c/${normalizedChatId}/${topicId}`;
+          const link = `https://t.me/c/${targetGroupId.replace("-100", "")}/${topicId}`;
 
           await BlockedTopic.findOneAndUpdate(
-            { telegram_topic_id: topicId, ownerId },
+            { telegram_topic_id: topicId },
             { name, link },
             { upsert: true }
           );
 
-          await saveLog(`Topic ${topicId} auto-blocked due to keyword match`, 'warn', 'USERBOT', { topicName: name }, ownerId);
+          await saveLog(`Topic ${topicId} auto-blocked due to keyword match`, 'warn', 'USERBOT', { topicName: name });
           
           // Notify frontend
           sendSseEvent('topic_blocked', {
             message: `Topic "${name}" auto-blocked`,
             topicName: name,
-            ownerId: ownerId,
             timestamp: new Date()
           });
 
@@ -539,21 +562,21 @@ async function startServer() {
 
       // 0. Photo Handler
       if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType.startsWith('image/')))) {
-        const photoReplyEnabled = (await getSetting("photo_reply_enabled", ownerId))?.value === "true";
+        const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
         
         if (photoReplyEnabled) {
           const topicId = message.replyTo?.replyToMsgId || message.id;
-          const photoReplyMax = parseInt((await getSetting("photo_reply_max", ownerId))?.value || "2", 10);
+          const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
 
           // Check photo reply history for this topic
-          let history = await PhotoReplyHistory.findOne({ topic_id: topicId, ownerId });
+          let history = await PhotoReplyHistory.findOne({ topic_id: topicId });
           if (history && history.count >= photoReplyMax) {
-            console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}) for ${ownerId}. Skipping.`);
+            console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
             return;
           }
 
-          const photoReplyMessage = (await getSetting("photo_reply_message", ownerId))?.value || "ok wait";
-          console.log(`Photo detected for ${ownerId}. Sending auto-reply: "${photoReplyMessage}"`);
+          const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+          console.log(`Photo detected. Sending auto-reply: "${photoReplyMessage}"`);
           
           try {
             await client.sendMessage(message.peerId, {
@@ -563,7 +586,7 @@ async function startServer() {
 
             // Update history
             if (!history) {
-              await PhotoReplyHistory.create({ topic_id: topicId, count: 1, ownerId });
+              await PhotoReplyHistory.create({ topic_id: topicId, count: 1 });
             } else {
               history.count += 1;
               history.last_updated = new Date();
@@ -571,25 +594,24 @@ async function startServer() {
             }
 
             // Fetch Topic Name & Rename if needed
-            const topicIcon = (await getSetting("topic_icon", ownerId))?.value || "🛑";
-            const renameKeywordsStr = (await getSetting("topic_rename_keywords", ownerId))?.value || "";
-            const renameMatchMode = (await getSetting("topic_rename_match_mode", ownerId))?.value || "exact";
+            const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+            const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
+            const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
 
             // Pass true to bypass keyword check for photos
-            const topicName = await handleTopicRenaming(client, message, topicIcon, renameKeywordsStr, renameMatchMode, ownerId, true);
+            const topicName = await handleTopicRenaming(client, message, topicIcon, renameKeywordsStr, renameMatchMode, true);
             
             // Notify frontend
             sendSseEvent('photo_received', {
               message: `${topicName} sent a photo`,
               topicName: topicName,
-              ownerId: ownerId,
               timestamp: new Date()
             });
             
-            await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT', null, ownerId);
+            await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT');
           } catch (err: any) {
             console.error("Failed to send photo auto-reply:", err);
-            await saveLog(`Failed to send photo auto-reply: ${err.message}`, 'error', 'USERBOT', null, ownerId);
+            await saveLog(`Failed to send photo auto-reply: ${err.message}`, 'error', 'USERBOT');
           }
         }
       }
@@ -598,11 +620,10 @@ async function startServer() {
       if (message.action instanceof Api.MessageActionTopicCreate) {
         const topicName = message.action.title;
         const topicId = message.id;
-        console.log(`New topic detected: ${topicId} - ${topicName} for ${ownerId}`);
-        await logTopic(topicId, topicName, ownerId);
+        await logTopic(topicId, topicName);
         
-        const autoReply = (await getSetting("auto_reply", ownerId))?.value || "Welcome!";
-        const delaySeconds = parseInt((await getSetting("delay_seconds", ownerId))?.value || "0", 10);
+        const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
+        const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
         
         setTimeout(async () => {
           try {
@@ -614,44 +635,8 @@ async function startServer() {
             console.error("UserBot failed to send auto-reply:", err);
           }
         }, delaySeconds * 1000);
-      } else {
-        // Fallback: Check if topic exists in DB for any message in a topic
-        const topicId = message.replyTo?.replyToMsgId || message.id;
-        // Only if it looks like a topic ID (usually small integer relative to chat, but in forums it's the message ID of the topic creation)
-        if (topicId && message.peerId) {
-             // We can't easily know if it's a topic or just a reply without checking context, 
-             // but for forums, the top message ID is the topic ID.
-             // Let's try to find it. If not found, we might want to fetch it.
-             // However, fetching every time is expensive.
-             // Let's just rely on the fact that if we are processing a message in a topic, we should know about it.
-             // For now, let's just ensure we log it if we can confirm it's a topic.
-             // Actually, the user wants "Total Topics" to work.
-             // If the bot missed the creation event, we need a way to add it.
-             
-             // Simple approach: If it's a forum channel, try to get topic info if missing?
-             // This might be too heavy.
-             // Let's just log the topic if we haven't seen it, assuming the current message ID *might* be the topic ID if it's a thread starter?
-             // No, replyToMsgId is the topic ID in forums.
-             if (message.replyTo?.replyToMsgId) {
-                 const tid = message.replyTo.replyToMsgId;
-                 const exists = await Topic.exists({ telegram_topic_id: tid, ownerId });
-                 if (!exists) {
-                     // It's a new topic we haven't seen (or missed creation event)
-                     // We don't know the name easily without fetching.
-                     // Let's just log it as "Unknown Topic" or try to fetch.
-                     // Fetching is better.
-                     try {
-                         // This is specific to Telegram Client API
-                         // We can try to get the message with that ID to see if it's a service message for topic creation?
-                         // Or just save it with a placeholder name.
-                         await logTopic(tid, "Detected Topic", ownerId);
-                         console.log(`Auto-detected missing topic ${tid} for ${ownerId}`);
-                     } catch (e) {
-                         console.error(`Failed to auto-log topic ${tid}`, e);
-                     }
-                 }
-             }
-        }
+      }
+
       // 2. Keyword Handler
       let keywordMatched = false;
       if (message.message && !message.out) {
@@ -660,10 +645,7 @@ async function startServer() {
         
         console.log(`Checking keywords for: "${text}"`);
         
-        // Fetch keywords for this owner
-        const userKeywords = await Keyword.find({ ownerId });
-        
-        for (const kw of userKeywords) {
+        for (const kw of cachedKeywords) {
           // Collect all trigger words for this rule (legacy + new array)
           const triggerWords = [...(kw.keywords || [])];
           if (kw.keyword && !triggerWords.includes(kw.keyword)) {
@@ -721,10 +703,11 @@ async function startServer() {
             try {
               const replyToMsgId = message.id;
               const topicId = message.replyTo?.replyToMsgId;
+              let replySent = false;
 
               // Rate limiting check: Max replies per keyword rule per topic
               if (topicId) {
-                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id, ownerId });
+                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
                 const maxReplies = kw.max_replies || 2;
                 
                 let currentCount = 0;
@@ -760,11 +743,15 @@ async function startServer() {
 
               // 1. AI Reply (if enabled)
               if (kw.ai_reply_enabled) {
-                console.log(`Triggering AI reply for keyword: ${match.matchedWord} for ${ownerId}`);
-                const aiModeEnabled = (await getSetting("ai_mode_enabled", ownerId))?.value === "true";
+                console.log(`Triggering AI reply for keyword: ${match.matchedWord}`);
+                const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
                 
+                // Only proceed if global AI mode is also enabled? 
+                // The user request implies this is a specific override/feature.
+                // Let's assume it works even if global AI mode is disabled, OR we check global mode.
+                // Usually "AI Mode" toggle is a master switch. Let's respect it.
                 if (aiModeEnabled) {
-                   const geminiApiKeysSetting = await getSetting("gemini_api_keys", ownerId);
+                   const geminiApiKeysSetting = await getSetting("gemini_api_keys");
                    let apiKeys: string[] = [];
                    try {
                      apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
@@ -774,7 +761,8 @@ async function startServer() {
                    if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
                    
                    if (apiKeys.length > 0) {
-                     const aiPersona = (await getSetting("ai_persona", ownerId))?.value || DEFAULT_AI_PERSONA;
+                     const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+                     const conversationContext = await getRecentConversationContext(client, message.peerId, topicId);
                      
                      for (const apiKey of apiKeys) {
                        try {
@@ -786,8 +774,9 @@ async function startServer() {
                                role: "user",
                                parts: [
                                  { text: `System Instruction: ${aiPersona}` },
+                                 { text: conversationContext },
                                  { text: `User Message: "${message.message}"` },
-                                 { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
+                                 { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
                                ]
                              }
                            ]
@@ -801,6 +790,7 @@ async function startServer() {
                              replyTo: message.id,
                            });
                            await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
+                           replySent = true;
                            break; // Success
                          }
                        } catch (e) {
@@ -820,6 +810,7 @@ async function startServer() {
                     message: kw.reply,
                     replyTo: replyToMsgId,
                   });
+                  replySent = true;
                 }
 
                 for (const link of linksToProcess) {
@@ -827,7 +818,7 @@ async function startServer() {
                   const messageId = parseInt(parts[parts.length - 1], 10);
                   
                   if (!isNaN(messageId)) {
-                    let fromPeer: any = chatId;
+                    let fromPeer: any = targetGroupId;
                     
                     if (link.includes("/c/")) {
                       const cIndex = parts.indexOf("c");
@@ -846,13 +837,20 @@ async function startServer() {
                     const topMsgId = message.replyTo?.replyToMsgId;
                     
                     try {
+                      let inputPeer;
                       try {
-                        await client.getEntity(fromPeer);
-                      } catch (e) {}
+                        inputPeer = await client.getInputEntity(fromPeer);
+                      } catch (e: any) {
+                        console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
+                        // If resolution fails, we can't proceed with this peer.
+                        // However, if it's a public username, maybe it works?
+                        // But for private channels (IDs), this is fatal.
+                        throw e;
+                      }
 
                       await client.invoke(
                         new Api.messages.ForwardMessages({
-                          fromPeer: fromPeer,
+                          fromPeer: inputPeer,
                           id: [messageId],
                           randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
                           toPeer: message.peerId,
@@ -860,12 +858,20 @@ async function startServer() {
                         })
                       );
                       console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
+                      replySent = true;
                     } catch (forwardErr: any) {
                       console.error("Forwarding failed, trying fallback:", forwardErr.message);
-                      await client.forwardMessages(message.peerId, {
-                        messages: [messageId],
-                        fromPeer: chatId,
-                      });
+                      try {
+                        // Fallback: Try forwarding from the target group itself if the message is there?
+                        // Or maybe just try standard forwardMessages method which handles some resolution internally
+                        await client.forwardMessages(message.peerId, {
+                          messages: [messageId],
+                          fromPeer: fromPeer, // Try with original peer string
+                        });
+                        replySent = true;
+                      } catch (fallbackErr: any) {
+                         console.error("Fallback forwarding also failed:", fallbackErr.message);
+                      }
                     }
                   }
                   // Small delay between forwards
@@ -888,18 +894,20 @@ async function startServer() {
                   replyTo: replyToMsgId,
                   forceDocument: false,
                 });
+                replySent = true;
               } else if (kw.reply) {
                 console.log(`Sending text reply for keyword: ${kw.keyword}`);
                 await client.sendMessage(message.peerId, {
                   message: kw.reply,
                   replyTo: replyToMsgId,
                 });
+                replySent = true;
               }
               
               // Update reply history count
               if (topicId) {
                 const today = new Date();
-                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id, ownerId });
+                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
                 let isSameDay = false;
                 
                 if (history) {
@@ -917,32 +925,39 @@ async function startServer() {
                 } else {
                    // Upsert with set count 1 (resets if exists but old, creates if new)
                    await ReplyHistory.findOneAndUpdate(
-                      { topic_id: topicId, keyword_id: kw._id, ownerId },
+                      { topic_id: topicId, keyword_id: kw._id },
                       { count: 1, last_updated: today },
                       { upsert: true }
                    );
                 }
               }
               
-              await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT', null, ownerId);
+              await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
               
+              // If a reply was sent, break the loop to prevent multiple replies for the same message
+              if (replySent) {
+                console.log("Reply sent for keyword. Stopping further processing for this message.");
+                break;
+              }
+
               // Add a small delay between replies to avoid spamming/rate limits
               if (matches.length > 1) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
               }
             } catch (err: any) {
               console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
-              await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT', null, ownerId);
+              await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT');
             }
           }
         }
+      }
 
       // 3. AI Smart Reply (Fallback)
       if (!keywordMatched && message.message && !message.out) {
-        const aiModeEnabled = (await getSetting("ai_mode_enabled", ownerId))?.value === "true";
+        const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
         if (aiModeEnabled) {
           // Fetch keys from settings
-          const geminiApiKeysSetting = await getSetting("gemini_api_keys", ownerId);
+          const geminiApiKeysSetting = await getSetting("gemini_api_keys");
           let apiKeys: string[] = [];
           try {
             apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
@@ -957,11 +972,12 @@ async function startServer() {
           }
 
           if (apiKeys.length === 0) {
-            console.warn(`AI Mode is enabled for ${ownerId} but no Gemini API Keys found.`);
+            console.warn("AI Mode is enabled but no Gemini API Keys found (neither in settings nor environment).");
             return;
           }
 
-          const aiPersona = (await getSetting("ai_persona", ownerId))?.value || DEFAULT_AI_PERSONA;
+          const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+          const conversationContext = await getRecentConversationContext(client, message.peerId, topicId);
           
           let aiReply = null;
           let success = false;
@@ -969,7 +985,7 @@ async function startServer() {
           // Try keys one by one
           for (const apiKey of apiKeys) {
             try {
-              console.log(`Attempting AI reply for ${ownerId} with key ending in ...${apiKey.slice(-4)}`);
+              console.log(`Attempting AI reply with key ending in ...${apiKey.slice(-4)}`);
               const genAI = new GoogleGenAI({ apiKey });
               const response = await genAI.models.generateContent({
                 model: "gemini-2.5-flash",
@@ -978,8 +994,9 @@ async function startServer() {
                     role: "user",
                     parts: [
                       { text: `System Instruction: ${aiPersona}` },
+                      { text: conversationContext },
                       { text: `User Message: "${message.message}"` },
-                      { text: `Context: This is a Telegram group chat. Reply naturally. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
+                      { text: `Context: This is a Telegram group chat. Reply naturally considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
                     ]
                   }
                 ]
@@ -1007,29 +1024,28 @@ async function startServer() {
               
               // Log specific critical errors to the dashboard so the user knows WHICH key is bad
               if (errorMsg.includes("leaked") || errorMsg.includes("not valid") || errorMsg.includes("API_KEY_INVALID")) {
-                await saveLog(`Invalid API Key (...${apiKey.slice(-4)}): ${errorMsg}`, 'error', 'AI_SYSTEM', null, ownerId);
+                await saveLog(`Invalid API Key (...${apiKey.slice(-4)}): ${errorMsg}`, 'error', 'AI_SYSTEM');
               }
             }
           }
 
           if (success) {
             if (aiReply && aiReply !== "NO_REPLY") {
-              console.log(`AI Reply generated for ${ownerId}: "${aiReply}"`);
+              console.log(`AI Reply generated: "${aiReply}"`);
               await client.sendMessage(message.peerId, {
                 message: aiReply,
                 replyTo: message.id,
               });
-              await saveLog(`AI Auto-Reply: "${aiReply}"`, 'info', 'USERBOT', null, ownerId);
+              await saveLog(`AI Auto-Reply: "${aiReply}"`, 'info', 'USERBOT');
               
               // Notify frontend
               sendSseEvent('ai_reply', {
                 message: `AI Replied: ${aiReply}`,
                 originalMessage: message.message,
-                ownerId: ownerId,
                 timestamp: new Date()
               });
             } else {
-              console.log(`AI decided not to reply (NO_REPLY) for ${ownerId}.`);
+              console.log("AI decided not to reply (NO_REPLY).");
             }
           } else {
             const errorMessage = "All Gemini API Keys failed. Please check your keys in settings.";
@@ -1044,20 +1060,26 @@ async function startServer() {
   bot.on("message", async (msg) => {
     // Only process messages from the target group
     if (msg.chat.id.toString() !== groupId) return;
-    
-    // Topic creation is handled by UserBot (MTProto) for better ownerId isolation
+
+    if (msg.forum_topic_created) {
+      const topicName = msg.forum_topic_created.name;
+      const topicId = msg.message_thread_id;
+
+      if (topicId) {
+        await logTopic(topicId, topicName);
+      }
+    }
   });
 
   // SSE Endpoint
   app.get("/api/notifications", (req, res) => {
-    const ownerId = (req.query.ownerId as string) || "default";
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
     const clientId = Date.now();
-    const newClient = { id: clientId, res, ownerId };
+    const newClient = { id: clientId, res };
     sseClients.push(newClient);
 
     req.on("close", () => {
@@ -1065,48 +1087,59 @@ async function startServer() {
     });
   });
 
-  // Middleware to extract ownerId
-  const getOwnerId = (req: express.Request) => {
-    return (req.headers["x-owner-id"] as string) || "default";
-  };
-
   // API Routes
   app.get("/api/stats", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const topicCount = await getTopicCount(ownerId);
-      const todayTopicCount = await getTodayTopicCount(ownerId);
-      const autoReply = (await getSetting("auto_reply", ownerId))?.value || "";
-      const delaySeconds = parseInt((await getSetting("delay_seconds", ownerId))?.value || "0", 10);
-      const isSystemPaused = (await getSetting("system_paused", ownerId))?.value === "true";
-      const photoReplyEnabled = (await getSetting("photo_reply_enabled", ownerId))?.value === "true";
-      const photoReplyMessage = (await getSetting("photo_reply_message", ownerId))?.value || "ok wait";
-      const photoReplyMax = parseInt((await getSetting("photo_reply_max", ownerId))?.value || "2", 10);
-      const notificationSoundEnabled = (await getSetting("notification_sound_enabled", ownerId))?.value === "true";
-      const notificationSoundType = (await getSetting("notification_sound_type", ownerId))?.value || "default";
-      const topicIcon = (await getSetting("topic_icon", ownerId))?.value || "🛑";
-      const topicRenameKeywords = (await getSetting("topic_rename_keywords", ownerId))?.value || "";
-      const topicRenameMatchMode = (await getSetting("topic_rename_match_mode", ownerId))?.value || "exact";
-      const autoResetKeywords = (await getSetting("auto_reset_keywords", ownerId))?.value === "true";
-      const autoBlockKeywords = (await getSetting("auto_block_keywords", ownerId))?.value || "";
-      const aiModeEnabled = (await getSetting("ai_mode_enabled", ownerId))?.value === "true";
-      const aiPersona = (await getSetting("ai_persona", ownerId))?.value || "";
-      const geminiApiKeys = (await getSetting("gemini_api_keys", ownerId))?.value || "[]";
+      const topicCount = await getTopicCount();
+      const todayTopicCount = await getTodayTopicCount();
+      const autoReply = (await getSetting("auto_reply"))?.value || "";
+      const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
+      const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+      const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
+      const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
+      const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
+      const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+      const topicRenameKeywords = (await getSetting("topic_rename_keywords"))?.value || "";
+      const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+      const autoResetKeywords = (await getSetting("auto_reset_keywords"))?.value === "true";
+      const autoBlockKeywords = (await getSetting("auto_block_keywords"))?.value || "";
+      const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+      const aiPersona = (await getSetting("ai_persona"))?.value || "";
+      const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
       
-      const accounts = await Account.find({ ownerId });
-      const formattedAccounts = accounts.map(acc => ({
-        phoneNumber: acc.phoneNumber,
-        name: acc.name,
-        username: acc.username,
-        isActive: acc.isActive,
-        isConnected: userClients.has(acc.phoneNumber) && userClients.get(acc.phoneNumber)!.connected,
-        apiId: acc.apiId,
-        targetGroupIds: acc.targetGroupIds
-      }));
+      let isUserBotConnected = !!userClient && userClient.connected;
+      
+      // Auto-reconnect attempt if disconnected but we have a session
+      if (!isUserBotConnected) {
+        const sessionString = (await getSetting("session_string"))?.value;
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiId = parseInt(apiIdRaw.trim(), 10);
 
-      const apiId = (await getSetting("api_id", ownerId))?.value || "";
-      const apiHash = (await getSetting("api_hash", ownerId))?.value || "";
-      const defaultPhone = (await getSetting("default_phone", ownerId))?.value || "";
+        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+          try {
+            console.log("Auto-reconnecting UserBot during stats check...");
+            if (userClient) {
+              await userClient.disconnect();
+            }
+            userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+              connectionRetries: 3,
+            });
+            await userClient.connect();
+            setupUserBotHandlers(userClient, groupId);
+            isUserBotConnected = true;
+            await saveLog("UserBot auto-reconnected during stats check", "info", "/api/stats");
+          } catch (connErr: any) {
+            console.error("Auto-reconnect failed:", connErr.message);
+          }
+        }
+      }
+
+      const apiId = (await getSetting("api_id"))?.value || "";
+      const apiHash = (await getSetting("api_hash"))?.value || "";
+      const defaultPhone = (await getSetting("default_phone"))?.value || "";
 
       res.json({
         topicCount,
@@ -1127,46 +1160,45 @@ async function startServer() {
         aiModeEnabled,
         aiPersona,
         geminiApiKeys,
-        accounts: formattedAccounts,
+        isUserBotConnected,
         apiId,
         apiHash,
         defaultPhone,
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
-      await saveLog(err.message, 'error', '/api/stats', null, ownerId);
+      await saveLog(err.message, 'error', '/api/stats');
       res.status(500).json({ error: `[GET /api/stats] ${err.message}` });
     }
   });
 
   app.post("/api/settings", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
       const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys } = req.body;
-      if (typeof autoReply === "string") await setSetting("auto_reply", autoReply, ownerId);
-      if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds), ownerId);
-      if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId), ownerId);
-      if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash), ownerId);
-      if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused), ownerId);
-      if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled), ownerId);
-      if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage), ownerId);
-      if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax), ownerId);
-      if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled), ownerId);
-      if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType), ownerId);
-      if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon), ownerId);
-      if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords), ownerId);
-      if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode), ownerId);
-      if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords), ownerId);
-      if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords), ownerId);
-      if (typeof aiModeEnabled !== "undefined") await setSetting("ai_mode_enabled", String(aiModeEnabled), ownerId);
-      if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona), ownerId);
-      if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys), ownerId);
+      if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
+      if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
+      if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
+      if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
+      if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
+      if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled));
+      if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage));
+      if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax));
+      if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
+      if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
+      if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon));
+      if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords));
+      if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
+      if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords));
+      if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords));
+      if (typeof aiModeEnabled !== "undefined") await setSetting("ai_mode_enabled", String(aiModeEnabled));
+      if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
+      if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled }, ownerId);
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
-      await saveLog(err.message, 'error', '/api/settings', req.body, ownerId);
+      await saveLog(err.message, 'error', '/api/settings', req.body);
       res.status(500).json({ error: `[POST /api/settings] ${err.message}` });
     }
   });
@@ -1201,9 +1233,8 @@ async function startServer() {
 
   // Keyword Routes
   app.get("/api/keywords", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const keywords = await Keyword.find({ ownerId });
+      const keywords = await Keyword.find();
       res.json(keywords);
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/keywords] ${err.message}` });
@@ -1211,7 +1242,6 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const ownerId = getOwnerId(req);
     const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled } = req.body;
     try {
       // Ensure keywords is an array
@@ -1226,13 +1256,15 @@ async function startServer() {
         message_links,
         max_replies: typeof max_replies === 'number' ? max_replies : 2,
         match_mode: match_mode || 'exact',
-        ai_reply_enabled: !!ai_reply_enabled,
-        ownerId
+        ai_reply_enabled: !!ai_reply_enabled
       };
       
       if (id) {
-        await Keyword.findOneAndUpdate({ _id: id, ownerId }, updateData);
+        await Keyword.findByIdAndUpdate(id, updateData);
       } else {
+        // For new entries, we can't rely on unique 'keyword' anymore if we use arrays
+        // But we can check if a document with the same primary keyword exists?
+        // Or just create new. Let's just create/update.
         await Keyword.create(updateData);
       }
       
@@ -1246,9 +1278,8 @@ async function startServer() {
   });
 
   app.delete("/api/keywords/:id", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      await Keyword.findOneAndDelete({ _id: req.params.id, ownerId });
+      await Keyword.findByIdAndDelete(req.params.id);
       refreshKeywordCache().catch(err => console.error("Background cache refresh failed:", err));
       res.json({ success: true });
     } catch (err: any) {
@@ -1258,10 +1289,9 @@ async function startServer() {
 
   // Export/Import Routes
   app.get("/api/data/export", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const keywords = await Keyword.find({ ownerId });
-      const settings = await Setting.find({ ownerId, key: { $ne: "session_string" } }); // Don't export session string
+      const keywords = await Keyword.find();
+      const settings = await Setting.find({ key: { $ne: "session_string" } }); // Don't export session string
       res.json({ keywords, settings });
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/data/export] ${err.message}` });
@@ -1269,14 +1299,13 @@ async function startServer() {
   });
 
   app.post("/api/data/import", express.json({ limit: '10mb' }), async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
       const { keywords, settings } = req.body;
       
       if (keywords && Array.isArray(keywords)) {
         for (const kw of keywords) {
           await Keyword.findOneAndUpdate(
-            { keyword: kw.keyword, ownerId },
+            { keyword: kw.keyword },
             { 
               keywords: kw.keywords || [kw.keyword],
               reply: kw.reply, 
@@ -1284,8 +1313,7 @@ async function startServer() {
               message_link: kw.message_link,
               message_links: kw.message_links || [],
               max_replies: kw.max_replies || 2,
-              match_mode: kw.match_mode || 'exact',
-              ownerId
+              match_mode: kw.match_mode || 'exact'
             },
             { upsert: true }
           );
@@ -1296,8 +1324,8 @@ async function startServer() {
         for (const s of settings) {
           if (s.key !== "session_string") {
             await Setting.findOneAndUpdate(
-              { key: s.key, ownerId },
-              { value: s.value, ownerId },
+              { key: s.key },
+              { value: s.value },
               { upsert: true }
             );
           }
@@ -1305,7 +1333,7 @@ async function startServer() {
       }
 
       await refreshKeywordCache();
-      await saveLog("Data imported", 'info', '/api/data/import', null, ownerId);
+      await saveLog("Data imported", 'info', '/api/data/import');
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/data/import] ${err.message}` });
@@ -1314,10 +1342,9 @@ async function startServer() {
 
   // UserBot Auth Routes
   app.post("/api/auth/send-code", async (req, res) => {
-    const ownerId = getOwnerId(req);
     const { phone } = req.body;
-    let apiIdRaw = (await getSetting("api_id", ownerId))?.value || "";
-    let apiHash = (await getSetting("api_hash", ownerId))?.value || "";
+    let apiIdRaw = (await getSetting("api_id"))?.value || "";
+    let apiHash = (await getSetting("api_hash"))?.value || "";
 
     // Trim whitespace
     apiIdRaw = apiIdRaw.trim();
@@ -1329,45 +1356,35 @@ async function startServer() {
       return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
     }
 
-    // Check if user already has an account (Restriction: 1 account per ownerId)
-    const existingAccountCount = await Account.countDocuments({ ownerId });
-    if (existingAccountCount >= 1) {
-      return res.status(400).json({ error: "Only one Telegram account is allowed per device/Owner ID. Please logout existing account first." });
-    }
-
-    console.log(`Attempting login for ${ownerId} with API ID: ${apiId} (Hash length: ${apiHash.length})`);
+    console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
 
     try {
-      const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
+      if (userClient) {
+        await userClient.disconnect();
+      }
+      userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 5,
       });
-      await client.connect();
-      const result = await client.sendCode({ apiId, apiHash }, phone);
-      
-      // Store temporary client for this phone
-      userClients.set(phone, client);
-      
+      await userClient.connect();
+      const result = await userClient.sendCode({ apiId, apiHash }, phone);
       phoneCodeHash = result.phoneCodeHash;
       phoneNumber = phone;
-      await saveLog(`Auth code sent to ${phone}`, 'info', '/api/auth/send-code', null, ownerId);
+      await saveLog(`Auth code sent to ${phone}`, 'info', '/api/auth/send-code');
       res.json({ success: true });
     } catch (err: any) {
       console.error("SendCode error:", err);
-      await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId }, ownerId);
+      await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId });
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     }
   });
 
   app.post("/api/auth/signin", async (req, res) => {
-    const ownerId = getOwnerId(req);
     const { code, password } = req.body;
-    const client = phoneNumber ? userClients.get(phoneNumber) : null;
-    
-    if (!client || !phoneNumber || !phoneCodeHash) return res.status(400).json({ error: "Session not initialized" });
+    if (!userClient || !phoneNumber || !phoneCodeHash) return res.status(400).json({ error: "Session not initialized" });
 
     try {
       try {
-        await client.invoke(
+        await userClient.invoke(
           new Api.auth.SignIn({
             phoneNumber: phoneNumber,
             phoneCodeHash: phoneCodeHash,
@@ -1379,11 +1396,11 @@ async function startServer() {
           if (!password) {
             return res.status(401).json({ error: "2FA Password required" });
           }
-          const apiIdRaw = (await getSetting("api_id", ownerId))?.value || "";
-          const apiHash = ((await getSetting("api_hash", ownerId))?.value || "").trim();
+          const apiIdRaw = (await getSetting("api_id"))?.value || "";
+          const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
           const apiId = parseInt(apiIdRaw.trim(), 10);
           
-          await client.signInWithPassword({ apiId, apiHash }, {
+          await userClient.signInWithPassword({ apiId, apiHash }, {
             password: async () => password,
             onError: (err) => { throw err; }
           });
@@ -1392,106 +1409,33 @@ async function startServer() {
         }
       }
 
-      const sessionString = (client.session as StringSession).save();
-      const apiIdRaw = (await getSetting("api_id", ownerId))?.value || "34669075";
-      const apiHash = ((await getSetting("api_hash", ownerId))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
-      const apiId = parseInt(apiIdRaw.trim(), 10);
-
-      // Fetch user info
-      const me = await client.getMe();
-      const name = `${me.firstName || ""} ${me.lastName || ""}`.trim() || "Telegram User";
-      const username = me.username || "";
-
-      await Account.findOneAndUpdate(
-        { phoneNumber: phoneNumber, ownerId },
-        { 
-          sessionString, 
-          apiId, 
-          apiHash, 
-          name,
-          username,
-          isActive: true,
-          ownerId
-        },
-        { upsert: true }
-      );
-
-      const currentAcc = await Account.findOne({ phoneNumber, ownerId });
-      setupUserBotHandlers(client, currentAcc?.targetGroupIds || [groupId], ownerId);
-      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin', null, ownerId);
+      const sessionString = (userClient.session as StringSession).save();
+      await setSetting("session_string", sessionString);
+      setupUserBotHandlers(userClient, groupId);
+      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin');
       res.json({ success: true });
     } catch (err: any) {
-      await saveLog(err.message, 'error', '/api/auth/signin', { phoneNumber }, ownerId);
+      await saveLog(err.message, 'error', '/api/auth/signin', { phoneNumber });
       res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
 
   app.post("/api/auth/logout", async (req, res) => {
-    const ownerId = getOwnerId(req);
-    const { phoneNumber: phoneToLogout } = req.body;
     try {
-      if (phoneToLogout) {
-        const client = userClients.get(phoneToLogout);
-        if (client) {
-          await client.disconnect();
-          userClients.delete(phoneToLogout);
-        }
-        await Account.deleteOne({ phoneNumber: phoneToLogout, ownerId });
-      } else {
-        // Logout all for this owner
-        const accounts = await Account.find({ ownerId });
-        for (const acc of accounts) {
-          const client = userClients.get(acc.phoneNumber);
-          if (client) {
-            await client.disconnect();
-            userClients.delete(acc.phoneNumber);
-          }
-        }
-        await Account.deleteMany({ ownerId });
-        await Setting.deleteOne({ key: "session_string", ownerId });
+      if (userClient) {
+        await userClient.disconnect();
+        userClient = null;
       }
+      await Setting.deleteOne({ key: "session_string" });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/auth/logout] ${err.message}` });
     }
   });
 
-  app.post("/api/accounts/update-groups", async (req, res) => {
-    const ownerId = getOwnerId(req);
-    const { phoneNumber, targetGroupIds } = req.body;
-    try {
-      if (!phoneNumber || !Array.isArray(targetGroupIds)) {
-        return res.status(400).json({ error: "Phone number and group IDs array are required" });
-      }
-      
-      // Update the account
-      await Account.findOneAndUpdate({ phoneNumber, ownerId }, { targetGroupIds });
-      
-      // Update the running client's handler if it exists
-      const client = userClients.get(phoneNumber);
-      if (client) {
-          // We need to remove the old handler and add a new one with updated groups.
-          // However, 'setupUserBotHandlers' adds an event handler but doesn't return a reference to remove it easily
-          // without storing it.
-          // The simplest way to apply changes is to disconnect and reconnect the client.
-          console.log(`Restarting client for ${phoneNumber} to apply group changes...`);
-          await client.disconnect();
-          await client.connect();
-          // Re-setup handlers with NEW group IDs
-          setupUserBotHandlers(client, targetGroupIds, ownerId);
-      }
-      
-      await saveLog(`Updated group IDs for ${phoneNumber}`, 'info', '/api/accounts/update-groups', null, ownerId);
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   app.get("/api/topics", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const topics = await Topic.find({ ownerId }).sort({ created_at: -1 });
+      const topics = await Topic.find().sort({ created_at: -1 });
       res.json(topics);
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/topics] ${err.message}` });
@@ -1499,18 +1443,10 @@ async function startServer() {
   });
 
   app.get("/api/group/messages", async (req, res) => {
-    const ownerId = getOwnerId(req);
-    console.log(`Accessing /api/group/messages for ${ownerId}`);
-    
-    // Find a client belonging to this owner
-    const ownerAccounts = await Account.find({ ownerId, isActive: true });
-    const firstClient = ownerAccounts
-      .map(acc => userClients.get(acc.phoneNumber))
-      .find(c => c && c.connected);
-
-    if (!firstClient) {
-      console.log(`No connected UserBot found for ${ownerId}`);
-      return res.status(400).json({ error: "No connected UserBot found" });
+    console.log("Accessing /api/group/messages");
+    if (!userClient || !userClient.connected) {
+      console.log("UserBot not connected");
+      return res.status(400).json({ error: "UserBot not connected" });
     }
     try {
       const { topicId } = req.query;
@@ -1520,7 +1456,7 @@ async function startServer() {
         options.replyTo = parseInt(topicId as string, 10);
       }
 
-      const messages = await firstClient.getMessages(groupId, options);
+      const messages = await userClient.getMessages(groupId, options);
       if (!messages) {
         return res.json([]);
       }
@@ -1543,34 +1479,26 @@ async function startServer() {
   });
 
   app.post("/api/broadcast", async (req, res) => {
-    const ownerId = getOwnerId(req);
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
 
     try {
-      const ownerAccounts = await Account.find({ ownerId, isActive: true });
-      const connectedClients = ownerAccounts
-        .map(acc => userClients.get(acc.phoneNumber))
-        .filter(c => c && c.connected);
-
-      if (connectedClients.length > 0) {
-        // Use the first connected client for broadcast
-        await connectedClients[0]!.sendMessage(groupId, { message });
-        await saveLog("Broadcast sent", 'info', '/api/broadcast', { messageLength: message.length }, ownerId);
+      if (userClient && userClient.connected) {
+        await userClient.sendMessage(groupId, { message });
+        await saveLog("Broadcast sent", 'info', '/api/broadcast', { messageLength: message.length });
         res.json({ success: true });
       } else {
-        res.status(400).json({ error: "No Telegram accounts connected. Please login first." });
+        res.status(400).json({ error: "Telegram ID not logged in. Please login first." });
       }
     } catch (err: any) {
-      await saveLog(err.message, 'error', '/api/broadcast', null, ownerId);
+      await saveLog(err.message, 'error', '/api/broadcast');
       res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
     }
   });
 
   app.get("/api/logs", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const logs = await Log.find({ ownerId }).sort({ timestamp: -1 }).limit(100);
+      const logs = await Log.find().sort({ timestamp: -1 }).limit(100);
       res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1579,9 +1507,8 @@ async function startServer() {
 
   // Blocked Topics Routes
   app.get("/api/blocked-topics", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      const blocked = await BlockedTopic.find({ ownerId }).sort({ created_at: -1 });
+      const blocked = await BlockedTopic.find().sort({ created_at: -1 });
       res.json(blocked);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1589,7 +1516,6 @@ async function startServer() {
   });
 
   app.post("/api/blocked-topics", async (req, res) => {
-    const ownerId = getOwnerId(req);
     const { link } = req.body;
     if (!link) return res.status(400).json({ error: "Link required" });
 
@@ -1602,25 +1528,24 @@ async function startServer() {
       }
 
       // Toggle behavior: If already blocked, unblock it
-      const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId, ownerId });
+      const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
       if (existing) {
         await BlockedTopic.findByIdAndDelete(existing._id);
-        await saveLog(`Topic ${topicId} unblocked via link`, 'info', '/api/blocked-topics', { link }, ownerId);
+        await saveLog(`Topic ${topicId} unblocked via link`, 'info', '/api/blocked-topics', { link });
         return res.json({ success: true, action: 'unblocked' });
       }
 
       // Try to find topic name from our Topic collection
-      const topicInfo = await Topic.findOne({ telegram_topic_id: topicId, ownerId });
+      const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
       const name = topicInfo ? topicInfo.name : "Unknown Topic";
 
       await BlockedTopic.create({
         telegram_topic_id: topicId,
         name,
-        link,
-        ownerId
+        link
       });
       
-      await saveLog(`Topic ${topicId} blocked`, 'info', '/api/blocked-topics', { link, name }, ownerId);
+      await saveLog(`Topic ${topicId} blocked`, 'info', '/api/blocked-topics', { link, name });
       res.json({ success: true, action: 'blocked', name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1628,9 +1553,8 @@ async function startServer() {
   });
 
   app.delete("/api/blocked-topics/:id", async (req, res) => {
-    const ownerId = getOwnerId(req);
     try {
-      await BlockedTopic.findOneAndDelete({ _id: req.params.id, ownerId });
+      await BlockedTopic.findByIdAndDelete(req.params.id);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1641,6 +1565,77 @@ async function startServer() {
     try {
       await Log.deleteMany({});
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/analytics", async (req, res) => {
+    try {
+      // Get top 5 keywords triggered
+      const topKeywords = await ReplyHistory.aggregate([
+        { $group: { _id: "$keyword_id", total: { $sum: "$count" } } },
+        { $sort: { total: -1 } },
+        { $limit: 5 }
+      ]);
+      
+      const keywordIds = topKeywords.map(k => k._id);
+      const keywords = await Keyword.find({ _id: { $in: keywordIds } });
+      const keywordMap = keywords.reduce((acc, kw) => {
+        acc[kw._id.toString()] = kw.keyword || kw.keywords?.[0] || 'Unknown';
+        return acc;
+      }, {} as any);
+
+      const keywordData = topKeywords.map(k => ({
+        name: keywordMap[k._id.toString()] || 'Unknown',
+        value: k.total
+      }));
+
+      // Get top 5 active topics
+      const topTopics = await ReplyHistory.aggregate([
+        { $group: { _id: "$topic_id", total: { $sum: "$count" } } },
+        { $sort: { total: -1 } },
+        { $limit: 5 }
+      ]);
+
+      const topicIds = topTopics.map(t => t._id);
+      const topics = await Topic.find({ telegram_topic_id: { $in: topicIds } });
+      const topicMap = topics.reduce((acc, t) => {
+        acc[t.telegram_topic_id] = t.name;
+        return acc;
+      }, {} as any);
+
+      const topicData = topTopics.map(t => ({
+        name: topicMap[t._id] || `Topic ${t._id}`,
+        value: t.total
+      }));
+
+      res.json({ keywordData, topicData });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/test-persona", async (req, res) => {
+    const { message, persona, apiKey } = req.body;
+    if (!message || !apiKey) return res.status(400).json({ error: "Message and API Key required" });
+    
+    try {
+      const genAI = new GoogleGenAI({ apiKey });
+      const response = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: `System Instruction: ${persona || 'You are a helpful assistant.'}` },
+              { text: `User Message: "${message}"` },
+              { text: `Context: This is a test from the dashboard. Reply naturally.` }
+            ]
+          }
+        ]
+      });
+      res.json({ reply: response.text.trim() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1672,61 +1667,35 @@ async function startServer() {
     // Initial keyword cache load
     await refreshKeywordCache();
     
-    // Connect UserBots in background
+    // Connect UserBot in background
     (async () => {
       try {
-        const accounts = await Account.find({ isActive: true });
-        console.log(`Found ${accounts.length} active accounts to connect.`);
+        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
+        let sessionString = (await getSetting("session_string"))?.value;
         
-        for (const acc of accounts) {
-          try {
-            console.log(`Connecting UserBot for ${acc.phoneNumber}...`);
-            const client = new TelegramClient(new StringSession(acc.sessionString), acc.apiId, acc.apiHash, {
-              connectionRetries: 5,
-            });
-            await client.connect();
-            userClients.set(acc.phoneNumber, client);
-            console.log(`UserBot ${acc.phoneNumber} connected successfully.`);
-            setupUserBotHandlers(client, acc.targetGroupIds || [groupId], acc.ownerId);
-            await saveLog(`UserBot ${acc.phoneNumber} connected automatically on startup`, "info", "SYSTEM", null, acc.ownerId);
-          } catch (accErr: any) {
-            console.error(`Failed to connect UserBot ${acc.phoneNumber}:`, accErr.message);
-            await saveLog(`Startup connection failed for ${acc.phoneNumber}: ${accErr.message}`, "error", "SYSTEM");
-          }
+        // Use hardcoded session if database session is missing
+        if (!sessionString) {
+          sessionString = hardcodedSession;
+          await setSetting("session_string", hardcodedSession);
+          console.log("Using hardcoded Telegram session.");
         }
 
-        // Legacy support: check if there's a session_string in settings that isn't in Accounts
-        const legacySession = (await getSetting("session_string"))?.value;
-        if (legacySession) {
-          const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
-          const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
-          const apiId = parseInt(apiIdRaw.trim(), 10);
-          
-          // Check if this session is already handled
-          const alreadyHandled = accounts.some(a => a.sessionString === legacySession);
-          
-          if (!alreadyHandled && !isNaN(apiId) && apiId > 0 && apiHash) {
-             console.log("Connecting legacy UserBot session...");
-             const client = new TelegramClient(new StringSession(legacySession), apiId, apiHash, {
-               connectionRetries: 5,
-             });
-             await client.connect();
-             const me = await client.getMe() as any;
-             const phone = me.phone || "Legacy";
-             userClients.set(phone, client);
-             setupUserBotHandlers(client, [groupId], "default");
-             
-             // Migrate to Account model
-             await Account.findOneAndUpdate(
-               { phoneNumber: phone, ownerId: "default" },
-               { sessionString: legacySession, apiId, apiHash, isActive: true },
-               { upsert: true }
-             );
-             console.log(`Legacy UserBot ${phone} connected and migrated.`);
-          }
+        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
+        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiId = parseInt(apiIdRaw.trim(), 10);
+
+        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+          console.log("Attempting to connect UserBot...");
+          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+            connectionRetries: 5,
+          });
+          await userClient.connect();
+          console.log("UserBot connected successfully.");
+          setupUserBotHandlers(userClient, groupId);
+          await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
         }
       } catch (err: any) {
-        console.error("Failed to connect UserBots on startup:", err);
+        console.error("Failed to connect UserBot on startup:", err);
         await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
       }
     })();
@@ -1738,8 +1707,8 @@ async function startServer() {
     if (bot.isPolling()) {
       await bot.stopPolling();
     }
-    for (const client of userClients.values()) {
-      await client.disconnect();
+    if (userClient) {
+      await userClient.disconnect();
     }
     process.exit(0);
   };

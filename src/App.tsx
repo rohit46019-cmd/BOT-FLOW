@@ -36,18 +36,18 @@ import {
   Link,
   RotateCcw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  PieChart,
+  Bot,
+  MessageCircle,
+  MoreVertical,
+  Calendar,
+  Users,
+  Database,
+  Library,
+  Trash
 } from "lucide-react";
-
-interface Account {
-  phoneNumber: string;
-  isActive: boolean;
-  isConnected: boolean;
-  apiId: number;
-  name?: string;
-  username?: string;
-  targetGroupIds: string[];
-}
+import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
 
 interface Stats {
   topicCount: number;
@@ -60,7 +60,7 @@ interface Stats {
   photoReplyMax: number;
   notificationSoundEnabled: boolean;
   notificationSoundType: string;
-  accounts: Account[];
+  isUserBotConnected: boolean;
   apiId: string;
   apiHash: string;
   defaultPhone: string;
@@ -108,7 +108,27 @@ interface AppLog {
   timestamp: string;
 }
 
-const TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'user', 'logs'] as const;
+interface MediaItem {
+  _id: string;
+  url: string;
+  name: string;
+  type: string;
+  created_at: string;
+}
+
+interface LeaderboardItem {
+  username: string;
+  count: number;
+  avatar?: string;
+}
+
+interface HeatmapItem {
+  day: string;
+  hour: number;
+  value: number;
+}
+
+const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights'] as const;
 type TabType = typeof TABS[number];
 
 const TabButton = ({ 
@@ -131,11 +151,15 @@ const TabButton = ({
   const isActive = activeTab === id;
   const colors = {
     dashboard: 'from-emerald-400 to-emerald-600',
+    analytics: 'from-cyan-400 to-cyan-600',
     keywords: 'from-blue-400 to-blue-600',
     broadcast: 'from-purple-400 to-purple-600',
     settings: 'from-amber-400 to-amber-600',
+    tester: 'from-orange-400 to-orange-600',
     user: 'from-pink-400 to-pink-600',
-    logs: 'from-slate-400 to-slate-600'
+    logs: 'from-slate-400 to-slate-600',
+    media: 'from-indigo-400 to-indigo-600',
+    insights: 'from-rose-400 to-rose-600'
   };
 
   return (
@@ -168,8 +192,6 @@ const TabButton = ({
 };
 
 export default function App() {
-  const [ownerId, setOwnerId] = useState<string | null>(() => localStorage.getItem("ownerId"));
-  const [loginInput, setLoginInput] = useState("");
   const [stats, setStats] = useState<Stats | null>(null);
   const [autoReplyInput, setAutoReplyInput] = useState("");
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
@@ -204,6 +226,18 @@ export default function App() {
   const [aiPersona, setAiPersona] = useState("");
   const [geminiApiKeys, setGeminiApiKeys] = useState<string[]>([]);
   
+  const [analyticsData, setAnalyticsData] = useState<{keywordData: any[], topicData: any[]}>({ keywordData: [], topicData: [] });
+  const [testMessage, setTestMessage] = useState("");
+  const [testReply, setTestReply] = useState("");
+  const [isTesting, setIsTesting] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
+  const [userLeaderboard, setUserLeaderboard] = useState<LeaderboardItem[]>([]);
+  const [activityHeatmap, setActivityHeatmap] = useState<HeatmapItem[]>([]);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [newMediaUrl, setNewMediaUrl] = useState("");
+  const [newMediaName, setNewMediaName] = useState("");
+  
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
@@ -215,6 +249,7 @@ export default function App() {
   const [refreshingLogs, setRefreshingLogs] = useState(false);
   const [editingKeywordId, setEditingKeywordId] = useState<string | null>(null);
   const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
+  const [showPauseConfirmation, setShowPauseConfirmation] = useState(false);
   const keywordsTopRef = useRef<HTMLDivElement>(null);
   const keywordsBottomRef = useRef<HTMLDivElement>(null);
   const castTopRef = useRef<HTMLDivElement>(null);
@@ -240,29 +275,89 @@ export default function App() {
     castBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  useEffect(() => {
+    // Mock data for insights
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const mockHeatmap: HeatmapItem[] = [];
+    days.forEach(day => {
+      for (let hour = 0; hour < 24; hour++) {
+        mockHeatmap.push({
+          day,
+          hour,
+          value: Math.floor(Math.random() * 10)
+        });
+      }
+    });
+    setActivityHeatmap(mockHeatmap);
+
+    setUserLeaderboard([
+      { username: 'alex_tg', count: 142 },
+      { username: 'sarah_dev', count: 98 },
+      { username: 'mike_bot', count: 76 },
+      { username: 'julia_q', count: 54 },
+      { username: 'ryan_x', count: 32 }
+    ]);
+
+    setMediaItems([
+      { _id: '1', name: 'Welcome Banner', url: 'https://picsum.photos/seed/welcome/800/400', type: 'image', created_at: new Date().toISOString() },
+      { _id: '2', name: 'Price List', url: 'https://picsum.photos/seed/price/800/600', type: 'image', created_at: new Date().toISOString() },
+      { _id: '3', name: 'Promo Offer', url: 'https://picsum.photos/seed/promo/800/400', type: 'image', created_at: new Date().toISOString() }
+    ]);
+  }, []);
+
+  const handleAddMedia = () => {
+    if (!newMediaUrl.trim() || !newMediaName.trim()) return;
+    const newItem: MediaItem = {
+      _id: Date.now().toString(),
+      name: newMediaName,
+      url: newMediaUrl,
+      type: 'image',
+      created_at: new Date().toISOString()
+    };
+    setMediaItems([newItem, ...mediaItems]);
+    setNewMediaUrl("");
+    setNewMediaName("");
+    showNotification('success', 'Media added to library');
+  };
+
+  const handleDeleteMedia = (id: string) => {
+    setMediaItems(mediaItems.filter(item => item._id !== id));
+    showNotification('success', 'Media removed');
+  };
+
+  const handleExportConfig = () => {
+    const config = {
+      keywords,
+      settings: stats,
+      autoBlockKeywords,
+      aiPersona
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `userbot-config-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    showNotification('success', 'Configuration exported');
+  };
+
   const fetchBlockedTopics = React.useCallback(async () => {
-    if (!ownerId) return;
     try {
-      const response = await fetch('/api/blocked-topics', {
-        headers: { 'x-owner-id': ownerId }
-      });
+      const response = await fetch('/api/blocked-topics');
       const data = await response.json();
       setBlockedTopics(data);
     } catch (err) {
       console.error("Failed to fetch blocked topics:", err);
     }
-  }, [ownerId]);
+  }, []);
 
   const handleBlockTopic = async () => {
-    if (!newBlockedTopicLink || !ownerId) return;
+    if (!newBlockedTopicLink) return;
     setBlockingTopic(true);
     try {
       const response = await fetch('/api/blocked-topics', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-owner-id': ownerId
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ link: newBlockedTopicLink }),
       });
       const data = await response.json();
@@ -285,11 +380,10 @@ export default function App() {
   };
 
   const handleUnblockTopic = async (id: string, name?: string) => {
-    if (!confirm(`Are you sure you want to unblock ${name || 'this topic'}?`) || !ownerId) return;
+    if (!confirm(`Are you sure you want to unblock ${name || 'this topic'}?`)) return;
     try {
       const response = await fetch(`/api/blocked-topics/${id}`, {
         method: 'DELETE',
-        headers: { 'x-owner-id': ownerId }
       });
       if (response.ok) {
         showNotification('success', 'Topic unblocked successfully');
@@ -447,9 +541,8 @@ export default function App() {
     }
 
     // Connect to SSE
-    if (!ownerId) return;
-    console.log(`Connecting to SSE notifications for ${ownerId}...`);
-    const eventSource = new EventSource(`/api/notifications?ownerId=${ownerId}`);
+    console.log("Connecting to SSE notifications...");
+    const eventSource = new EventSource("/api/notifications");
     
     eventSource.onopen = () => {
       console.log("SSE connection established");
@@ -538,11 +631,8 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   const fetchStats = async () => {
-    if (!ownerId) return;
     try {
-      const res = await fetch("/api/stats", {
-        headers: { 'x-owner-id': ownerId }
-      });
+      const res = await fetch("/api/stats");
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -595,11 +685,8 @@ export default function App() {
   };
 
   const fetchKeywords = async () => {
-    if (!ownerId) return;
     try {
-      const res = await fetch("/api/keywords", {
-        headers: { 'x-owner-id': ownerId }
-      });
+      const res = await fetch("/api/keywords");
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -613,12 +700,9 @@ export default function App() {
   };
 
   const fetchLogs = async () => {
-    if (!ownerId) return;
     setRefreshingLogs(true);
     try {
-      const res = await fetch("/api/logs", {
-        headers: { 'x-owner-id': ownerId }
-      });
+      const res = await fetch("/api/logs");
       if (!res.ok) {
         const text = await res.text();
         if (text.includes("Rate exceeded")) return;
@@ -634,13 +718,55 @@ export default function App() {
     }
   };
 
-  const clearLogs = async () => {
-    if (!confirm("Clear all logs?") || !ownerId) return;
+  const fetchAnalytics = async () => {
     try {
-      const res = await fetch("/api/logs", { 
-        method: "DELETE",
-        headers: { 'x-owner-id': ownerId }
+      const res = await fetch("/api/analytics");
+      if (res.ok) {
+        const data = await res.json();
+        setAnalyticsData(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch analytics", err);
+    }
+  };
+
+  const handleTestPersona = async () => {
+    if (!testMessage.trim()) return;
+    if (geminiApiKeys.length === 0) {
+      showNotification('error', 'Please add a Gemini API Key in settings first.');
+      return;
+    }
+    
+    setIsTesting(true);
+    setTestReply("");
+    try {
+      const res = await fetch("/api/test-persona", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: testMessage,
+          persona: aiPersona,
+          apiKey: geminiApiKeys[0] // Use first key for testing
+        }),
       });
+      
+      const data = await res.json();
+      if (res.ok) {
+        setTestReply(data.reply);
+      } else {
+        showNotification('error', data.error || 'Test failed');
+      }
+    } catch (err) {
+      showNotification('error', 'Connection error');
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const clearLogs = async () => {
+    if (!confirm("Clear all logs?")) return;
+    try {
+      const res = await fetch("/api/logs", { method: "DELETE" });
       if (res.ok) {
         setLogs([]);
         showNotification('success', 'Logs cleared');
@@ -655,6 +781,7 @@ export default function App() {
     fetchKeywords();
     fetchLogs();
     fetchBlockedTopics();
+    fetchAnalytics();
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
@@ -674,12 +801,19 @@ export default function App() {
   useEffect(() => {
     if (activeTab === 'logs') {
       fetchLogs();
+    } else if (activeTab === 'analytics') {
+      fetchAnalytics();
     }
   }, [activeTab]);
 
-  const handleTogglePause = async () => {
+  const handleTogglePause = () => {
+    setShowPauseConfirmation(true);
+  };
+
+  const confirmTogglePause = async () => {
     if (!stats) return;
     const newPausedState = !stats.isSystemPaused;
+    setShowPauseConfirmation(false);
     
     // Optimistic update
     setStats({ ...stats, isSystemPaused: newPausedState });
@@ -765,15 +899,11 @@ export default function App() {
   };
 
   const handleUpdateSettings = async () => {
-    if (!ownerId) return;
     setSaving(true);
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           autoReply: autoReplyInput,
           delaySeconds: delaySecondsInput,
@@ -850,10 +980,7 @@ export default function App() {
     try {
       const res = await fetch("/api/keywords", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId!
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       
@@ -873,15 +1000,12 @@ export default function App() {
   };
 
   const verifyKey = async (key: string) => {
-    if (!key || !ownerId) return;
+    if (!key) return;
     showNotification('warn', 'Verifying key...');
     try {
       const res = await fetch("/api/verify-gemini", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: key }),
       });
       const data = await res.json();
@@ -974,12 +1098,9 @@ export default function App() {
   };
 
   const confirmDeleteKeyword = async () => {
-    if (!deleteConfirmationId || !ownerId) return;
+    if (!deleteConfirmationId) return;
     try {
-      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { 
-        method: "DELETE",
-        headers: { 'x-owner-id': ownerId }
-      });
+      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
       if (res.ok) {
         showNotification('success', 'Keyword deleted');
         fetchKeywords();
@@ -992,15 +1113,11 @@ export default function App() {
   };
 
   const handleSendCode = async () => {
-    if (!ownerId) return;
     setAuthLoading(true);
     try {
       const res = await fetch("/api/auth/send-code", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone }),
       });
       
@@ -1021,15 +1138,11 @@ export default function App() {
   };
 
   const handleSignIn = async () => {
-    if (!ownerId) return;
     setAuthLoading(true);
     try {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, password }),
       });
       
@@ -1056,11 +1169,8 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExportData = async () => {
-    if (!ownerId) return;
     try {
-      const res = await fetch("/api/data/export", {
-        headers: { 'x-owner-id': ownerId }
-      });
+      const res = await fetch("/api/data/export");
       if (res.ok) {
         const data = await res.json();
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -1092,10 +1202,7 @@ export default function App() {
         
         const res = await fetch("/api/data/import", {
           method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "x-owner-id": ownerId!
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         });
 
@@ -1116,19 +1223,11 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  const handleLogout = async (phoneToLogout?: string) => {
-    if (!confirm(phoneToLogout ? `Logout account ${phoneToLogout}?` : "Logout all accounts?") || !ownerId) return;
+  const handleLogout = async () => {
     try {
-      const res = await fetch("/api/auth/logout", { 
-        method: "POST",
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-owner-id': ownerId
-        },
-        body: JSON.stringify({ phoneNumber: phoneToLogout })
-      });
+      const res = await fetch("/api/auth/logout", { method: "POST" });
       if (res.ok) {
-        showNotification('success', phoneToLogout ? `Account ${phoneToLogout} logged out` : 'All accounts logged out');
+        showNotification('success', 'Logged out');
         fetchStats();
       }
     } catch (err) {
@@ -1137,15 +1236,12 @@ export default function App() {
   };
 
   const handleBroadcast = async () => {
-    if (!broadcastMessage.trim() || !ownerId) return;
+    if (!broadcastMessage.trim()) return;
     setBroadcasting(true);
     try {
       const res = await fetch("/api/broadcast", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-owner-id": ownerId
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: broadcastMessage }),
       });
       if (res.ok) {
@@ -1195,72 +1291,40 @@ export default function App() {
 
   const slideVariants = {
     initial: (direction: number) => ({
-      x: direction > 0 ? '100%' : '-100%',
-      opacity: 0
+      x: direction > 0 ? '50%' : '-50%',
+      opacity: 0,
+      scale: 0.9,
+      rotateY: direction > 0 ? 15 : -15,
+      filter: 'blur(10px)'
     }),
     animate: {
       x: 0,
       opacity: 1,
-      transition: { type: 'spring', stiffness: 300, damping: 30 }
+      scale: 1,
+      rotateY: 0,
+      filter: 'blur(0px)',
+      transition: { 
+        type: 'spring', 
+        stiffness: 260, 
+        damping: 26,
+        mass: 1,
+        opacity: { duration: 0.3 }
+      }
     },
     exit: (direction: number) => ({
-      x: direction > 0 ? '-100%' : '100%',
+      x: direction > 0 ? '-50%' : '50%',
       opacity: 0,
-      transition: { type: 'spring', stiffness: 300, damping: 30 }
+      scale: 0.9,
+      rotateY: direction > 0 ? -15 : 15,
+      filter: 'blur(10px)',
+      transition: { 
+        type: 'spring', 
+        stiffness: 260, 
+        damping: 26,
+        opacity: { duration: 0.2 }
+      }
     })
   };
-
-  if (!ownerId) {
-    return (
-      <div className={`min-h-screen flex items-center justify-center p-6 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-900'}`}>
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className={`w-full max-w-md p-8 rounded-[2.5rem] border shadow-2xl ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}
-        >
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-16 h-16 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-emerald-500/20">
-              <User className="text-white" size={32} />
-            </div>
-            <h2 className="text-2xl font-black tracking-tight">Welcome Back</h2>
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mt-1">Enter your Owner ID to continue</p>
-          </div>
-          
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-60">Owner ID</label>
-              <div className="relative">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input
-                  type="text"
-                  value={loginInput}
-                  onChange={(e) => setLoginInput(e.target.value)}
-                  placeholder="e.g. user_123"
-                  className={`w-full pl-12 pr-4 py-4 rounded-2xl outline-none border transition-all ${darkMode ? 'bg-black border-white/10 focus:border-emerald-500' : 'bg-slate-50 border-black/5 focus:border-emerald-500'}`}
-                />
-              </div>
-            </div>
-            
-            <button
-              onClick={() => {
-                const input = loginInput.trim();
-                const allowedIds = ['ROHIT2004', 'PRAKASH2006'];
-                if (input && allowedIds.includes(input)) {
-                  localStorage.setItem("ownerId", input);
-                  setOwnerId(input);
-                } else {
-                  alert("Invalid Owner ID. Access Restricted.");
-                }
-              }}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-black uppercase tracking-widest shadow-lg shadow-emerald-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
-            >
-              Login
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
 
   if (loading) {
     return (
@@ -1284,7 +1348,7 @@ export default function App() {
         <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
       </div>
       {/* Offline Warning */}
-      {(!stats?.accounts?.some((a: any) => a.isConnected)) && (
+      {!stats?.isUserBotConnected && (
         <div className="bg-rose-600 text-white text-[10px] font-black uppercase tracking-[0.2em] py-2 text-center sticky top-0 z-[60] shadow-lg">
           ⚠️ Please login Telegram ID to enable auto-replies
         </div>
@@ -1305,9 +1369,93 @@ export default function App() {
           </div>
         </div>
         
-        <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.accounts?.some((a: any) => a.isConnected) ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${stats?.accounts?.some((a: any) => a.isConnected) ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-          <span>{stats?.accounts?.some((a: any) => a.isConnected) ? 'Connected' : 'Disconnected'}</span>
+        <div className="flex items-center space-x-2">
+          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+            <span>{stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}</span>
+          </div>
+          
+          <div className="relative">
+            <button 
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className={`p-2 rounded-xl transition-all ${darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-500 hover:bg-black/5'}`}
+            >
+              <MoreVertical size={20} />
+            </button>
+            
+            <AnimatePresence>
+              {isMenuOpen && (
+                <>
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setIsMenuOpen(false)}
+                    className="fixed inset-0 z-[60]"
+                  />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: -10, x: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: -10, x: 10 }}
+                    className={`absolute right-0 mt-2 w-48 rounded-2xl shadow-2xl border z-[70] overflow-hidden backdrop-blur-xl ${darkMode ? 'bg-neutral-900/90 border-white/10' : 'bg-white/90 border-black/5'}`}
+                  >
+                    <div className="p-2 space-y-1">
+                      <button
+                        onClick={() => {
+                          setActiveTab('analytics');
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'analytics' ? (darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-50 text-cyan-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                      >
+                        <PieChart size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">Analytics</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab('tester');
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'tester' ? (darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-50 text-orange-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                      >
+                        <Bot size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">AI Test</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab('media');
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'media' ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                      >
+                        <Library size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">Media Library</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab('insights');
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'insights' ? (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                      >
+                        <BarChart3 size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">Insights</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab('user');
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'user' ? (darkMode ? 'bg-pink-500/20 text-pink-400' : 'bg-pink-50 text-pink-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                      >
+                        <User size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">User Profile</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </header>
 
@@ -2104,14 +2252,14 @@ export default function App() {
                     <RotateCcw size={16} className="text-amber-500" />
                   </div>
                   
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10 gap-4">
-                    <div className="space-y-1 flex-1 min-w-0">
-                      <p className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
-                      <p className={`text-[10px] break-words ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset keyword limits daily at 12:00 AM IST</p>
+                  <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
+                    <div className="space-y-1">
+                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset keyword limits daily at 12:00 AM IST</p>
                     </div>
                     <button
                       onClick={handleToggleAutoReset}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
                     >
                       <span
                         className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoResetKeywords ? 'translate-x-6' : 'translate-x-1'}`}
@@ -2337,294 +2485,512 @@ export default function App() {
               <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-pink relative overflow-hidden group ${darkMode ? 'bg-pink-950/40 border-pink-500/30' : 'bg-pink-50 border-pink-200 shadow-xl shadow-pink-500/10'}`}>
                 <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-pink-400' : 'text-pink-600'}`} />
                 <div className="relative z-10 pointer-events-auto">
-                  <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-3">
-                      <div className="p-3 bg-pink-500/10 rounded-2xl">
-                        <User className="w-6 h-6 text-pink-500" />
-                      </div>
-                      <div>
-                        <h2 className={`text-xl font-black ${darkMode ? "text-white" : "text-slate-900"}`}>Telegram Accounts</h2>
-                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
-                          Logged in as: <span className="font-bold text-emerald-500">{ownerId}</span>
-                        </p>
-                      </div>
+                  {stats?.isUserBotConnected ? (
+                    <div className="text-center py-8 space-y-6">
+                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition-all ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
+                      <CheckCircle2 size={48} />
                     </div>
-                    <button
-                      onClick={() => {
-                        localStorage.removeItem("ownerId");
-                        setOwnerId(null);
-                        setStats(null);
-                        setKeywords([]);
-                        setLogs([]);
-                      }}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold transition-all shadow-lg ${darkMode ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 border border-rose-100 hover:bg-rose-100'}`}
-                    >
-                      <X className="w-4 h-4" />
-                      Logout ID
-                    </button>
-                    {(!stats?.accounts || stats.accounts.length === 0) && (
-                      <button
-                        onClick={() => setAuthStep('phone')}
-                        className="flex items-center gap-2 px-4 py-2 bg-pink-500 hover:bg-pink-600 text-white rounded-xl font-bold transition-all shadow-lg shadow-pink-500/20"
+                    <div>
+                      <h3 className={`text-xl font-bold tracking-tight mb-2 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Connected</h3>
+                      <p className={`text-sm max-w-[200px] mx-auto ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Your Telegram session is active and ready for auto-replies.</p>
+                    </div>
+                    
+                    <div className="pt-4 flex flex-col space-y-3">
+                      <button 
+                        onClick={fetchStats}
+                        className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
                       >
-                        <Plus className="w-4 h-4" />
-                        Add Account
+                        Refresh Status
                       </button>
-                    )}
-                  </div>
-
-                  <div className="space-y-4">
-                    {stats?.accounts && stats.accounts.length > 0 ? (
-                      stats.accounts.map((acc) => (
-                        <div 
-                          key={acc.phoneNumber}
-                          className={`p-4 rounded-2xl border transition-all ${
-                            darkMode ? "bg-slate-900/50 border-slate-700" : "bg-slate-50 border-slate-200"
-                          }`}
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className={`w-12 h-12 rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold text-lg ${
-                                acc.isConnected ? "bg-emerald-500 shadow-lg shadow-emerald-500/20" : "bg-slate-500"
-                              }`}>
-                                {acc.name ? acc.name.charAt(0) : acc.phoneNumber.slice(-2)}
-                              </div>
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className={`font-bold truncate ${darkMode ? "text-white" : "text-slate-900"}`}>
-                                    {acc.name || acc.phoneNumber}
-                                  </span>
-                                  {acc.isConnected ? (
-                                    <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded-full whitespace-nowrap">
-                                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                                      Connected
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 bg-slate-500/10 text-slate-500 text-[10px] font-black uppercase rounded-full whitespace-nowrap">
-                                      Disconnected
-                                    </span>
-                                  )}
-                                </div>
-                              <div className="mt-4 pt-4 border-t border-dashed border-slate-200 dark:border-slate-700">
-                                <div className="flex items-center justify-between mb-2">
-                                   <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? "text-slate-500" : "text-slate-400"}`}>Target Groups</span>
-                                   <button 
-                                     onClick={() => {
-                                        const newGid = prompt("Enter new Group ID (e.g. -100123456789):");
-                                        if (newGid && ownerId) {
-                                          const cleanGid = newGid.trim();
-                                          if (!acc.targetGroupIds?.includes(cleanGid)) {
-                                            const updatedGroups = [...(acc.targetGroupIds || []), cleanGid];
-                                            fetch('/api/accounts/update-groups', {
-                                              method: 'POST',
-                                              headers: { 
-                                                'Content-Type': 'application/json',
-                                                'x-owner-id': ownerId
-                                              },
-                                              body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
-                                            }).then(() => {
-                                                fetchStats();
-                                                alert("Group added! Bot is restarting to apply changes...");
-                                            });
-                                          }
-                                        }
-                                     }}
-                                     className="text-[10px] text-blue-500 hover:text-blue-400 font-bold uppercase tracking-widest flex items-center gap-1"
-                                   >
-                                     <Plus size={10} /> Add Group
-                                   </button>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {acc.targetGroupIds?.map((gid, idx) => (
-                                    <div key={idx} className={`flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all ${darkMode ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                                      <span>{gid}</span>
-                                      <button 
-                                        onClick={() => {
-                                          if (confirm(`Remove group ${gid}?`) && ownerId) {
-                                            const updatedGroups = acc.targetGroupIds.filter(g => g !== gid);
-                                            fetch('/api/accounts/update-groups', {
-                                              method: 'POST',
-                                              headers: { 
-                                                'Content-Type': 'application/json',
-                                                'x-owner-id': ownerId
-                                              },
-                                              body: JSON.stringify({ phoneNumber: acc.phoneNumber, targetGroupIds: updatedGroups })
-                                            }).then(() => {
-                                                fetchStats();
-                                                alert("Group removed! Bot is restarting to apply changes...");
-                                            });
-                                          }
-                                        }}
-                                        className="text-slate-400 hover:text-rose-500 transition-colors"
-                                      >
-                                        <X size={12} />
-                                      </button>
-                                    </div>
-                                  ))}
-                                  {(!acc.targetGroupIds || acc.targetGroupIds.length === 0) && (
-                                     <span className={`text-[10px] italic ${darkMode ? "text-slate-600" : "text-slate-400"}`}>No groups set. Bot will ignore all messages.</span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            </div>
-                            <div className="flex items-center gap-2 self-end sm:self-start">
-                              <button
-                                onClick={() => handleLogout(acc.phoneNumber)}
-                                className={`p-2 rounded-xl transition-all ${
-                                  darkMode ? "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20" : "bg-rose-50 text-rose-500 hover:bg-rose-100"
-                                }`}
-                                title="Logout Account"
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className={`text-center py-12 rounded-2xl border-2 border-dashed ${
-                        darkMode ? "border-slate-700 text-slate-500" : "border-slate-200 text-slate-400"
-                      }`}>
-                        <Smartphone className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                        <p className="font-bold">No accounts connected</p>
-                        <p className="text-sm">Click "Add Account" to get started</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <AnimatePresence>
-                    {authStep !== 'credentials' && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className={`mt-8 p-6 rounded-3xl shadow-xl ${darkMode ? "bg-slate-800/50 border border-slate-700" : "bg-white border border-slate-100"}`}
+                      <button 
+                        onClick={handleLogout}
+                        className={`text-[9px] font-bold uppercase tracking-widest transition-colors pt-4 opacity-40 hover:opacity-100 ${darkMode ? 'text-slate-500 hover:text-rose-400' : 'text-slate-400 hover:text-rose-600'}`}
                       >
-                        <div className="flex items-center justify-between mb-6">
-                          <h3 className={`text-lg font-black ${darkMode ? "text-white" : "text-slate-900"}`}>
-                            {authStep === 'phone' ? 'Step 1: Phone Number' : 'Step 2: Verification'}
-                          </h3>
-                          <button 
-                            onClick={() => setAuthStep('credentials')}
-                            className={`p-2 rounded-xl ${darkMode ? "hover:bg-slate-700 text-slate-400" : "hover:bg-slate-100 text-slate-500"}`}
-                          >
-                            <X className="w-5 h-5" />
-                          </button>
-                        </div>
-
-                        {authStep === 'phone' ? (
-                          <div className="space-y-4">
-                            <div className="relative group">
-                              <Smartphone className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
-                              <input
-                                type="text"
-                                value={phone}
-                                onChange={(e) => setPhone(e.target.value)}
-                                placeholder="Phone (e.g. +919006334503)"
-                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
-                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
-                                }`}
-                              />
-                            </div>
-                            <button
-                              onClick={handleSendCode}
-                              disabled={authLoading || !phone}
-                              className="w-full py-4 bg-pink-500 hover:bg-pink-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-pink-500/20 transition-all flex items-center justify-center gap-2"
-                            >
-                              {authLoading ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Send Code"}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                            <div className="relative group">
-                              <Key className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
-                              <input
-                                type="text"
-                                value={code}
-                                onChange={(e) => setCode(e.target.value)}
-                                placeholder="Verification Code"
-                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
-                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
-                                }`}
-                              />
-                            </div>
-                            <div className="relative group">
-                              <Lock className={`absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-pink-500" : "text-slate-400 group-focus-within:text-pink-500"}`} />
-                              <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="2FA Password (if any)"
-                                className={`w-full pl-12 pr-4 py-4 rounded-2xl font-bold transition-all outline-none border-2 ${
-                                  darkMode ? "bg-slate-900/50 border-slate-700 focus:border-pink-500 text-white" : "bg-slate-50 border-slate-100 focus:border-pink-500 text-slate-900"
-                                }`}
-                              />
-                            </div>
-                            <button
-                              onClick={handleSignIn}
-                              disabled={authLoading || !code}
-                              className="w-full py-4 bg-pink-500 hover:bg-pink-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-pink-500/20 transition-all flex items-center justify-center gap-2"
-                            >
-                              {authLoading ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Verify & Connect"}
-                            </button>
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  <div className={`mt-8 p-6 rounded-3xl shadow-xl ${darkMode ? "bg-slate-800/50 border border-slate-700" : "bg-white border border-slate-100"}`}>
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="p-3 bg-amber-500/10 rounded-2xl">
-                        <Key className="w-6 h-6 text-amber-500" />
-                      </div>
-                      <div>
-                        <h2 className={`text-xl font-black ${darkMode ? "text-white" : "text-slate-900"}`}>API Configuration</h2>
-                        <p className={`text-sm ${darkMode ? "text-slate-400" : "text-slate-500"}`}>Telegram API credentials for new logins</p>
-                      </div>
+                        Logout Session
+                      </button>
                     </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className={`text-xs font-black uppercase tracking-widest ml-1 ${darkMode ? "text-slate-500" : "text-slate-400"}`}>API ID</label>
-                        <div className="relative group">
-                          <Hash className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-amber-500" : "text-slate-400 group-focus-within:text-amber-500"}`} />
+                    
+                    {deferredPrompt && (
+                      <div className={`pt-8 border-t transition-colors duration-500 ${darkMode ? 'border-neutral-800' : 'border-slate-100'}`}>
+                        <button
+                          onClick={handleInstallApp}
+                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                        >
+                          <Smartphone size={16} />
+                          <span>Install Application</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {authStep === 'credentials' && (
+                      <div className="space-y-5">
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API ID</label>
                           <input
                             type="text"
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
                             placeholder="Enter API ID"
-                            className={`w-full pl-11 pr-4 py-3 rounded-xl font-bold transition-all outline-none border-2 ${
-                              darkMode ? "bg-slate-900/50 border-slate-700 focus:border-amber-500 text-white" : "bg-slate-50 border-slate-100 focus:border-amber-500 text-slate-900"
-                            }`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
-                      </div>
-                      <div className="space-y-2">
-                        <label className={`text-xs font-black uppercase tracking-widest ml-1 ${darkMode ? "text-slate-500" : "text-slate-400"}`}>API Hash</label>
-                        <div className="relative group">
-                          <ShieldCheck className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${darkMode ? "text-slate-500 group-focus-within:text-amber-500" : "text-slate-400 group-focus-within:text-amber-500"}`} />
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API Hash</label>
                           <input
                             type="text"
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
                             placeholder="Enter API Hash"
-                            className={`w-full pl-11 pr-4 py-3 rounded-xl font-bold transition-all outline-none border-2 ${
-                              darkMode ? "bg-slate-900/50 border-slate-700 focus:border-amber-500 text-white" : "bg-slate-50 border-slate-100 focus:border-amber-500 text-slate-900"
-                            }`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
+                        <motion.button
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                        >
+                          Continue
+                        </motion.button>
+                      </div>
+                    )}
+
+                    {authStep === 'phone' && (
+                      <div className="space-y-5">
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phone Number</label>
+                          <input
+                            type="text"
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            placeholder="+1 234 567 8900"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={handleSendCode}
+                          disabled={authLoading}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                        >
+                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
+                          <span>Request Code</span>
+                        </motion.button>
+                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back to API Info</button>
+                      </div>
+                    )}
+
+                    {authStep === 'code' && (
+                      <div className="space-y-5">
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Login Code</label>
+                          <input
+                            type="text"
+                            value={code}
+                            onChange={(e) => setCode(e.target.value)}
+                            placeholder="Enter 5-digit code"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>2FA Password (Optional)</label>
+                          <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="If enabled"
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                          />
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={handleSignIn}
+                          disabled={authLoading}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                        >
+                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
+                          <span>Verify & Connect</span>
+                        </motion.button>
+                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+          )}
+
+          {activeTab === 'analytics' && (
+            <motion.div
+              key="analytics"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-cyan relative overflow-hidden group ${darkMode ? 'bg-cyan-950/40 border-cyan-500/30' : 'bg-cyan-50 border-cyan-200 shadow-xl shadow-cyan-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-cyan-400' : 'text-cyan-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-500/10 text-cyan-600'}`}>
+                      <PieChart size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-cyan-400' : 'text-cyan-600'}`}>Top Keywords Triggered</h3>
+                  </div>
+                  
+                  <div className="h-64 w-full">
+                    {analyticsData.keywordData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RechartsPieChart>
+                          <Pie
+                            data={analyticsData.keywordData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={80}
+                            paddingAngle={5}
+                            dataKey="value"
+                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                          >
+                            {analyticsData.keywordData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899'][index % 5]} />
+                            ))}
+                          </Pie>
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: darkMode ? '#171717' : '#ffffff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1)' }}
+                            itemStyle={{ color: darkMode ? '#e5e5e5' : '#171717' }}
+                          />
+                        </RechartsPieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex items-center justify-center h-full opacity-50 text-sm">No data available yet</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}>
+                <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-500/10 text-blue-600'}`}>
+                      <BarChart3 size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Most Active Topics</h3>
+                  </div>
+                  
+                  <div className="h-64 w-full">
+                    {analyticsData.topicData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analyticsData.topicData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <XAxis dataKey="name" tick={{ fontSize: 10, fill: darkMode ? '#9ca3af' : '#6b7280' }} />
+                          <YAxis tick={{ fontSize: 10, fill: darkMode ? '#9ca3af' : '#6b7280' }} />
+                          <Tooltip 
+                            cursor={{ fill: darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}
+                            contentStyle={{ backgroundColor: darkMode ? '#171717' : '#ffffff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1)' }}
+                          />
+                          <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex items-center justify-center h-full opacity-50 text-sm">No data available yet</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'tester' && (
+            <motion.div
+              key="tester"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-orange relative overflow-hidden group ${darkMode ? 'bg-orange-950/40 border-orange-500/30' : 'bg-orange-50 border-orange-200 shadow-xl shadow-orange-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-orange-400' : 'text-orange-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-500/10 text-orange-600'}`}>
+                      <Bot size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-orange-400' : 'text-orange-600'}`}>AI Persona Tester</h3>
+                  </div>
+                  
+                  <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                    Test your current AI Persona settings before they go live. This uses the persona defined in Settings.
+                  </p>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Test Message</label>
+                      <textarea
+                        value={testMessage}
+                        onChange={(e) => setTestMessage(e.target.value)}
+                        placeholder="Type a message a user might send..."
+                        rows={3}
+                        className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-orange-500 outline-none text-sm transition-all ${darkMode ? 'bg-orange-500/5 border-orange-500/20 text-white placeholder-white/20' : 'bg-orange-50 border-orange-200 text-slate-900 placeholder-slate-400'}`}
+                      />
+                    </div>
+                    
+                    <button
+                      onClick={handleTestPersona}
+                      disabled={isTesting || !testMessage.trim()}
+                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${
+                        isTesting || !testMessage.trim() 
+                          ? (darkMode ? 'bg-neutral-800 text-neutral-500' : 'bg-slate-200 text-slate-400') 
+                          : 'bg-orange-500 text-white shadow-orange-500/20 hover:bg-orange-600'
+                      }`}
+                    >
+                      {isTesting ? <RefreshCw className="animate-spin" size={16} /> : <MessageCircle size={16} />}
+                      <span>Test AI Response</span>
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {testReply && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className={`p-4 rounded-2xl border ${darkMode ? 'bg-black/40 border-orange-500/20' : 'bg-white/60 border-orange-200'}`}
+                      >
+                        <div className="flex items-center space-x-2 mb-2">
+                          <Bot size={14} className={darkMode ? 'text-orange-400' : 'text-orange-600'} />
+                          <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-orange-400' : 'text-orange-600'}`}>AI Reply</span>
+                        </div>
+                        <p className={`text-sm whitespace-pre-wrap ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                          {testReply}
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'insights' && (
+            <motion.div
+              key="insights"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-500/10 text-rose-600'}`}>
+                      <Calendar size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-rose-400' : 'text-rose-600'}`}>Activity Heatmap</h3>
+                  </div>
+                  
+                  <div className="overflow-x-auto pb-2 custom-scrollbar">
+                    <div className="flex space-x-1 min-w-max">
+                      <div className="flex flex-col space-y-1 pr-2">
+                        {['Mon', 'Wed', 'Fri', 'Sun'].map(day => (
+                          <span key={day} className="text-[8px] h-3 flex items-center text-slate-500 font-bold uppercase">{day}</span>
+                        ))}
+                      </div>
+                      <div className="grid grid-flow-col grid-rows-7 gap-1">
+                        {activityHeatmap.map((item, i) => (
+                          <div 
+                            key={i}
+                            className={`w-3 h-3 rounded-sm transition-all hover:scale-125 cursor-pointer ${
+                              item.value === 0 ? (darkMode ? 'bg-neutral-800' : 'bg-slate-200') :
+                              item.value < 3 ? 'bg-rose-500/20' :
+                              item.value < 6 ? 'bg-rose-500/50' :
+                              'bg-rose-500'
+                            }`}
+                            title={`${item.day} ${item.hour}:00 - ${item.value} messages`}
+                          />
+                        ))}
                       </div>
                     </div>
+                  </div>
+                  <div className="flex items-center justify-end space-x-2 text-[8px] font-bold uppercase text-slate-500">
+                    <span>Less</span>
+                    <div className="flex space-x-1">
+                      <div className={`w-2 h-2 rounded-sm ${darkMode ? 'bg-neutral-800' : 'bg-slate-200'}`} />
+                      <div className="w-2 h-2 rounded-sm bg-rose-500/20" />
+                      <div className="w-2 h-2 rounded-sm bg-rose-500/50" />
+                      <div className="w-2 h-2 rounded-sm bg-rose-500" />
+                    </div>
+                    <span>More</span>
+                  </div>
+                </div>
+              </div>
 
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}>
+                <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-500/10 text-amber-600'}`}>
+                      <Users size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>Top Interacting Users</h3>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {userLeaderboard.map((user, i) => (
+                      <div key={user.username} className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white/60 border-black/5'}`}>
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs ${
+                            i === 0 ? 'bg-amber-500 text-white' : 
+                            i === 1 ? 'bg-slate-400 text-white' : 
+                            i === 2 ? 'bg-orange-400 text-white' : 
+                            (darkMode ? 'bg-neutral-800 text-slate-400' : 'bg-slate-100 text-slate-500')
+                          }`}>
+                            {i + 1}
+                          </div>
+                          <span className={`text-xs font-bold ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>@{user.username}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <span className={`text-xs font-black ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>{user.count}</span>
+                          <span className="text-[8px] font-bold uppercase text-slate-500">Replies</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/10 text-emerald-600'}`}>
+                      <Database size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>Data Management</h3>
+                  </div>
+                  
+                  <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                    Backup your entire bot configuration including keywords, settings, and AI personas.
+                  </p>
+
+                  <button
+                    onClick={handleExportConfig}
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500' : 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600'}`}
+                  >
+                    <Download size={16} />
+                    <span>Export Configuration</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'media' && (
+            <motion.div
+              key="media"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-6 w-full"
+            >
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-indigo relative overflow-hidden group ${darkMode ? 'bg-indigo-950/40 border-indigo-500/30' : 'bg-indigo-50 border-indigo-200 shadow-xl shadow-indigo-500/10'}`}>
+                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
+                <div className="relative z-10 space-y-6 pointer-events-auto">
+                  <div className="flex items-center space-x-2">
+                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-500/10 text-indigo-600'}`}>
+                      <Library size={14} />
+                    </div>
+                    <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`}>Media Library</h3>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Media Name</label>
+                        <input
+                          type="text"
+                          value={newMediaName}
+                          onChange={(e) => setNewMediaName(e.target.value)}
+                          placeholder="e.g. Banner"
+                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition-all ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Media URL</label>
+                        <input
+                          type="text"
+                          value={newMediaUrl}
+                          onChange={(e) => setNewMediaUrl(e.target.value)}
+                          placeholder="https://..."
+                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition-all ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
+                        />
+                      </div>
+                    </div>
+                    
                     <button
-                      onClick={handleUpdateSettings}
-                      disabled={saving}
-                      className="w-full mt-6 py-4 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-2xl font-black text-lg shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2"
+                      onClick={handleAddMedia}
+                      disabled={!newMediaUrl.trim() || !newMediaName.trim()}
+                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${
+                        !newMediaUrl.trim() || !newMediaName.trim()
+                          ? (darkMode ? 'bg-neutral-800 text-neutral-500' : 'bg-slate-200 text-slate-400') 
+                          : 'bg-indigo-500 text-white shadow-indigo-500/20 hover:bg-indigo-600'
+                      }`}
                     >
-                      {saving ? <RefreshCw className="w-6 h-6 animate-spin" /> : "Save API Config"}
+                      <Plus size={16} />
+                      <span>Add to Library</span>
                     </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 mt-6">
+                    {mediaItems.length === 0 ? (
+                      <div className="text-center py-12 opacity-40 italic text-sm">No media in library yet.</div>
+                    ) : (
+                      mediaItems.map(item => (
+                        <div key={item._id} className={`group relative rounded-3xl overflow-hidden border transition-all ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white border-black/5 shadow-sm'}`}>
+                          <div className="aspect-video w-full overflow-hidden">
+                            <img src={item.url} alt={item.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" referrerPolicy="no-referrer" />
+                          </div>
+                          <div className={`p-4 flex items-center justify-between ${darkMode ? 'bg-neutral-900/80' : 'bg-white/90'} backdrop-blur-md`}>
+                            <div>
+                              <h4 className={`text-xs font-black uppercase tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</h4>
+                              <p className="text-[9px] text-slate-500 font-mono truncate max-w-[150px]">{item.url}</p>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <button 
+                                onClick={() => {
+                                  navigator.clipboard.writeText(item.url);
+                                  showNotification('success', 'URL copied to clipboard');
+                                }}
+                                className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-white/5 text-slate-400 hover:text-white' : 'bg-black/5 text-slate-500 hover:text-black'}`}
+                                title="Copy URL"
+                              >
+                                <Link size={14} />
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteMedia(item._id)}
+                                className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
+                                title="Delete"
+                              >
+                                <Trash size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -2715,12 +3081,11 @@ export default function App() {
       </main>
 
       {/* Bottom Navigation */}
-      <nav className={`fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t px-4 pb-safe pt-2 flex items-center justify-around z-50 transition-colors duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
+      <nav className={`fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t px-2 pb-safe pt-2 flex items-center justify-around z-50 transition-colors duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
         <TabButton id="dashboard" icon={LayoutDashboard} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="keywords" icon={Hash} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="broadcast" icon={Send} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="settings" icon={Settings} label="Set" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-        <TabButton id="user" icon={User} label="User" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         <TabButton id="logs" icon={FileText} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
       </nav>
 
@@ -2777,6 +3142,69 @@ export default function App() {
                 >
                   Delete
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* System Pause Confirmation Modal */}
+      <AnimatePresence>
+        {showPauseConfirmation && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          >
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.8, opacity: 0, y: 20 }}
+              className={`w-full max-w-sm p-8 rounded-[2.5rem] shadow-2xl border relative overflow-hidden ${
+                darkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-white border-slate-100'
+              }`}
+            >
+              <div className={`absolute -top-10 -right-10 w-32 h-32 rounded-full blur-3xl opacity-20 ${stats?.isSystemPaused ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              
+              <div className="relative z-10 text-center">
+                <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 transition-transform duration-500 hover:rotate-12 ${
+                  stats?.isSystemPaused 
+                    ? (darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                    : (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600')
+                }`}>
+                  {stats?.isSystemPaused ? <Play size={40} fill="currentColor" /> : <Pause size={40} fill="currentColor" />}
+                </div>
+                
+                <h3 className={`text-2xl font-black tracking-tight mb-3 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {stats?.isSystemPaused ? 'Resume System?' : 'Pause System?'}
+                </h3>
+                <p className={`text-sm mb-8 leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {stats?.isSystemPaused 
+                    ? 'The bot will start replying to messages again based on your rules.' 
+                    : 'The bot will stop all automated replies until you resume it manually.'}
+                </p>
+                
+                <div className="flex flex-col space-y-3">
+                  <button
+                    onClick={confirmTogglePause}
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${
+                      stats?.isSystemPaused 
+                        ? 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600' 
+                        : 'bg-rose-500 text-white shadow-rose-500/20 hover:bg-rose-600'
+                    }`}
+                  >
+                    {stats?.isSystemPaused ? 'Yes, Resume Now' : 'Yes, Pause Now'}
+                  </button>
+                  <button
+                    onClick={() => setShowPauseConfirmation(false)}
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                      darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
