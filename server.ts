@@ -768,7 +768,7 @@ async function startServer() {
                        try {
                          const genAI = new GoogleGenAI({ apiKey });
                          const response = await genAI.models.generateContent({
-                           model: "gemini-2.5-flash",
+                           model: "gemini-3-flash-preview",
                            contents: [
                              {
                                role: "user",
@@ -988,7 +988,7 @@ async function startServer() {
               console.log(`Attempting AI reply with key ending in ...${apiKey.slice(-4)}`);
               const genAI = new GoogleGenAI({ apiKey });
               const response = await genAI.models.generateContent({
-                model: "gemini-2.5-flash",
+                model: "gemini-3-flash-preview",
                 contents: [
                   {
                     role: "user",
@@ -1023,7 +1023,10 @@ async function startServer() {
               console.error(`AI Generation failed with key ...${apiKey.slice(-4)}:`, errorMsg);
               
               // Log specific critical errors to the dashboard so the user knows WHICH key is bad
-              if (errorMsg.includes("leaked") || errorMsg.includes("not valid") || errorMsg.includes("API_KEY_INVALID")) {
+              if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("Resource has been exhausted")) {
+                await saveLog(`Quota Exceeded for API Key (...${apiKey.slice(-4)}). Please wait or add more keys.`, 'warn', 'AI_SYSTEM');
+                // Continue to next key if available
+              } else if (errorMsg.includes("leaked") || errorMsg.includes("not valid") || errorMsg.includes("API_KEY_INVALID")) {
                 await saveLog(`Invalid API Key (...${apiKey.slice(-4)}): ${errorMsg}`, 'error', 'AI_SYSTEM');
               }
             }
@@ -1212,7 +1215,7 @@ async function startServer() {
 
       const genAI = new GoogleGenAI({ apiKey });
       const response = await genAI.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3-flash-preview",
         contents: [{ role: "user", parts: [{ text: "Hello" }] }]
       });
       
@@ -1623,7 +1626,7 @@ async function startServer() {
     try {
       const genAI = new GoogleGenAI({ apiKey });
       const response = await genAI.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3-flash-preview",
         contents: [
           {
             role: "user",
