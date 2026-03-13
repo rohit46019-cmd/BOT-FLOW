@@ -87,6 +87,18 @@ const BlockedTopicSchema = new mongoose.Schema({
 });
 const BlockedTopic = mongoose.model("BlockedTopic", BlockedTopicSchema);
 
+const MissedTriggerSchema = new mongoose.Schema({
+  message_id: { type: Number, required: true },
+  chat_id: { type: String, required: true },
+  topic_id: { type: Number },
+  text: { type: String },
+  matched_keyword: { type: String },
+  rule_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword' },
+  timestamp: { type: Date, default: Date.now },
+  processed: { type: Boolean, default: false }
+});
+const MissedTrigger = mongoose.model("MissedTrigger", MissedTriggerSchema);
+
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const getSetting = async (key: string) => await Setting.findOne({ key });
@@ -116,9 +128,17 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
   }
 };
 
+// Helper function to reliably get the topic ID from a message
+const getTopicId = (message: any): number | undefined => {
+  if (!message || !message.replyTo) return undefined;
+  if (message.replyTo.replyToTopId) return message.replyTo.replyToTopId;
+  if (message.replyTo.forumTopic) return message.replyTo.replyToMsgId;
+  return undefined;
+};
+
 // Helper function for topic renaming
 const handleTopicRenaming = async (client: TelegramClient, message: any, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
-  const replyToId = message.replyTo?.replyToMsgId;
+  const replyToId = getTopicId(message);
   if (!replyToId) return;
 
   // Fetch Topic Name
@@ -462,11 +482,7 @@ async function startServer() {
 
       // Check if system is paused
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
-      if (isSystemPaused) {
-        console.log("System is paused. Skipping message processing.");
-        return;
-      }
-
+      
       console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
       // Check if topic is blocked
@@ -475,7 +491,7 @@ async function startServer() {
       // However, sometimes (rarely) or for the topic creation message itself, message.id is the topic ID.
       // We must check BOTH to be safe, because sometimes `replyToMsgId` might be missing or different in edge cases.
       
-      const replyToId = message.replyTo?.replyToMsgId;
+      const replyToId = getTopicId(message);
       const messageId = message.id;
       
       // Check if the topic ID (replyToId) is blocked
@@ -565,7 +581,7 @@ async function startServer() {
         const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
         
         if (photoReplyEnabled) {
-          const topicId = message.replyTo?.replyToMsgId || message.id;
+          const topicId = getTopicId(message) || message.id;
           const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
 
           // Check photo reply history for this topic
@@ -582,6 +598,7 @@ async function startServer() {
             await client.sendMessage(message.peerId, {
               message: photoReplyMessage,
               replyTo: message.id,
+              topMsgId: getTopicId(message),
             });
 
             // Update history
@@ -630,6 +647,7 @@ async function startServer() {
             await client.sendMessage(message.peerId, {
               message: autoReply,
               replyTo: topicId,
+              topMsgId: topicId,
             });
           } catch (err) {
             console.error("UserBot failed to send auto-reply:", err);
@@ -688,6 +706,7 @@ async function startServer() {
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
           
           const processedRuleIds = new Set<string>();
+          const processedOutputs = new Set<string>();
 
           for (const match of matches) {
             const kw = match.kw;
@@ -698,17 +717,53 @@ async function startServer() {
               continue;
             }
 
+            // Normalize links
+            const linksToProcess = [...(kw.message_links || [])];
+            if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
+              linksToProcess.push(kw.message_link);
+            }
+            const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
+
+            // Create a signature of the rule's output to prevent duplicate identical replies
+            const outputSignature = JSON.stringify({
+              reply: (kw.reply || "").trim(),
+              photo: kw.photo ? true : false,
+              links: normalizedLinks,
+              ai: kw.ai_reply_enabled || false
+            });
+
+            if (processedOutputs.has(outputSignature)) {
+              console.log(`Skipping duplicate output for rule ${kw._id} (identical reply already sent)`);
+              continue;
+            }
+
             console.log(`Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
             
             try {
               const replyToMsgId = message.id;
-              const topicId = message.replyTo?.replyToMsgId;
+              const topicId = getTopicId(message);
               let replySent = false;
+
+              // If system is paused, save as missed trigger and skip reply
+              if (isSystemPaused) {
+                await MissedTrigger.create({
+                  message_id: message.id,
+                  chat_id: chatId,
+                  topic_id: topicId,
+                  text: message.message,
+                  matched_keyword: match.matchedWord,
+                  rule_id: kw._id
+                });
+                console.log(`Saved missed trigger for keyword "${match.matchedWord}" while paused.`);
+                processedRuleIds.add(kw._id.toString());
+                processedOutputs.add(outputSignature);
+                continue;
+              }
 
               // Rate limiting check: Max replies per keyword rule per topic
               if (topicId) {
                 const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
-                const maxReplies = kw.max_replies || 2;
+                const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
                 
                 let currentCount = 0;
                 if (history) {
@@ -727,19 +782,14 @@ async function startServer() {
                   }
                 }
 
-                if (currentCount >= maxReplies) {
+                if (maxReplies > 0 && currentCount >= maxReplies) {
                   console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${currentCount}/${maxReplies}).`);
                   continue;
                 }
               }
 
               processedRuleIds.add(kw._id.toString());
-
-              // Collect all links to process (legacy + new array)
-              const linksToProcess = [...(kw.message_links || [])];
-              if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
-                linksToProcess.push(kw.message_link);
-              }
+              processedOutputs.add(outputSignature);
 
               // 1. AI Reply (if enabled)
               if (kw.ai_reply_enabled) {
@@ -788,6 +838,7 @@ async function startServer() {
                            await client.sendMessage(message.peerId, {
                              message: aiReply,
                              replyTo: message.id,
+                             topMsgId: topicId,
                            });
                            await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
                            replySent = true;
@@ -809,6 +860,7 @@ async function startServer() {
                   await client.sendMessage(message.peerId, {
                     message: kw.reply,
                     replyTo: replyToMsgId,
+                    topMsgId: topicId,
                   });
                   replySent = true;
                 }
@@ -834,7 +886,7 @@ async function startServer() {
                       }
                     }
 
-                    const topMsgId = message.replyTo?.replyToMsgId;
+                    const topMsgId = getTopicId(message);
                     
                     try {
                       let inputPeer;
@@ -892,6 +944,7 @@ async function startServer() {
                   file: toUpload,
                   caption: kw.reply || "",
                   replyTo: replyToMsgId,
+                  topMsgId: topicId,
                   forceDocument: false,
                 });
                 replySent = true;
@@ -900,6 +953,7 @@ async function startServer() {
                 await client.sendMessage(message.peerId, {
                   message: kw.reply,
                   replyTo: replyToMsgId,
+                  topMsgId: topicId,
                 });
                 replySent = true;
               }
@@ -1038,6 +1092,7 @@ async function startServer() {
               await client.sendMessage(message.peerId, {
                 message: aiReply,
                 replyTo: message.id,
+                topMsgId: topicId,
               });
               await saveLog(`AI Auto-Reply: "${aiReply}"`, 'info', 'USERBOT');
               
@@ -1257,7 +1312,7 @@ async function startServer() {
         photo, 
         message_link, 
         message_links,
-        max_replies: typeof max_replies === 'number' ? max_replies : 2,
+        max_replies: typeof max_replies === 'number' ? max_replies : 0,
         match_mode: match_mode || 'exact',
         ai_reply_enabled: !!ai_reply_enabled
       };
@@ -1315,7 +1370,7 @@ async function startServer() {
               photo: kw.photo, 
               message_link: kw.message_link,
               message_links: kw.message_links || [],
-              max_replies: kw.max_replies || 2,
+              max_replies: kw.max_replies !== undefined ? kw.max_replies : 0,
               match_mode: kw.match_mode || 'exact'
             },
             { upsert: true }
@@ -1496,6 +1551,139 @@ async function startServer() {
     } catch (err: any) {
       await saveLog(err.message, 'error', '/api/broadcast');
       res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
+    }
+  });
+
+  app.get("/api/missed-count", async (req, res) => {
+    try {
+      const count = await MissedTrigger.countDocuments({ processed: false });
+      res.json({ count });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/catchup", async (req, res) => {
+    try {
+      if (!userClient || !userClient.connected) {
+        return res.status(400).json({ error: "Telegram client not connected" });
+      }
+
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      if (isSystemPaused) {
+        return res.status(400).json({ error: "Bot is paused. Unpause first to catch up." });
+      }
+
+      const missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: 1 }).limit(20);
+      if (missed.length === 0) {
+        return res.json({ success: true, count: 0 });
+      }
+
+      let processedCount = 0;
+      for (const trigger of missed) {
+        try {
+          const kw = await Keyword.findById(trigger.rule_id);
+          if (!kw) {
+            trigger.processed = true;
+            await trigger.save();
+            continue;
+          }
+
+          const peerId = trigger.chat_id;
+          const replyToMsgId = trigger.message_id;
+          const topMsgId = trigger.topic_id;
+
+          // Handle message links (forwarding)
+          const linksToProcess = [...(kw.message_links || [])];
+          if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
+            linksToProcess.push(kw.message_link);
+          }
+
+          if (linksToProcess.length > 0) {
+            if (kw.reply) {
+              await userClient.sendMessage(peerId, {
+                message: kw.reply,
+                replyTo: replyToMsgId,
+                topMsgId: topMsgId,
+              });
+            }
+
+            for (const link of linksToProcess) {
+              const parts = link.split("/").filter(p => p.length > 0);
+              const messageId = parseInt(parts[parts.length - 1], 10);
+              if (!isNaN(messageId)) {
+                let fromPeer: any = (await getSetting("target_group_id"))?.value;
+                if (link.includes("/c/")) {
+                  const cIndex = parts.indexOf("c");
+                  if (cIndex !== -1 && parts[cIndex + 1]) fromPeer = `-100${parts[cIndex + 1]}`;
+                } else {
+                  const tmeIndex = parts.indexOf("t.me");
+                  if (tmeIndex !== -1 && parts[tmeIndex + 1]) fromPeer = parts[tmeIndex + 1];
+                }
+
+                try {
+                  let inputPeer;
+                  try {
+                    inputPeer = await userClient.getInputEntity(fromPeer);
+                  } catch (e) {
+                    inputPeer = fromPeer;
+                  }
+                  await userClient.invoke(
+                    new Api.messages.ForwardMessages({
+                      fromPeer: inputPeer,
+                      id: [messageId],
+                      randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                      toPeer: await userClient.getInputEntity(peerId),
+                      topMsgId: topMsgId,
+                    })
+                  );
+                } catch (e) {
+                  console.error("Catchup forward failed:", e);
+                  // Fallback
+                  try {
+                    await userClient.forwardMessages(peerId, {
+                      messages: [messageId],
+                      fromPeer: fromPeer,
+                    });
+                  } catch (fallbackErr) {
+                    console.error("Catchup fallback forward failed:", fallbackErr);
+                  }
+                }
+              }
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          } else if (kw.photo) {
+            const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
+            const buffer = Buffer.from(base64Data, "base64");
+            const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
+            const toUpload = await userClient.uploadFile({ file: fileToUpload, workers: 1 });
+            await userClient.sendFile(peerId, {
+              file: toUpload,
+              caption: kw.reply || "",
+              replyTo: replyToMsgId,
+              topMsgId: topMsgId,
+            });
+          } else if (kw.reply) {
+            await userClient.sendMessage(peerId, {
+              message: kw.reply,
+              replyTo: replyToMsgId,
+              topMsgId: topMsgId,
+            });
+          }
+
+          trigger.processed = true;
+          await trigger.save();
+          processedCount++;
+          
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (e) {
+          console.error("Catchup failed for trigger:", trigger._id, e);
+        }
+      }
+
+      res.json({ success: true, count: processedCount });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 

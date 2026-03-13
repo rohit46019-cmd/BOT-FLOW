@@ -215,7 +215,7 @@ export default function App() {
   const [newReply, setNewReply] = useState("");
   const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
-  const [newMaxReplies, setNewMaxReplies] = useState<number | string>(2);
+  const [newMaxReplies, setNewMaxReplies] = useState<number | string>(0);
   const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
   const [keywordSearch, setKeywordSearch] = useState("");
   const [blockedTopics, setBlockedTopics] = useState<any[]>([]);
@@ -237,6 +237,9 @@ export default function App() {
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [newMediaUrl, setNewMediaUrl] = useState("");
   const [newMediaName, setNewMediaName] = useState("");
+  
+  const [missedCount, setMissedCount] = useState(0);
+  const [isCatchingUp, setIsCatchingUp] = useState(false);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -776,17 +779,55 @@ export default function App() {
     }
   };
 
+  const fetchMissedCount = async () => {
+    try {
+      const res = await fetch("/api/missed-count");
+      const data = await res.json();
+      setMissedCount(data.count || 0);
+    } catch (e) {
+      console.error("Failed to fetch missed count", e);
+    }
+  };
+
+  const handleCatchUp = async () => {
+    if (isCatchingUp) return;
+    setIsCatchingUp(true);
+    try {
+      const res = await fetch("/api/catchup", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        showNotification('success', `Caught up with ${data.count} missed keywords`);
+        fetchMissedCount();
+        fetchStats();
+      } else {
+        showNotification('error', data.error || 'Catch up failed');
+      }
+    } catch (e) {
+      showNotification('error', 'Failed to catch up');
+    } finally {
+      setIsCatchingUp(false);
+    }
+  };
+
   useEffect(() => {
     fetchStats();
     fetchKeywords();
     fetchLogs();
     fetchBlockedTopics();
     fetchAnalytics();
+    fetchMissedCount();
+
+    // Auto-refresh missed count every 30 seconds
+    const interval = setInterval(() => {
+      fetchMissedCount();
+    }, 30000);
 
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
     });
+
+    return () => clearInterval(interval);
   }, []);
 
   const handleInstallApp = async () => {
@@ -950,7 +991,7 @@ export default function App() {
       keywords: validKeywords,
       reply: newReply, 
       message_links: newMessageLinks.filter(l => l.trim().length > 0),
-      max_replies: Number(newMaxReplies) || 2,
+      max_replies: Number(newMaxReplies) || 0,
       match_mode: newMatchMode,
       ai_reply_enabled: newAiReplyEnabled
     };
@@ -1031,7 +1072,7 @@ export default function App() {
       ? [...kw.message_links] 
       : (kw.message_link ? [kw.message_link] : [""]);
     setNewMessageLinks(links);
-    setNewMaxReplies(kw.max_replies || 2);
+    setNewMaxReplies(kw.max_replies !== undefined ? kw.max_replies : 0);
     setNewMatchMode(kw.match_mode || 'exact');
     setNewAiReplyEnabled(!!kw.ai_reply_enabled);
     setEditingKeywordId(kw._id);
@@ -1050,9 +1091,7 @@ export default function App() {
   };
 
   const addKeywordField = () => {
-    if (newKeywords.length < 20) {
-      setNewKeywords([...newKeywords, ""]);
-    }
+    setNewKeywords([...newKeywords, ""]);
   };
 
   const removeKeywordField = (index: number) => {
@@ -1257,14 +1296,19 @@ export default function App() {
     }
   };
 
+  const SWIPEABLE_TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'logs'];
+
   const navigateTab = (newDirection: number) => {
-    const currentIndex = TABS.indexOf(activeTab);
+    const currentIndex = SWIPEABLE_TABS.indexOf(activeTab as any);
+    if (currentIndex === -1) return; // Do not swipe if currently on a hidden tab
+
     let newIndex = currentIndex + newDirection;
     if (newIndex < 0) newIndex = 0;
-    if (newIndex >= TABS.length) newIndex = TABS.length - 1;
+    if (newIndex >= SWIPEABLE_TABS.length) newIndex = SWIPEABLE_TABS.length - 1;
+    
     if (newIndex !== currentIndex) {
       setDirection(newDirection);
-      setActiveTab(TABS[newIndex]);
+      setActiveTab(SWIPEABLE_TABS[newIndex] as TabType);
     }
   };
 
@@ -1291,37 +1335,25 @@ export default function App() {
 
   const slideVariants = {
     initial: (direction: number) => ({
-      x: direction > 0 ? '50%' : '-50%',
+      x: direction > 0 ? '20%' : '-20%',
       opacity: 0,
-      scale: 0.9,
-      rotateY: direction > 0 ? 15 : -15,
-      filter: 'blur(10px)'
     }),
     animate: {
       x: 0,
       opacity: 1,
-      scale: 1,
-      rotateY: 0,
-      filter: 'blur(0px)',
       transition: { 
-        type: 'spring', 
-        stiffness: 260, 
-        damping: 26,
-        mass: 1,
-        opacity: { duration: 0.3 }
+        type: 'tween', 
+        duration: 0.2, 
+        ease: 'easeOut'
       }
     },
     exit: (direction: number) => ({
-      x: direction > 0 ? '-50%' : '50%',
+      x: direction > 0 ? '-20%' : '20%',
       opacity: 0,
-      scale: 0.9,
-      rotateY: direction > 0 ? -15 : 15,
-      filter: 'blur(10px)',
       transition: { 
-        type: 'spring', 
-        stiffness: 260, 
-        damping: 26,
-        opacity: { duration: 0.2 }
+        type: 'tween', 
+        duration: 0.2, 
+        ease: 'easeIn'
       }
     })
   };
@@ -1485,6 +1517,43 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className="grid grid-cols-2 gap-4">
+                  {missedCount > 0 && (
+                    <motion.div 
+                      whileHover={{ y: -8, scale: 1.02 }}
+                      initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                      animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                      transition={{ duration: 0.5, type: "spring" }}
+                      className="col-span-2"
+                    >
+                      <button
+                        onClick={handleCatchUp}
+                        disabled={isCatchingUp || stats?.isSystemPaused}
+                        className={`w-full p-6 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between group relative overflow-hidden ${
+                          stats?.isSystemPaused 
+                            ? (darkMode ? 'bg-slate-900/40 border-slate-800 text-slate-500 cursor-not-allowed' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed')
+                            : (darkMode ? 'bg-amber-950/40 border-amber-500/30 text-amber-400 hover:bg-amber-900/50' : 'bg-amber-50 border-amber-200 text-amber-600 hover:bg-amber-100 shadow-xl shadow-amber-500/10')
+                        }`}
+                      >
+                        <div className="flex items-center space-x-4">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-500/20 text-amber-600'}`}>
+                            {isCatchingUp ? <RefreshCw className="animate-spin" size={24} /> : <RotateCcw size={24} />}
+                          </div>
+                          <div className="text-left">
+                            <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Catch Up Required</p>
+                            <h3 className="text-lg font-black tracking-tight">{missedCount} Missed Keywords</h3>
+                          </div>
+                        </div>
+                        <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${
+                          stats?.isSystemPaused 
+                            ? 'border-slate-800 bg-slate-800/20' 
+                            : 'border-amber-500/30 bg-amber-500/10'
+                        }`}>
+                          {stats?.isSystemPaused ? 'Unpause to Reply' : 'Reply Now'}
+                        </div>
+                      </button>
+                    </motion.div>
+                  )}
+
                   <motion.div 
                     whileHover={{ y: -8, scale: 1.02 }}
                     initial={{ opacity: 0, y: 30, rotateX: -10 }}
@@ -1930,15 +1999,13 @@ export default function App() {
                 <div className="relative z-10 space-y-4 pointer-events-auto">
                   <div className="flex items-center justify-between">
                     <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Trigger Keywords</label>
-                    {newKeywords.length < 20 && (
-                      <button 
-                        onClick={addKeywordField}
-                        className="text-blue-500 hover:text-blue-400 transition-colors flex items-center space-x-1"
-                      >
-                        <Plus size={14} />
-                        <span className="text-[10px] font-black uppercase tracking-widest">Add</span>
-                      </button>
-                    )}
+                    <button 
+                      onClick={addKeywordField}
+                      className="text-blue-500 hover:text-blue-400 transition-colors flex items-center space-x-1"
+                    >
+                      <Plus size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">Add</span>
+                    </button>
                   </div>
                   
                   <div className="grid gap-2">
@@ -1984,10 +2051,10 @@ export default function App() {
                   </div>
 
                   <div className="space-y-2">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Max Replies</label>
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Max Replies (0 = Unlimited)</label>
                     <input
                       type="number"
-                      min="1"
+                      min="0"
                       max="100"
                       value={newMaxReplies}
                       onChange={(e) => setNewMaxReplies(e.target.value === '' ? '' : parseInt(e.target.value))}
@@ -2137,7 +2204,7 @@ export default function App() {
                           <div className="flex items-center gap-3">
                             <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
                               <RefreshCw size={10} />
-                              <span>Max: {kw.max_replies || 2}</span>
+                              <span>Max: {kw.max_replies === 0 ? '∞' : kw.max_replies || 0}</span>
                             </div>
                             <div className={`flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest ${kw.match_mode === 'partial' ? 'text-orange-400' : 'text-blue-400'}`}>
                               <Hash size={10} />
@@ -2188,20 +2255,21 @@ export default function App() {
               )}
 
               {keywords.length > 5 && (
-                <div className="fixed bottom-24 left-4 flex flex-col space-y-2 z-40">
+                <div className={`fixed bottom-24 left-4 flex flex-col rounded-full shadow-xl border overflow-hidden z-40 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-slate-200'}`}>
                   <motion.button
-                    whileHover={{ scale: 1.1 }}
+                    whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                     whileTap={{ scale: 0.9 }}
                     onClick={scrollToKeywordsTop}
-                    className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-blue-400' : 'bg-white border-slate-200 text-blue-600'}`}
+                    className={`p-3 transition-all ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
                   >
                     <ArrowUp size={20} />
                   </motion.button>
+                  <div className={`h-px w-full ${darkMode ? 'bg-white/10' : 'bg-slate-200'}`} />
                   <motion.button
-                    whileHover={{ scale: 1.1 }}
+                    whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                     whileTap={{ scale: 0.9 }}
                     onClick={scrollToKeywordsBottom}
-                    className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-blue-400' : 'bg-white border-slate-200 text-blue-600'}`}
+                    className={`p-3 transition-all ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
                   >
                     <ArrowDown size={20} />
                   </motion.button>
@@ -2451,20 +2519,21 @@ export default function App() {
               </div>
               <div ref={castBottomRef} />
 
-              <div className="fixed bottom-24 left-4 flex flex-col space-y-2 z-40">
+              <div className={`fixed bottom-24 left-4 flex flex-col rounded-full shadow-xl border overflow-hidden z-40 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-slate-200'}`}>
                 <motion.button
-                  whileHover={{ scale: 1.1 }}
+                  whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastTop}
-                  className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-purple-400' : 'bg-white border-slate-200 text-purple-600'}`}
+                  className={`p-3 transition-all ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
                 >
                   <ArrowUp size={20} />
                 </motion.button>
+                <div className={`h-px w-full ${darkMode ? 'bg-white/10' : 'bg-slate-200'}`} />
                 <motion.button
-                  whileHover={{ scale: 1.1 }}
+                  whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastBottom}
-                  className={`p-3 rounded-full shadow-lg border transition-all ${darkMode ? 'bg-neutral-900 border-white/10 text-purple-400' : 'bg-white border-slate-200 text-purple-600'}`}
+                  className={`p-3 transition-all ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
                 >
                   <ArrowDown size={20} />
                 </motion.button>
