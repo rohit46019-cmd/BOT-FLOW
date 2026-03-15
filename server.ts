@@ -128,17 +128,9 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
   }
 };
 
-// Helper function to reliably get the topic ID from a message
-const getTopicId = (message: any): number | undefined => {
-  if (!message || !message.replyTo) return undefined;
-  if (message.replyTo.replyToTopId) return message.replyTo.replyToTopId;
-  if (message.replyTo.forumTopic) return message.replyTo.replyToMsgId;
-  return undefined;
-};
-
 // Helper function for topic renaming
 const handleTopicRenaming = async (client: TelegramClient, message: any, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
-  const replyToId = getTopicId(message);
+  const replyToId = message.replyTo?.replyToMsgId;
   if (!replyToId) return;
 
   // Fetch Topic Name
@@ -491,7 +483,7 @@ async function startServer() {
       // However, sometimes (rarely) or for the topic creation message itself, message.id is the topic ID.
       // We must check BOTH to be safe, because sometimes `replyToMsgId` might be missing or different in edge cases.
       
-      const replyToId = getTopicId(message);
+      const replyToId = message.replyTo?.replyToMsgId;
       const messageId = message.id;
       
       // Check if the topic ID (replyToId) is blocked
@@ -581,7 +573,7 @@ async function startServer() {
         const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
         
         if (photoReplyEnabled) {
-          const topicId = getTopicId(message) || message.id;
+          const topicId = message.replyTo?.replyToMsgId || message.id;
           const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
 
           // Check photo reply history for this topic
@@ -598,7 +590,6 @@ async function startServer() {
             await client.sendMessage(message.peerId, {
               message: photoReplyMessage,
               replyTo: message.id,
-              topMsgId: getTopicId(message),
             });
 
             // Update history
@@ -647,7 +638,6 @@ async function startServer() {
             await client.sendMessage(message.peerId, {
               message: autoReply,
               replyTo: topicId,
-              topMsgId: topicId,
             });
           } catch (err) {
             console.error("UserBot failed to send auto-reply:", err);
@@ -704,19 +694,19 @@ async function startServer() {
         if (matches.length > 0) {
           keywordMatched = true;
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
-          
           const processedRuleIds = new Set<string>();
-          const processedOutputs = new Set<string>();
 
           for (const match of matches) {
             const kw = match.kw;
             
-            // Skip if we've already replied for this rule (group of keywords)
             if (processedRuleIds.has(kw._id.toString())) {
               console.log(`Skipping duplicate match for rule ${kw._id} (word: ${match.matchedWord})`);
               continue;
             }
-
+            processedRuleIds.add(kw._id.toString());
+            
+            console.log(`DEBUG: Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
+            
             // Normalize links
             const linksToProcess = [...(kw.message_links || [])];
             if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
@@ -724,25 +714,12 @@ async function startServer() {
             }
             const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
 
-            // Create a signature of the rule's output to prevent duplicate identical replies
-            const outputSignature = JSON.stringify({
-              reply: (kw.reply || "").trim(),
-              photo: kw.photo ? true : false,
-              links: normalizedLinks,
-              ai: kw.ai_reply_enabled || false
-            });
-
-            if (processedOutputs.has(outputSignature)) {
-              console.log(`Skipping duplicate output for rule ${kw._id} (identical reply already sent)`);
-              continue;
-            }
-
-            console.log(`Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
-            
             try {
               const replyToMsgId = message.id;
-              const topicId = getTopicId(message);
+              const topicId = message.replyTo?.replyToMsgId;
               let replySent = false;
+              
+              console.log(`DEBUG: Attempting to send reply for keyword: ${match.matchedWord}`);
 
               // If system is paused, save as missed trigger and skip reply
               if (isSystemPaused) {
@@ -755,8 +732,6 @@ async function startServer() {
                   rule_id: kw._id
                 });
                 console.log(`Saved missed trigger for keyword "${match.matchedWord}" while paused.`);
-                processedRuleIds.add(kw._id.toString());
-                processedOutputs.add(outputSignature);
                 continue;
               }
 
@@ -788,8 +763,8 @@ async function startServer() {
                 }
               }
 
-              processedRuleIds.add(kw._id.toString());
-              processedOutputs.add(outputSignature);
+              // Add a small delay between replies
+              await new Promise(resolve => setTimeout(resolve, 1000));
 
               // 1. AI Reply (if enabled)
               if (kw.ai_reply_enabled) {
@@ -838,7 +813,6 @@ async function startServer() {
                            await client.sendMessage(message.peerId, {
                              message: aiReply,
                              replyTo: message.id,
-                             topMsgId: topicId,
                            });
                            await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
                            replySent = true;
@@ -860,7 +834,6 @@ async function startServer() {
                   await client.sendMessage(message.peerId, {
                     message: kw.reply,
                     replyTo: replyToMsgId,
-                    topMsgId: topicId,
                   });
                   replySent = true;
                 }
@@ -886,7 +859,7 @@ async function startServer() {
                       }
                     }
 
-                    const topMsgId = getTopicId(message);
+                    const topMsgId = topicId;
                     
                     try {
                       let inputPeer;
@@ -907,7 +880,7 @@ async function startServer() {
                           randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
                           toPeer: message.peerId,
                           topMsgId: topMsgId,
-                        })
+                        }) as any
                       );
                       console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
                       replySent = true;
@@ -944,7 +917,6 @@ async function startServer() {
                   file: toUpload,
                   caption: kw.reply || "",
                   replyTo: replyToMsgId,
-                  topMsgId: topicId,
                   forceDocument: false,
                 });
                 replySent = true;
@@ -953,7 +925,6 @@ async function startServer() {
                 await client.sendMessage(message.peerId, {
                   message: kw.reply,
                   replyTo: replyToMsgId,
-                  topMsgId: topicId,
                 });
                 replySent = true;
               }
@@ -988,10 +959,9 @@ async function startServer() {
               
               await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
               
-              // If a reply was sent, break the loop to prevent multiple replies for the same message
+              // If a reply was sent, we continue to the next keyword match
               if (replySent) {
-                console.log("Reply sent for keyword. Stopping further processing for this message.");
-                break;
+                console.log("Reply sent for keyword. Continuing to next match.");
               }
 
               // Add a small delay between replies to avoid spamming/rate limits
@@ -1092,7 +1062,6 @@ async function startServer() {
               await client.sendMessage(message.peerId, {
                 message: aiReply,
                 replyTo: message.id,
-                topMsgId: topicId,
               });
               await saveLog(`AI Auto-Reply: "${aiReply}"`, 'info', 'USERBOT');
               
@@ -1146,6 +1115,34 @@ async function startServer() {
   });
 
   // API Routes
+  app.delete("/api/data/clear", async (req, res) => {
+    try {
+      await Keyword.deleteMany({});
+      await AppLog.deleteMany({});
+      await BlockedTopic.deleteMany({});
+      await PhotoReplyHistory.deleteMany({});
+      await ReplyHistory.deleteMany({});
+      await MissedTrigger.deleteMany({});
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/data/last-import", async (req, res) => {
+    try {
+      const lastKeyword = await Keyword.findOne().sort({ _id: -1 });
+      if (lastKeyword) {
+        await Keyword.deleteOne({ _id: lastKeyword._id });
+        res.json({ success: true });
+      } else {
+        res.status(404).json({ error: "No keywords found" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
@@ -1604,7 +1601,6 @@ async function startServer() {
               await userClient.sendMessage(peerId, {
                 message: kw.reply,
                 replyTo: replyToMsgId,
-                topMsgId: topMsgId,
               });
             }
 
@@ -1622,32 +1618,13 @@ async function startServer() {
                 }
 
                 try {
-                  let inputPeer;
-                  try {
-                    inputPeer = await userClient.getInputEntity(fromPeer);
-                  } catch (e) {
-                    inputPeer = fromPeer;
-                  }
-                  await userClient.invoke(
-                    new Api.messages.ForwardMessages({
-                      fromPeer: inputPeer,
-                      id: [messageId],
-                      randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                      toPeer: await userClient.getInputEntity(peerId),
-                      topMsgId: topMsgId,
-                    })
-                  );
+                  await userClient.forwardMessages(peerId, {
+                    messages: [messageId],
+                    fromPeer: fromPeer,
+                    topMsgId: topMsgId,
+                  } as any);
                 } catch (e) {
                   console.error("Catchup forward failed:", e);
-                  // Fallback
-                  try {
-                    await userClient.forwardMessages(peerId, {
-                      messages: [messageId],
-                      fromPeer: fromPeer,
-                    });
-                  } catch (fallbackErr) {
-                    console.error("Catchup fallback forward failed:", fallbackErr);
-                  }
                 }
               }
               await new Promise(resolve => setTimeout(resolve, 500));
@@ -1661,13 +1638,11 @@ async function startServer() {
               file: toUpload,
               caption: kw.reply || "",
               replyTo: replyToMsgId,
-              topMsgId: topMsgId,
             });
           } else if (kw.reply) {
             await userClient.sendMessage(peerId, {
               message: kw.reply,
               replyTo: replyToMsgId,
-              topMsgId: topMsgId,
             });
           }
 
@@ -1834,6 +1809,7 @@ async function startServer() {
 
   // API 404 Handler
   app.use("/api/*", (req, res) => {
+    console.log(`API endpoint not found: ${req.originalUrl}`);
     res.status(404).json({ error: "API endpoint not found" });
   });
 

@@ -1443,6 +1443,32 @@ export default function App() {
                         <span className="text-xs font-bold uppercase tracking-widest">Analytics</span>
                       </button>
                       <button
+                        onClick={async () => {
+                          if (confirm("Are you sure you want to clear all data?")) {
+                            await fetch("/api/data/clear", { method: "DELETE" });
+                            setIsMenuOpen(false);
+                            window.location.reload();
+                          }
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                      >
+                        <Trash size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">Clear All Data</span>
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (confirm("Are you sure you want to delete the last keyword?")) {
+                            await fetch("/api/data/last-import", { method: "DELETE" });
+                            setIsMenuOpen(false);
+                            window.location.reload();
+                          }
+                        }}
+                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                      >
+                        <Trash2 size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">Delete Last Keyword</span>
+                      </button>
+                      <button
                         onClick={() => {
                           setActiveTab('tester');
                           setIsMenuOpen(false);
