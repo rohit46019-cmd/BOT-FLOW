@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { Toaster, toast } from 'react-hot-toast';
+import { Skeleton } from './components/Skeleton';
 import { 
   MessageSquare, 
   Send, 
@@ -72,6 +74,7 @@ interface Stats {
   aiModeEnabled: boolean;
   aiPersona: string;
   geminiApiKeys: string; // JSON string
+  replyInGeneral: boolean;
 }
 
 interface AutoBlockKeyword {
@@ -225,6 +228,7 @@ export default function App() {
   const [aiModeEnabled, setAiModeEnabled] = useState(false);
   const [aiPersona, setAiPersona] = useState("");
   const [geminiApiKeys, setGeminiApiKeys] = useState<string[]>([]);
+  const [replyInGeneral, setReplyInGeneral] = useState(false);
   
   const [analyticsData, setAnalyticsData] = useState<{keywordData: any[], topicData: any[]}>({ keywordData: [], topicData: [] });
   const [testMessage, setTestMessage] = useState("");
@@ -244,7 +248,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
-  const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'warn', message: string } | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [direction, setDirection] = useState(0);
   const [touchStart, setTouchStart] = useState({ x: 0, y: 0 });
@@ -261,6 +264,41 @@ export default function App() {
     const saved = localStorage.getItem("darkMode");
     return saved !== null ? JSON.parse(saved) : true;
   });
+
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
+
+  useEffect(() => {
+    const savedStartTime = localStorage.getItem("sessionStartTime");
+    if (savedStartTime) {
+      setSessionStartTime(parseInt(savedStartTime));
+    } else {
+      const now = Date.now();
+      setSessionStartTime(now);
+      localStorage.setItem("sessionStartTime", now.toString());
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionStartTime) return;
+    const interval = setInterval(() => {
+      setElapsedTime(Math.floor((Date.now() - sessionStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sessionStartTime]);
+
+  const formatTime = (seconds: number) => {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return {
+      days: d,
+      time: `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+    };
+  };
+
+  const timer = formatTime(elapsedTime);
 
   const scrollToKeywordsTop = () => {
     keywordsTopRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -398,8 +436,13 @@ export default function App() {
   };
 
   const showNotification = (type: 'success' | 'error' | 'warn', message: string, duration = 3000) => {
-    setNotification({ type, message });
-    setTimeout(() => setNotification(null), (type === 'error' || type === 'warn') ? 6000 : duration);
+    if (type === 'success') {
+      toast.success(message, { duration });
+    } else if (type === 'error') {
+      toast.error(message, { duration: 6000 });
+    } else {
+      toast(message, { duration: 6000, icon: '⚠️' });
+    }
   };
 
   // Notification Sound
@@ -655,6 +698,7 @@ export default function App() {
       setTopicRenameMatchMode(data.topicRenameMatchMode || "exact");
       setAiModeEnabled(data.aiModeEnabled);
       setAiPersona(data.aiPersona);
+      setReplyInGeneral(data.replyInGeneral);
       try {
         const parsedKeys = JSON.parse(data.geminiApiKeys || "[]");
         setGeminiApiKeys(Array.isArray(parsedKeys) ? parsedKeys : []);
@@ -899,6 +943,114 @@ export default function App() {
     } catch (err) {
       setAutoResetKeywords(!newState);
       showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleToggleReplyInGeneral = async () => {
+    const newState = !replyInGeneral;
+    setReplyInGeneral(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ replyInGeneral: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'Reply in General Enabled' : 'Reply in General Disabled');
+        fetchStats();
+      } else {
+        setReplyInGeneral(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setReplyInGeneral(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleToggleAiMode = async () => {
+    const newState = !aiModeEnabled;
+    setAiModeEnabled(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiModeEnabled: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'AI Smart Reply Enabled' : 'AI Smart Reply Disabled');
+        fetchStats();
+      } else {
+        setAiModeEnabled(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setAiModeEnabled(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleTogglePhotoReply = async () => {
+    const newState = !photoReplyEnabled;
+    setPhotoReplyEnabled(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ photoReplyEnabled: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'Photo Reply Enabled' : 'Photo Reply Disabled');
+        fetchStats();
+      } else {
+        setPhotoReplyEnabled(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setPhotoReplyEnabled(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleToggleNotificationSound = async () => {
+    const newState = !notificationSoundEnabled;
+    setNotificationSoundEnabled(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notificationSoundEnabled: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'Notification Sound Enabled' : 'Notification Sound Disabled');
+        fetchStats();
+      } else {
+        setNotificationSoundEnabled(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setNotificationSoundEnabled(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleUpdateNotificationSoundType = async (type: string) => {
+    setNotificationSoundType(type);
+    playNotificationSound(type);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notificationSoundType: type }),
+      });
+      if (res.ok) {
+        showNotification('success', `Sound type set to ${type}`);
+        fetchStats();
+      } else {
+        showNotification('error', 'Failed to update sound type');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to update sound type');
     }
   };
 
@@ -1263,11 +1415,14 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (!confirm("Are you sure you want to logout?")) return;
     try {
       const res = await fetch("/api/auth/logout", { method: "POST" });
       if (res.ok) {
+        localStorage.removeItem("sessionStartTime");
         showNotification('success', 'Logged out');
         fetchStats();
+        window.location.reload();
       }
     } catch (err) {
       showNotification('error', 'Logout failed');
@@ -1360,19 +1515,43 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-black' : 'bg-slate-50'}`}>
-        <motion.div 
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className={`min-h-screen flex flex-col items-center justify-center ${darkMode ? 'bg-black' : 'bg-slate-50'}`}
+      >
+        <motion.div
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="relative w-20 h-20"
         >
-          <RefreshCw className="text-emerald-500" size={40} />
+          <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl rotate-3 opacity-40"></div>
+          <div className={`relative w-full h-full rounded-2xl overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
+            <img src="/logo.svg" alt="Logo" className="w-12 h-12 object-contain" />
+          </div>
         </motion.div>
-      </div>
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.3, duration: 0.5 }}
+          className="mt-6 text-center"
+        >
+          <h1 className={`font-black text-3xl tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>UserBot</h1>
+          <p className="text-emerald-500 font-bold uppercase tracking-widest text-xs mt-1">Management</p>
+        </motion.div>
+      </motion.div>
     );
   }
 
   return (
-    <div className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans pb-24 relative overflow-x-hidden`}>
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5 }}
+      className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans pb-24 relative overflow-x-hidden`}
+    >
       {/* Background Decorative Elements */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
         <div className={`absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-emerald-500' : 'bg-emerald-300'}`} />
@@ -1387,7 +1566,7 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className={`px-6 py-4 flex items-center justify-between sticky top-0 z-50 backdrop-blur-xl border-b transition-all duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
+      <header className={`px-6 py-4 flex items-center justify-between fixed top-0 left-0 right-0 z-50 backdrop-blur-xl border-b transition-all duration-500 ${darkMode ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/5'}`}>
         <div className="flex items-center space-x-3">
           <div className="relative w-10 h-10 group cursor-pointer">
             <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-xl rotate-3 opacity-40 group-hover:rotate-6 transition-transform duration-500"></div>
@@ -1526,7 +1705,7 @@ export default function App() {
       </button>
 
       <main 
-        className="p-4 max-w-md mx-auto relative z-10"
+        className="p-4 pt-20 max-w-md mx-auto relative z-10"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -1543,8 +1722,72 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className="grid grid-cols-2 gap-4">
-                  {missedCount > 0 && (
-                    <motion.div 
+                  <motion.div 
+                    whileHover={{ y: -8, scale: 1.02 }}
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, type: "spring" }}
+                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-dots opacity-[0.07] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/20 text-emerald-600'}`}>
+                        <BarChart3 size={24} />
+                      </div>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-300/60' : 'text-emerald-600/60'}`}>Total Topics</p>
+                      {loading ? (
+                        <Skeleton className="h-8 w-16" />
+                      ) : (
+                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-emerald-900'}`}>{stats?.topicCount || 0}</h3>
+                      )}
+                    </div>
+                  </motion.div>
+
+                  <motion.div 
+                    whileHover={{ y: -8, scale: 1.02 }}
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, delay: 0.1, type: "spring" }}
+                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-500/20 text-blue-600'}`}>
+                        <LayoutDashboard size={24} />
+                      </div>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-300/60' : 'text-blue-600/60'}`}>Today</p>
+                      {loading ? (
+                        <Skeleton className="h-8 w-16" />
+                      ) : (
+                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-blue-900'}`}>{stats?.todayTopicCount || 0}</h3>
+                      )}
+                    </div>
+                  </motion.div>
+
+                  <motion.div 
+                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
+                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
+                    transition={{ duration: 0.5, delay: 0.2, type: "spring" }}
+                    whileHover={{ y: -8 }}
+                    className={`col-span-2 p-8 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between card-3d glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}
+                  >
+                    <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                    <div className="relative z-10 pointer-events-auto">
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-amber-300/60' : 'text-amber-600/60'}`}>Response Delay</p>
+                      <motion.h3 
+                        className={`text-6xl font-black tracking-tight bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent`}
+                        animate={{ scale: [1, 1.05, 1] }}
+                        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                      >
+                        {stats?.delaySeconds || 0}<span className="text-2xl font-medium opacity-40 ml-1 text-amber-900">sec</span>
+                      </motion.h3>
+                    </div>
+                    <div className={`relative z-10 w-14 h-14 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-500/20 text-amber-600'}`}>
+                      <RefreshCw size={28} />
+                    </div>
+                  </motion.div>
+                  
+                  <motion.div 
                       whileHover={{ y: -8, scale: 1.02 }}
                       initial={{ opacity: 0, y: 30, rotateX: -10 }}
                       animate={{ opacity: 1, y: 0, rotateX: 0 }}
@@ -1565,8 +1808,8 @@ export default function App() {
                             {isCatchingUp ? <RefreshCw className="animate-spin" size={24} /> : <RotateCcw size={24} />}
                           </div>
                           <div className="text-left">
-                            <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Catch Up Required</p>
-                            <h3 className="text-lg font-black tracking-tight">{missedCount} Missed Keywords</h3>
+                            <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Manual Catch Up</p>
+                            <h3 className="text-lg font-black tracking-tight">{missedCount > 0 ? `${missedCount} Missed Keywords` : 'No Missed Keywords'}</h3>
                           </div>
                         </div>
                         <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${
@@ -1578,60 +1821,6 @@ export default function App() {
                         </div>
                       </button>
                     </motion.div>
-                  )}
-
-                  <motion.div 
-                    whileHover={{ y: -8, scale: 1.02 }}
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, type: "spring" }}
-                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-dots opacity-[0.07] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/20 text-emerald-600'}`}>
-                        <BarChart3 size={24} />
-                      </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-300/60' : 'text-emerald-600/60'}`}>Total Topics</p>
-                      <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-emerald-900'}`}>{stats?.topicCount || 0}</h3>
-                    </div>
-                  </motion.div>
-
-                  <motion.div 
-                    whileHover={{ y: -8, scale: 1.02 }}
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, delay: 0.1, type: "spring" }}
-                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-500/20 text-blue-600'}`}>
-                        <LayoutDashboard size={24} />
-                      </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-300/60' : 'text-blue-600/60'}`}>Today</p>
-                      <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-blue-900'}`}>{stats?.todayTopicCount || 0}</h3>
-                    </div>
-                  </motion.div>
-
-                  <motion.div 
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, delay: 0.2, type: "spring" }}
-                    whileHover={{ y: -8 }}
-                    className={`col-span-2 p-8 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between card-3d glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-amber-300/60' : 'text-amber-600/60'}`}>Response Delay</p>
-                      <h3 className={`text-4xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-amber-900'}`}>
-                        {stats?.delaySeconds || 0}<span className="text-lg font-medium opacity-40 ml-1">sec</span>
-                      </h3>
-                    </div>
-                    <div className={`relative z-10 w-14 h-14 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-500/20 text-amber-600'}`}>
-                      <RefreshCw size={28} />
-                    </div>
-                  </motion.div>
               </div>
 
               {/* System Pause/Resume Button */}
@@ -1735,7 +1924,7 @@ export default function App() {
                       <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>AI Smart Reply</h3>
                     </div>
                     <button 
-                      onClick={() => setAiModeEnabled(!aiModeEnabled)}
+                      onClick={handleToggleAiMode}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${aiModeEnabled ? 'bg-purple-500' : 'bg-slate-300'}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${aiModeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -1826,7 +2015,7 @@ export default function App() {
                       <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Photo Reply Settings</h3>
                     </div>
                     <button 
-                      onClick={() => setPhotoReplyEnabled(!photoReplyEnabled)}
+                      onClick={handleTogglePhotoReply}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${photoReplyEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${photoReplyEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -1923,7 +2112,7 @@ export default function App() {
                       <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Notification Settings</h3>
                     </div>
                     <button 
-                      onClick={() => setNotificationSoundEnabled(!notificationSoundEnabled)}
+                      onClick={handleToggleNotificationSound}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${notificationSoundEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notificationSoundEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -1942,10 +2131,7 @@ export default function App() {
                           {['default', 'bell', 'chime', 'ping', 'digital', 'rising', 'double', 'low', 'laser'].map((type) => (
                             <button
                               key={type}
-                              onClick={() => {
-                                setNotificationSoundType(type);
-                                playNotificationSound(type);
-                              }}
+                              onClick={() => handleUpdateNotificationSoundType(type)}
                               className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${
                                 notificationSoundType === type 
                                   ? (darkMode ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600') 
@@ -2020,6 +2206,29 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
+              {keywords.length > 0 && (
+                <div className="relative">
+                  <div className={`absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                    <Search size={18} />
+                  </div>
+                  <input
+                    type="text"
+                    value={keywordSearch}
+                    onChange={(e) => setKeywordSearch(e.target.value)}
+                    placeholder="Search keywords or replies..."
+                    className={`w-full pl-11 pr-4 py-3.5 border rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
+                  />
+                  {keywordSearch && (
+                    <button 
+                      onClick={() => setKeywordSearch("")}
+                      className={`absolute inset-y-0 right-0 pr-4 flex items-center ${darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div ref={keywordsTopRef} className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-blue relative overflow-hidden group ${darkMode ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50 border-blue-200 shadow-xl shadow-blue-500/10'}`}>
                 <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
                 <div className="relative z-10 space-y-4 pointer-events-auto">
@@ -2177,26 +2386,6 @@ export default function App() {
 
               {keywords.length > 0 && (
                 <div className="space-y-4">
-                  <div className="relative">
-                    <div className={`absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                      <Search size={18} />
-                    </div>
-                    <input
-                      type="text"
-                      value={keywordSearch}
-                      onChange={(e) => setKeywordSearch(e.target.value)}
-                      placeholder="Search keywords or replies..."
-                      className={`w-full pl-11 pr-4 py-3.5 border rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
-                    />
-                    {keywordSearch && (
-                      <button 
-                        onClick={() => setKeywordSearch("")}
-                        className={`absolute inset-y-0 right-0 pr-4 flex items-center ${darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                      >
-                        <X size={16} />
-                      </button>
-                    )}
-                  </div>
 
                   <div className="space-y-3">
                     {keywords.filter(kw => {
@@ -2205,7 +2394,7 @@ export default function App() {
                       const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
                       const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
                       return matchesKeyword || matchesReply;
-                    }).map(kw => (
+                    }).map((kw, index) => (
                       <motion.div 
                       layout
                       key={kw._id}
@@ -2214,12 +2403,17 @@ export default function App() {
                     >
                       <div className={`absolute inset-0 pattern-dots opacity-[0.03] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
                       <div className="relative z-10 flex-1 min-w-0">
-                        <div className="flex flex-wrap gap-1.5 mb-3">
-                          {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
-                            <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
-                              {k}
-                            </span>
-                          ))}
+                        <div className="flex items-center gap-3 mb-3">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
+                            #{index + 1}
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
+                              <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-500/5 text-emerald-600'}`}>
+                                {k}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                         
                         <div className="space-y-2">
@@ -2344,6 +2538,21 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Keyword Reset Settings</label>
                     <RotateCcw size={16} className="text-amber-500" />
+                  </div>
+                  
+                  <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
+                    <div className="space-y-1">
+                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Reply in General</p>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>If enabled, bot replies to keywords in the general section instead of the topic.</p>
+                    </div>
+                    <button
+                      onClick={handleToggleReplyInGeneral}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${replyInGeneral ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${replyInGeneral ? 'translate-x-6' : 'translate-x-1'}`}
+                      />
+                    </button>
                   </div>
                   
                   <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
@@ -2591,6 +2800,30 @@ export default function App() {
                     </div>
                     
                     <div className="pt-4 flex flex-col space-y-3">
+                      <div className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        Session Running:
+                        <motion.div 
+                          className="flex items-center space-x-3 mt-2"
+                          animate={{ opacity: [0.8, 1, 0.8] }}
+                          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                        >
+                          <motion.div 
+                            key={timer.days}
+                            initial={{ scale: 0.8, color: "#10b981" }}
+                            animate={{ scale: 1, color: "#059669" }}
+                            className="font-black text-4xl text-emerald-500"
+                          >
+                            {timer.days}d
+                          </motion.div>
+                          <motion.span 
+                            className="text-2xl font-mono font-bold text-slate-700 dark:text-slate-300"
+                            animate={{ scale: [1, 1.05, 1] }}
+                            transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
+                          >
+                            {timer.time}
+                          </motion.span>
+                        </motion.div>
+                      </div>
                       <button 
                         onClick={fetchStats}
                         className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
@@ -3185,25 +3418,7 @@ export default function App() {
       </nav>
 
       {/* Notifications */}
-      <AnimatePresence>
-        {notification && (
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            className={`fixed bottom-28 left-4 right-4 z-50 px-6 py-4 rounded-2xl shadow-2xl flex items-center space-x-3 border ${
-              notification.type === 'success' 
-                ? 'bg-emerald-600 text-white border-emerald-500' 
-                : notification.type === 'warn'
-                ? 'bg-amber-600 text-white border-amber-500'
-                : 'bg-rose-600 text-white border-rose-500'
-            }`}
-          >
-            {notification.type === 'success' ? <CheckCircle2 size={20} /> : notification.type === 'warn' ? <ShieldAlert size={20} /> : <AlertCircle size={20} />}
-            <span className="font-bold text-sm">{notification.message}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <Toaster position="top-right" />
 
       {/* Delete Confirmation Modal */}
       <AnimatePresence>
@@ -3305,6 +3520,6 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }
