@@ -548,12 +548,56 @@ export default function App() {
     }
   };
 
+  const subscribeToPush = async () => {
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        
+        // Get VAPID public key from server
+        const response = await fetch('/api/push/vapid-public-key');
+        const { publicKey } = await response.json();
+        
+        if (!publicKey) return;
+
+        // Convert base64 public key to Uint8Array
+        const padding = '='.repeat((4 - publicKey.length % 4) % 4);
+        const base64 = (publicKey + padding).replace(/\-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: outputArray
+        });
+
+        // Send subscription to server
+        const subscriptionJSON = subscription.toJSON();
+        console.log('Sending push subscription to server:', subscriptionJSON);
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(subscriptionJSON)
+        });
+        
+        console.log('Push subscription successful');
+      } catch (err) {
+        console.error('Push subscription failed:', err);
+      }
+    }
+  };
+
   const requestNotificationPermission = async () => {
     if ("Notification" in window) {
       const permission = await Notification.requestPermission();
       if (permission === "granted") {
         showNotification('success', 'Notifications enabled!');
         playNotificationSound();
+        
+        // Subscribe to push
+        subscribeToPush();
         
         const options = { body: "Test notification successful!", icon: "/logo.svg" };
         if ('serviceWorker' in navigator) {
@@ -583,7 +627,11 @@ export default function App() {
 
     // Request notification permission on mount
     if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') subscribeToPush();
+      });
+    } else if ("Notification" in window && Notification.permission === "granted") {
+      subscribeToPush();
     }
 
     // Connect to SSE
@@ -921,6 +969,19 @@ export default function App() {
     } catch (err) {
       setStats({ ...stats, isSystemPaused: !newPausedState });
       showNotification('error', 'Connection error');
+    }
+  };
+
+  const testPush = async () => {
+    try {
+      const response = await fetch('/api/push/test', { method: 'POST' });
+      if (response.ok) {
+        showNotification('success', 'Test push sent!');
+      } else {
+        showNotification('error', 'Failed to send test push.');
+      }
+    } catch (err) {
+      showNotification('error', 'Error sending test push.');
     }
   };
 
@@ -2555,6 +2616,34 @@ export default function App() {
                     </button>
                   </div>
                   
+                  <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
+                    <div className="space-y-1">
+                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Push Notifications</p>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {Notification.permission === 'granted' ? 'Notifications are enabled' : 'Enable notifications for photo alerts'}
+                      </p>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      {Notification.permission === 'granted' && (
+                        <button
+                          onClick={testPush}
+                          className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-blue-100 text-blue-600 hover:bg-blue-200'}`}
+                          title="Send Test Push"
+                        >
+                          <Send size={16} />
+                        </button>
+                      )}
+                      <button
+                        onClick={requestNotificationPermission}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${Notification.permission === 'granted' ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${Notification.permission === 'granted' ? 'translate-x-6' : 'translate-x-1'}`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="flex items-center justify-between p-4 rounded-2xl border bg-white/5 backdrop-blur-sm border-white/10">
                     <div className="space-y-1">
                       <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>

@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
 import TelegramBot from "node-telegram-bot-api";
 import { TelegramClient, Api } from "telegram";
+import webpush from "web-push";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { CustomFile } from "telegram/client/uploads.js";
@@ -15,6 +16,42 @@ const __dirname = path.dirname(__filename);
 
 // Initialize Gemini
 // const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// VAPID keys setup
+let vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
+let vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
+
+async function setupVapid() {
+  try {
+    const pubKeySetting = await Setting.findOne({ key: "vapid_public_key" });
+    const privKeySetting = await Setting.findOne({ key: "vapid_private_key" });
+
+    if (pubKeySetting && privKeySetting) {
+      vapidPublicKey = pubKeySetting.value;
+      vapidPrivateKey = privKeySetting.value;
+    } else if (!vapidPublicKey || !vapidPrivateKey) {
+      const generated = webpush.generateVAPIDKeys();
+      vapidPublicKey = generated.publicKey;
+      vapidPrivateKey = generated.privateKey;
+      
+      await Setting.findOneAndUpdate({ key: "vapid_public_key" }, { value: vapidPublicKey }, { upsert: true });
+      await Setting.findOneAndUpdate({ key: "vapid_private_key" }, { value: vapidPrivateKey }, { upsert: true });
+      
+      console.log("Generated and stored new VAPID keys.");
+    }
+
+    if (vapidPublicKey && vapidPrivateKey) {
+      console.log("Setting up VAPID details with public key length:", vapidPublicKey.length, "and private key length:", vapidPrivateKey.length);
+      webpush.setVapidDetails(
+        "mailto:example@yourdomain.com",
+        vapidPublicKey,
+        vapidPrivateKey
+      );
+    }
+  } catch (err) {
+    console.error("Error setting up VAPID keys:", err);
+  }
+}
 
 const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selling paid study batches (SSC, Railway, etc.) for 87rs each. You have leaked batches from many top teachers. Your goal is to answer user queries about price, availability, and payment.
 - Context: Users are students preparing for exams.
@@ -98,6 +135,16 @@ const MissedTriggerSchema = new mongoose.Schema({
   processed: { type: Boolean, default: false }
 });
 const MissedTrigger = mongoose.model("MissedTrigger", MissedTriggerSchema);
+
+const PushSubscriptionSchema = new mongoose.Schema({
+  endpoint: { type: String, required: true, unique: true },
+  keys: {
+    p256dh: { type: String, required: true },
+    auth: { type: String, required: true }
+  },
+  created_at: { type: Date, default: Date.now }
+});
+const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSchema);
 
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -280,10 +327,49 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
 // SSE Clients
 let sseClients: any[] = [];
 
+// Helper to send push notifications to all subscribers
+async function sendPushNotification(title: string, body: string, data: any = {}) {
+  try {
+    const subscriptions = await PushSubscription.find();
+    console.log(`Sending push notification to ${subscriptions.length} subscribers.`);
+    subscriptions.forEach(sub => console.log(`- Subscriber endpoint: ${sub.endpoint.substring(0, 30)}...`));
+    const payload = JSON.stringify({ title, body, ...data });
+    
+    const promises = subscriptions.map(sub => {
+      const subscription = {
+        endpoint: sub.endpoint,
+        keys: {
+          p256dh: sub.keys.p256dh,
+          auth: sub.keys.auth
+        }
+      };
+      
+      return webpush.sendNotification(subscription, payload).catch(async (err) => {
+        if (err.statusCode === 404 || err.statusCode === 410) {
+          // Subscription expired or no longer valid
+          await PushSubscription.deleteOne({ endpoint: sub.endpoint });
+          console.log(`Deleted expired push subscription: ${sub.endpoint}`);
+        } else {
+          console.error(`Error sending push notification to ${sub.endpoint}:`, err.message);
+        }
+      });
+    });
+    
+    await Promise.all(promises);
+  } catch (err) {
+    console.error("Error in sendPushNotification:", err);
+  }
+}
+
 function sendSseEvent(type: string, data: any) {
   sseClients.forEach(client => {
     client.res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
   });
+
+  // Send push notification for photo_received or other important events
+  if (type === 'photo_received') {
+    sendPushNotification("New Photo Received", data.message || "A new photo has been received.", { url: '/' });
+  }
 }
 
 // Initialize default settings
@@ -397,13 +483,15 @@ async function startServer() {
   const PORT = 3000;
 
   // Connect to MongoDB
-  try {
-    await mongoose.connect(MONGODB_URI);
-    console.log("Connected to MongoDB");
-    await initSettings();
-  } catch (err) {
-    console.error("MongoDB connection error:", err);
-  }
+  mongoose.connect(MONGODB_URI)
+    .then(async () => {
+      console.log("Connected to MongoDB");
+      await initSettings();
+      await setupVapid();
+    })
+    .catch((err) => {
+      console.error("MongoDB connection error:", err);
+    });
 
   // Health check endpoint
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
@@ -1156,6 +1244,48 @@ async function startServer() {
     }
   });
 
+  app.get("/api/push/vapid-public-key", (req, res) => {
+    console.log(`Serving VAPID public key: ${vapidPublicKey ? vapidPublicKey.substring(0, 10) + "..." : "NULL"}`);
+    res.json({ publicKey: vapidPublicKey });
+  });
+
+  app.post("/api/push/subscribe", async (req, res) => {
+    try {
+      const subscription = req.body;
+      console.log(`Received push subscription request for endpoint: ${subscription.endpoint}`);
+      await PushSubscription.findOneAndUpdate(
+        { endpoint: subscription.endpoint },
+        subscription,
+        { upsert: true }
+      );
+      res.status(201).json({ status: "success" });
+    } catch (err: any) {
+      console.error("Error in /api/push/subscribe:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/push/unsubscribe", async (req, res) => {
+    try {
+      const { endpoint } = req.body;
+      await PushSubscription.deleteOne({ endpoint });
+      res.json({ status: "success" });
+    } catch (err: any) {
+      console.error("Error in /api/push/unsubscribe:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/push/test", async (req, res) => {
+    try {
+      await sendPushNotification("Test Notification", "This is a test notification from your bot!");
+      res.json({ status: "success" });
+    } catch (err: any) {
+      console.error("Error in /api/push/test:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
@@ -1844,11 +1974,15 @@ async function startServer() {
 
   // Vite middleware
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
+    createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
+    }).then(vite => {
+      app.use(vite.middlewares);
+      console.log("Vite middleware initialized");
+    }).catch(err => {
+      console.error("Vite server error:", err);
     });
-    app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(__dirname, "dist")));
     app.get("*", (req, res) => {
