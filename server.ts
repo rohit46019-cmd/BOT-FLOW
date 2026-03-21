@@ -463,6 +463,7 @@ async function initSettings() {
 }
 
 let userClient: TelegramClient | null = null;
+let cancelCatchupFlag = false;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
 let cachedKeywords: any[] = [];
@@ -543,8 +544,9 @@ async function startServer() {
 
   function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
-      const message = event.message;
-      if (!message) return;
+      try {
+        const message = event.message;
+        if (!message) return;
 
       // Fast ID extraction
       let chatId: string = "";
@@ -694,12 +696,22 @@ async function startServer() {
               console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
             } else {
               const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+              const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
+              const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
               console.log(`Photo detected. Sending auto-reply: "${photoReplyMessage}"`);
               
               await client.sendMessage(message.peerId, {
                 message: photoReplyMessage,
                 replyTo: replyTo,
               });
+
+              if (photoReplyMessage2Enabled && photoReplyMessage2) {
+                console.log(`Sending second photo auto-reply: "${photoReplyMessage2}"`);
+                await client.sendMessage(message.peerId, {
+                  message: photoReplyMessage2,
+                  replyTo: replyTo,
+                });
+              }
 
               // Update history
               if (!history) {
@@ -921,17 +933,35 @@ async function startServer() {
                 }
               }
 
+              if (kw.photo) {
+                console.log(`Sending photo reply for keyword: ${kw.keyword}`);
+                const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
+                const buffer = Buffer.from(base64Data, "base64");
+                
+                const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
+                const toUpload = await client.uploadFile({
+                  file: fileToUpload,
+                  workers: 1,
+                });
+
+                await client.sendFile(message.peerId, {
+                  file: toUpload,
+                  caption: kw.reply || "",
+                  replyTo: replyTo,
+                  forceDocument: false,
+                });
+                replySent = true;
+              } else if (kw.reply) {
+                console.log(`Sending text reply for keyword: ${kw.keyword}`);
+                await client.sendMessage(message.peerId, {
+                  message: kw.reply,
+                  replyTo: replyTo,
+                });
+                replySent = true;
+              }
+
               if (linksToProcess.length > 0) {
                 console.log(`Handling ${linksToProcess.length} message links for keyword: ${match.matchedWord}`);
-                
-                // Send the custom reply message first if it exists
-                if (kw.reply) {
-                  await client.sendMessage(message.peerId, {
-                    message: kw.reply,
-                    replyTo: replyTo,
-                  });
-                  replySent = true;
-                }
 
                 for (const link of linksToProcess) {
                   const parts = link.split("/").filter(p => p.length > 0);
@@ -962,9 +992,6 @@ async function startServer() {
                         inputPeer = await client.getInputEntity(fromPeer);
                       } catch (e: any) {
                         console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
-                        // If resolution fails, we can't proceed with this peer.
-                        // However, if it's a public username, maybe it works?
-                        // But for private channels (IDs), this is fatal.
                         throw e;
                       }
 
@@ -982,11 +1009,9 @@ async function startServer() {
                     } catch (forwardErr: any) {
                       console.error("Forwarding failed, trying fallback:", forwardErr.message);
                       try {
-                        // Fallback: Try forwarding from the target group itself if the message is there?
-                        // Or maybe just try standard forwardMessages method which handles some resolution internally
                         await client.forwardMessages(message.peerId, {
                           messages: [messageId],
-                          fromPeer: fromPeer, // Try with original peer string
+                          fromPeer: fromPeer,
                           topMsgId: replyInGeneral ? undefined : topMsgId,
                         } as any);
                         replySent = true;
@@ -995,34 +1020,8 @@ async function startServer() {
                       }
                     }
                   }
-                  // Small delay between forwards
                   await new Promise(resolve => setTimeout(resolve, 500));
                 }
-              } else if (kw.photo) {
-                console.log(`Sending photo reply for keyword: ${kw.keyword}`);
-                const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
-                const buffer = Buffer.from(base64Data, "base64");
-                
-                const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
-                const toUpload = await client.uploadFile({
-                  file: fileToUpload,
-                  workers: 1,
-                });
-
-                await client.sendFile(message.peerId, {
-                  file: toUpload,
-                  caption: kw.reply || "",
-                  replyTo: replyTo,
-                  forceDocument: false,
-                });
-                replySent = true;
-              } else if (kw.reply) {
-                console.log(`Sending text reply for keyword: ${kw.keyword}`);
-                await client.sendMessage(message.peerId, {
-                  message: kw.reply,
-                  replyTo: replyTo,
-                });
-                replySent = true;
               }
               
               // Update reply history count and save log asynchronously (fire-and-forget)
@@ -1181,6 +1180,17 @@ async function startServer() {
           }
         }
       }
+      } catch (globalErr: any) {
+        console.error("Global error in UserBot event handler:", globalErr);
+        if (globalErr.message?.includes("AUTH_KEY_UNREGISTERED") || globalErr.message?.includes("TIMEOUT")) {
+          console.log("Session invalid or timed out in event handler. Clearing session string.");
+          await Setting.deleteOne({ key: "session_string" });
+          if (userClient) {
+            try { await userClient.disconnect(); } catch (e) {}
+          }
+          userClient = null;
+        }
+      }
     });
   }
 
@@ -1286,6 +1296,9 @@ async function startServer() {
     }
   });
 
+  let lastAuthCheck = 0;
+  let cachedAuthStatus = false;
+
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
@@ -1295,6 +1308,8 @@ async function startServer() {
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
       const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
       const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
+      const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
+      const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
       const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
       const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
       const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
@@ -1310,11 +1325,31 @@ async function startServer() {
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
+      // Check if actually authorized, not just connected (with 1-minute cache to avoid rate limits)
+      if (isUserBotConnected && userClient) {
+        const now = Date.now();
+        if (now - lastAuthCheck > 60000) {
+          try {
+            cachedAuthStatus = await userClient.isUserAuthorized();
+            lastAuthCheck = now;
+            if (!cachedAuthStatus) {
+              console.log("UserBot connected but not authorized. Marking as disconnected.");
+              isUserBotConnected = false;
+            }
+          } catch (e) {
+            console.error("Error checking authorization:", e);
+            isUserBotConnected = false;
+          }
+        } else {
+          isUserBotConnected = cachedAuthStatus;
+        }
+      }
+      
       // Auto-reconnect attempt if disconnected but we have a session
       if (!isUserBotConnected) {
         const sessionString = (await getSetting("session_string"))?.value;
-        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
-        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiIdRaw = (await getSetting("api_id"))?.value || "";
+        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
         const apiId = parseInt(apiIdRaw.trim(), 10);
 
         if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
@@ -1322,24 +1357,48 @@ async function startServer() {
             console.log("Auto-reconnecting UserBot during stats check...");
             if (userClient) {
               try {
-                if (userClient.connected) {
-                  console.log("UserBot already connected, skipping reconnect.");
-                  return;
-                }
                 await userClient.disconnect();
               } catch (e) {
                 console.error("Error disconnecting existing client:", e);
               }
             }
             userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-              connectionRetries: 3,
+              connectionRetries: 5,
+              requestRetries: 5,
+              deviceModel: "Desktop",
+              systemVersion: "Windows 10",
+              appVersion: "1.0.0",
             });
             await userClient.connect();
-            setupUserBotHandlers(userClient, groupId);
-            isUserBotConnected = true;
-            await saveLog("UserBot auto-reconnected during stats check", "info", "/api/stats");
+            
+            const newSessionString = (userClient.session as StringSession).save();
+            if (newSessionString && newSessionString !== sessionString) {
+              await setSetting("session_string", newSessionString);
+            }
+            
+            // Re-verify authorization after connect
+            const authorized = await userClient.isUserAuthorized();
+            if (authorized) {
+              setupUserBotHandlers(userClient, groupId);
+              isUserBotConnected = true;
+              await saveLog("UserBot auto-reconnected during stats check", "info", "/api/stats");
+            } else {
+              console.log("Auto-reconnect successful but session is unauthorized/expired.");
+              await userClient.disconnect();
+              userClient = null;
+              // Optionally delete invalid session string
+              // await Setting.deleteOne({ key: "session_string" });
+            }
           } catch (connErr: any) {
             console.error("Auto-reconnect failed:", connErr.message);
+            if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || connErr.message?.includes("TIMEOUT")) {
+              console.log("Session invalid or timed out. Clearing session string.");
+              await Setting.deleteOne({ key: "session_string" });
+              if (userClient) {
+                try { await userClient.disconnect(); } catch (e) {}
+              }
+              userClient = null;
+            }
           }
         }
       }
@@ -1356,6 +1415,8 @@ async function startServer() {
         isSystemPaused,
         photoReplyEnabled,
         photoReplyMessage,
+        photoReplyMessage2Enabled,
+        photoReplyMessage2,
         photoReplyMax,
         notificationSoundEnabled,
         notificationSoundType,
@@ -1382,7 +1443,7 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys, replyInGeneral } = req.body;
+      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMessage2Enabled, photoReplyMessage2, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys, replyInGeneral } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
@@ -1390,6 +1451,8 @@ async function startServer() {
       if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
       if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled));
       if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage));
+      if (typeof photoReplyMessage2Enabled !== "undefined") await setSetting("photo_reply_message_2_enabled", String(photoReplyMessage2Enabled));
+      if (typeof photoReplyMessage2 !== "undefined") await setSetting("photo_reply_message_2", String(photoReplyMessage2));
       if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax));
       if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
       if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
@@ -1403,7 +1466,7 @@ async function startServer() {
       if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       if (typeof replyInGeneral !== "undefined") await setSetting("reply_in_general", String(replyInGeneral));
       
-      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral });
+      await saveLog("Settings updated", 'info', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -1573,6 +1636,9 @@ async function startServer() {
       }
       userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 5,
+        deviceModel: "Desktop",
+        systemVersion: "Windows 10",
+        appVersion: "1.0.0",
       });
       await userClient.connect();
       const result = await userClient.sendCode({ apiId, apiHash }, phone);
@@ -1683,6 +1749,11 @@ async function startServer() {
       res.json(formattedMessages.reverse()); // Reverse to show oldest first
     } catch (err: any) {
       console.error("Error fetching messages:", err);
+      if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
+        await Setting.deleteOne({ key: "session_string" });
+        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
+        userClient = null;
+      }
       res.status(500).json({ error: `[GET /api/group/messages] ${err.message}` });
     }
   });
@@ -1701,6 +1772,11 @@ async function startServer() {
       }
     } catch (err: any) {
       await saveLog(err.message, 'error', '/api/broadcast');
+      if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
+        await Setting.deleteOne({ key: "session_string" });
+        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
+        userClient = null;
+      }
       res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
     }
   });
@@ -1714,8 +1790,163 @@ async function startServer() {
     }
   });
 
+  app.post("/api/cancel-catchup", (req, res) => {
+    cancelCatchupFlag = true;
+    res.json({ success: true });
+  });
+
+  app.post("/api/scan-missed", async (req, res) => {
+    try {
+      if (!userClient || !userClient.connected) {
+        return res.status(400).json({ error: "Telegram client not connected" });
+      }
+
+      console.log("Scanning first 50 topics for missed keywords...");
+      const result = await userClient.invoke(
+        new Api.channels.GetForumTopics({
+          channel: await userClient.getInputEntity(groupId),
+          q: "",
+          offsetDate: 0,
+          offsetId: 0,
+          offsetTopic: 0,
+          limit: 50,
+        })
+      );
+
+      const topics = (result as any).topics || [];
+      const missedItems = [];
+      let newMissedCount = 0;
+
+      // Get Blocked Topics
+      const blockedTopics = await BlockedTopic.find();
+      const blockedTopicIds = new Set(blockedTopics.map(b => {
+        try {
+          const parts = b.link.split("/").filter(p => p.length > 0);
+          return parseInt(parts[parts.length - 1], 10);
+        } catch (e) { return null; }
+      }).filter(id => id !== null));
+
+      for (const topic of topics) {
+        const topicId = topic.id;
+        const topicName = topic.title;
+
+        if (blockedTopicIds.has(topicId)) {
+          console.log(`Skipping blocked topic: ${topicId}`);
+          continue;
+        }
+
+        // Fetch last 30 messages for this topic
+        const messages = await userClient.getMessages(groupId, {
+          replyTo: topicId,
+          limit: 30,
+        });
+
+        if (!messages || messages.length === 0) continue;
+
+        const botReplyMessageIds = new Set(
+          messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
+        );
+        const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
+
+        for (const msg of messages) {
+          if (msg.out) continue;
+
+          // Check if bot replied directly to this message, or replied generally after this message
+          const isRepliedDirectly = botReplyMessageIds.has(msg.id);
+          const isRepliedGenerally = latestBotReplyDate > msg.date;
+
+          if (isRepliedDirectly || isRepliedGenerally) {
+            continue; // Skip, already replied
+          }
+
+          if (msg.message) {
+            const text = msg.message.toLowerCase().trim();
+            const matches: { kw: any, index: number, matchedWord: string }[] = [];
+
+            for (const kw of cachedKeywords) {
+              const triggerWords = [...(kw.keywords || [])];
+              if (kw.keyword && !triggerWords.includes(kw.keyword)) {
+                triggerWords.push(kw.keyword);
+              }
+
+              for (const word of triggerWords) {
+                const wordLower = word.toLowerCase().trim();
+                if (!wordLower) continue;
+
+                const escapedWord = escapeRegExp(wordLower);
+                let regex: RegExp;
+                
+                if (kw.match_mode === 'partial') {
+                  regex = new RegExp(escapedWord, 'gi');
+                } else {
+                  regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+                }
+                
+                let match;
+                while ((match = regex.exec(text)) !== null) {
+                  matches.push({ kw, index: match.index, matchedWord: wordLower });
+                  break; // Only match this specific word once per message
+                }
+              }
+            }
+
+            matches.sort((a, b) => a.index - b.index);
+
+            if (matches.length > 0) {
+              const processedRuleIds = new Set<string>();
+
+              for (const match of matches) {
+                const kw = match.kw;
+                if (processedRuleIds.has(kw._id.toString())) continue;
+                processedRuleIds.add(kw._id.toString());
+
+                // Check if already in MissedTrigger for this specific rule
+                const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: groupId, rule_id: kw._id });
+                if (!existing) {
+                  const newTrigger = await MissedTrigger.create({
+                    message_id: msg.id,
+                    chat_id: groupId,
+                    topic_id: topicId,
+                    text: msg.message,
+                    matched_keyword: match.matchedWord,
+                    rule_id: kw._id,
+                    timestamp: new Date(msg.date * 1000),
+                    processed: false
+                  });
+                  newMissedCount++;
+                  missedItems.push({
+                    _id: newTrigger._id,
+                    topicName,
+                    topicId,
+                    keyword: match.matchedWord,
+                    text: msg.message,
+                    date: new Date(msg.date * 1000)
+                  });
+                }
+              }
+            }
+          }
+        }
+        
+        // Add a small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      res.json({ success: true, count: newMissedCount, items: missedItems });
+    } catch (err: any) {
+      console.error("Scan missed error:", err);
+      if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
+        await Setting.deleteOne({ key: "session_string" });
+        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
+        userClient = null;
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/catchup", async (req, res) => {
     try {
+      cancelCatchupFlag = false;
       if (!userClient || !userClient.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
@@ -1726,14 +1957,28 @@ async function startServer() {
       }
 
       const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+      const autoResetEnabled = (await getSetting("auto_reset_enabled"))?.value !== "false";
 
-      const missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: 1 }).limit(20);
+      const { triggerIds } = req.body || {};
+      let missed = [];
+      
+      if (triggerIds && Array.isArray(triggerIds) && triggerIds.length > 0) {
+        missed = await MissedTrigger.find({ _id: { $in: triggerIds }, processed: false }).sort({ timestamp: 1 });
+      } else {
+        missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: 1 }).limit(20);
+      }
+
       if (missed.length === 0) {
         return res.json({ success: true, count: 0 });
       }
 
       let processedCount = 0;
       for (const trigger of missed) {
+        if (cancelCatchupFlag) {
+          console.log("Catchup cancelled by user.");
+          break;
+        }
+
         try {
           const kw = await Keyword.findById(trigger.rule_id);
           if (!kw) {
@@ -1747,6 +1992,34 @@ async function startServer() {
           const topMsgId = trigger.topic_id;
           const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
           
+          // Rate limiting check: Max replies per keyword rule per topic
+          if (topMsgId) {
+            const history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+            const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
+            
+            let currentCount = 0;
+            if (history) {
+              const lastUpdated = new Date(history.last_updated);
+              const today = new Date();
+              
+              const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              
+              if (lastUpdatedIST === todayIST || !autoResetEnabled) {
+                currentCount = history.count;
+              } else {
+                currentCount = 0;
+              }
+            }
+
+            if (maxReplies > 0 && currentCount >= maxReplies) {
+              console.log(`Catchup skipped: Max replies reached for rule ${kw._id} in topic ${topMsgId}`);
+              trigger.processed = true;
+              await trigger.save();
+              continue;
+            }
+          }
+
           console.log(`Catchup: Processing trigger ${trigger._id} for peer ${peerId}, replyToMsgId ${replyToMsgId}, topMsgId ${topMsgId}, final replyTo ${replyTo}`);
 
           // Handle message links (forwarding)
@@ -1755,40 +2028,10 @@ async function startServer() {
             linksToProcess.push(kw.message_link);
           }
 
-          if (linksToProcess.length > 0) {
-            if (kw.reply) {
-              await userClient.sendMessage(peerId, {
-                message: kw.reply,
-                replyTo: replyTo,
-              });
-            }
+          let replySent = false;
 
-            for (const link of linksToProcess) {
-              const parts = link.split("/").filter(p => p.length > 0);
-              const messageId = parseInt(parts[parts.length - 1], 10);
-              if (!isNaN(messageId)) {
-                let fromPeer: any = (await getSetting("target_group_id"))?.value;
-                if (link.includes("/c/")) {
-                  const cIndex = parts.indexOf("c");
-                  if (cIndex !== -1 && parts[cIndex + 1]) fromPeer = `-100${parts[cIndex + 1]}`;
-                } else {
-                  const tmeIndex = parts.indexOf("t.me");
-                  if (tmeIndex !== -1 && parts[tmeIndex + 1]) fromPeer = parts[tmeIndex + 1];
-                }
-
-                try {
-                  await userClient.forwardMessages(peerId, {
-                    messages: [messageId],
-                    fromPeer: fromPeer,
-                    topMsgId: replyInGeneral ? undefined : topMsgId,
-                  } as any);
-                } catch (e) {
-                  console.error("Catchup forward failed:", e);
-                }
-              }
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          } else if (kw.photo) {
+          if (kw.photo) {
+            console.log(`Catchup: Sending photo reply for keyword: ${kw.keyword}`);
             const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
             const buffer = Buffer.from(base64Data, "base64");
             const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
@@ -1798,11 +2041,97 @@ async function startServer() {
               caption: kw.reply || "",
               replyTo: replyTo,
             });
+            replySent = true;
           } else if (kw.reply) {
+            console.log(`Catchup: Sending text reply for keyword: ${kw.keyword}`);
             await userClient.sendMessage(peerId, {
               message: kw.reply,
               replyTo: replyTo,
             });
+            replySent = true;
+          }
+
+          if (linksToProcess.length > 0) {
+            console.log(`Catchup: Handling ${linksToProcess.length} message links for keyword: ${kw.keyword}`);
+            for (const link of linksToProcess) {
+              const parts = link.split("/").filter(p => p.length > 0);
+              const messageId = parseInt(parts[parts.length - 1], 10);
+              if (!isNaN(messageId)) {
+                let fromPeer: any = (await getSetting("target_group_id"))?.value;
+                if (link.includes("/c/")) {
+                  const cIndex = parts.indexOf("c");
+                  if (cIndex !== -1 && parts[cIndex + 1]) {
+                    fromPeer = `-100${parts[cIndex + 1]}`;
+                  }
+                } else {
+                  const tmeIndex = parts.indexOf("t.me");
+                  if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                    fromPeer = parts[tmeIndex + 1];
+                  } else if (parts.length >= 3) {
+                    fromPeer = parts[2];
+                  }
+                }
+
+                try {
+                  let inputPeer;
+                  try {
+                    inputPeer = await userClient.getInputEntity(fromPeer);
+                  } catch (e: any) {
+                    console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
+                    throw e;
+                  }
+
+                  await userClient.invoke(
+                    new Api.messages.ForwardMessages({
+                      fromPeer: inputPeer,
+                      id: [messageId],
+                      randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                      toPeer: peerId,
+                      topMsgId: replyInGeneral ? undefined : topMsgId,
+                    }) as any
+                  );
+                  console.log(`Catchup: Forwarded message ${messageId} for keyword: ${kw.keyword}`);
+                  replySent = true;
+                } catch (forwardErr: any) {
+                  console.error("Catchup forward failed, trying fallback:", forwardErr.message);
+                  try {
+                    await userClient.forwardMessages(peerId, {
+                      messages: [messageId],
+                      fromPeer: fromPeer,
+                      topMsgId: replyInGeneral ? undefined : topMsgId,
+                    } as any);
+                    replySent = true;
+                  } catch (fallbackErr) {
+                    console.error("Catchup fallback forward failed:", fallbackErr);
+                  }
+                }
+              }
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+
+          // Update ReplyHistory
+          if (replySent && topMsgId) {
+            const today = new Date();
+            const history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+            let isSameDay = false;
+            
+            if (history) {
+              const lastUpdated = new Date(history.last_updated);
+              const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              if (lastUpdatedIST === todayIST) isSameDay = true;
+            }
+
+            if (history && isSameDay) {
+               await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
+            } else {
+               await ReplyHistory.findOneAndUpdate(
+                  { topic_id: topMsgId, keyword_id: kw._id },
+                  { count: 1, last_updated: today },
+                  { upsert: true }
+               );
+            }
           }
 
           trigger.processed = true;
@@ -1815,8 +2144,13 @@ async function startServer() {
         }
       }
 
-      res.json({ success: true, count: processedCount });
+      res.json({ success: true, count: processedCount, cancelled: cancelCatchupFlag });
     } catch (err: any) {
+      if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
+        await Setting.deleteOne({ key: "session_string" });
+        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
+        userClient = null;
+      }
       res.status(500).json({ error: err.message });
     }
   });
@@ -2000,33 +2334,49 @@ async function startServer() {
     // Connect UserBot in background
     (async () => {
       try {
-        const hardcodedSession = "1BVtsOLsBu4z-XGtiex0hcJq9jT7MVdWGy-R81CkXbB07-Edv2z9-2RtT2DL7tbtlMz07AHw309eD962CNHi7dFcOc8TGfFvowvxyHou-X26X9Qi1Ivw85kMnnYfHoLG-DQzi44wnNtWw-JImQXVP-8l_xvuH9NYjOKhHLFSyYcn5fxph_k4Ljtwh0cFHJ9K5GOoiMRHptPFT5YFbGVC-M8md0qab9Ei6mrHqz0PkFtcOf5Y491xXMosDiHdnOCRvc5Ou2UqHRQEfiSzW_yjsXNTfeZKH3pGQd1QkGja-no7xVxURNsuMd5n_PFxemy1JDSDeC5jIW8RyRqoYGmRZ2g16ib_T6A0=";
         let sessionString = (await getSetting("session_string"))?.value;
         
-        // Use hardcoded session if database session is missing
-        if (!sessionString) {
-          sessionString = hardcodedSession;
-          await setSetting("session_string", hardcodedSession);
-          console.log("Using hardcoded Telegram session.");
-        }
-
-        const apiIdRaw = (await getSetting("api_id"))?.value || "34669075";
-        const apiHash = ((await getSetting("api_hash"))?.value || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
+        const apiIdRaw = (await getSetting("api_id"))?.value || "";
+        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
         const apiId = parseInt(apiIdRaw.trim(), 10);
 
         if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
           console.log("Attempting to connect UserBot...");
           userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
             connectionRetries: 5,
+            requestRetries: 5,
+            deviceModel: "Desktop",
+            systemVersion: "Windows 10",
+            appVersion: "1.0.0",
           });
           await userClient.connect();
-          console.log("UserBot connected successfully.");
-          setupUserBotHandlers(userClient, groupId);
-          await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+          
+          const newSessionString = (userClient.session as StringSession).save();
+          if (newSessionString && newSessionString !== sessionString) {
+            await setSetting("session_string", newSessionString);
+          }
+          
+          if (await userClient.isUserAuthorized()) {
+            console.log("UserBot connected successfully.");
+            setupUserBotHandlers(userClient, groupId);
+            await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+          } else {
+            console.log("UserBot connected but session is invalid/expired.");
+            await userClient.disconnect();
+            userClient = null;
+          }
         }
       } catch (err: any) {
         console.error("Failed to connect UserBot on startup:", err);
         await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
+        if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
+          console.log("Session invalid or timed out on startup. Clearing session string.");
+          await Setting.deleteOne({ key: "session_string" });
+          if (userClient) {
+            try { await userClient.disconnect(); } catch (e) {}
+          }
+          userClient = null;
+        }
       }
     })();
   });

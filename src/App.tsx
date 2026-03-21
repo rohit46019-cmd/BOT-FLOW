@@ -47,7 +47,8 @@ import {
   Users,
   Database,
   Library,
-  Trash
+  Trash,
+  Check
 } from "lucide-react";
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
 
@@ -202,6 +203,8 @@ export default function App() {
   const [apiHashInput, setApiHashInput] = useState("");
   const [photoReplyEnabled, setPhotoReplyEnabled] = useState(false);
   const [photoReplyMessage, setPhotoReplyMessage] = useState("");
+  const [photoReplyMessage2Enabled, setPhotoReplyMessage2Enabled] = useState(false);
+  const [photoReplyMessage2, setPhotoReplyMessage2] = useState("");
   const [photoReplyMax, setPhotoReplyMax] = useState<number | string>(2);
   const [topicIcon, setTopicIcon] = useState("🛑");
   const [topicRenameKeywords, setTopicRenameKeywords] = useState("");
@@ -210,7 +213,7 @@ export default function App() {
   const [notificationSoundType, setNotificationSoundType] = useState("default");
   const [autoResetKeywords, setAutoResetKeywords] = useState(true);
   const [autoBlockKeywords, setAutoBlockKeywords] = useState<AutoBlockKeyword[]>([]);
-  const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(true);
+  const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(false);
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
@@ -244,6 +247,10 @@ export default function App() {
   
   const [missedCount, setMissedCount] = useState(0);
   const [isCatchingUp, setIsCatchingUp] = useState(false);
+  const [isScanningMissed, setIsScanningMissed] = useState(false);
+  const [scannedItems, setScannedItems] = useState<any[]>([]);
+  const [selectedScannedItems, setSelectedScannedItems] = useState<Set<string>>(new Set());
+  const [showScanModal, setShowScanModal] = useState(false);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -387,8 +394,10 @@ export default function App() {
       const response = await fetch('/api/blocked-topics');
       const data = await response.json();
       setBlockedTopics(data);
-    } catch (err) {
-      console.error("Failed to fetch blocked topics:", err);
+    } catch (err: any) {
+      if (err.message !== "Failed to fetch") {
+        console.error("Failed to fetch blocked topics:", err);
+      }
     }
   }, []);
 
@@ -740,6 +749,8 @@ export default function App() {
       setApiHashInput(data.apiHash);
       setPhotoReplyEnabled(data.photoReplyEnabled);
       setPhotoReplyMessage(data.photoReplyMessage);
+      setPhotoReplyMessage2Enabled(data.photoReplyMessage2Enabled);
+      setPhotoReplyMessage2(data.photoReplyMessage2);
       setPhotoReplyMax(data.photoReplyMax || 2);
       setTopicIcon(data.topicIcon || "🛑");
       setTopicRenameKeywords(data.topicRenameKeywords || "");
@@ -772,8 +783,10 @@ export default function App() {
       if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
         setAuthStep('phone');
       }
-    } catch (err) {
-      console.error("Failed to fetch stats", err);
+    } catch (err: any) {
+      if (err.message !== "Failed to fetch") {
+        console.error("Failed to fetch stats", err);
+      }
     } finally {
       setLoading(false);
     }
@@ -789,8 +802,10 @@ export default function App() {
       }
       const data = await res.json();
       setKeywords(data);
-    } catch (err) {
-      console.error("Failed to fetch keywords", err);
+    } catch (err: any) {
+      if (err.message !== "Failed to fetch") {
+        console.error("Failed to fetch keywords", err);
+      }
     }
   };
 
@@ -805,8 +820,10 @@ export default function App() {
       }
       const data = await res.json();
       setLogs(data);
-    } catch (err) {
-      console.error("Failed to fetch logs", err);
+    } catch (err: any) {
+      if (err.message !== "Failed to fetch") {
+        console.error("Failed to fetch logs", err);
+      }
     } finally {
       // Add a slight delay so the animation is visible even for fast requests
       setTimeout(() => setRefreshingLogs(false), 500);
@@ -820,8 +837,10 @@ export default function App() {
         const data = await res.json();
         setAnalyticsData(data);
       }
-    } catch (err) {
-      console.error("Failed to fetch analytics", err);
+    } catch (err: any) {
+      if (err.message !== "Failed to fetch") {
+        console.error("Failed to fetch analytics", err);
+      }
     }
   };
 
@@ -874,21 +893,40 @@ export default function App() {
   const fetchMissedCount = async () => {
     try {
       const res = await fetch("/api/missed-count");
+      if (!res.ok) return;
       const data = await res.json();
       setMissedCount(data.count || 0);
-    } catch (e) {
-      console.error("Failed to fetch missed count", e);
+    } catch (e: any) {
+      // Suppress "Failed to fetch" network errors (e.g. during server restart)
+      if (e.message !== "Failed to fetch") {
+        console.error("Failed to fetch missed count", e);
+      }
     }
   };
 
-  const handleCatchUp = async () => {
+  const handleCatchUp = async (triggerIds?: string[] | any) => {
     if (isCatchingUp) return;
     setIsCatchingUp(true);
+    
+    // Ensure triggerIds is an array of strings, or empty (it might be a React event if called from onClick)
+    const ids = Array.isArray(triggerIds) ? triggerIds : [];
+    
     try {
-      const res = await fetch("/api/catchup", { method: "POST" });
+      const res = await fetch("/api/catchup", { 
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ triggerIds: ids })
+      });
       const data = await res.json();
       if (data.success) {
-        showNotification('success', `Caught up with ${data.count} missed keywords`);
+        if (data.cancelled) {
+          showNotification('warn', `Catch up cancelled. Processed ${data.count} keywords.`);
+        } else {
+          showNotification('success', `Caught up with ${data.count} missed keywords`);
+        }
+        setShowScanModal(false);
         fetchMissedCount();
         fetchStats();
       } else {
@@ -898,6 +936,41 @@ export default function App() {
       showNotification('error', 'Failed to catch up');
     } finally {
       setIsCatchingUp(false);
+    }
+  };
+
+  const handleCancelCatchUp = async () => {
+    try {
+      await fetch("/api/cancel-catchup", { method: "POST" });
+      showNotification('warn', 'Cancelling catch up...');
+    } catch (e) {
+      console.error("Failed to cancel catch up", e);
+    }
+  };
+
+  const handleScanMissed = async () => {
+    if (isScanningMissed) return;
+    setIsScanningMissed(true);
+    try {
+      const res = await fetch("/api/scan-missed", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        setScannedItems(data.items || []);
+        setSelectedScannedItems(new Set((data.items || []).map((i: any) => i._id)));
+        setShowScanModal(true);
+        fetchMissedCount();
+        if (data.count > 0) {
+          showNotification('success', `Found ${data.count} new missed keywords`);
+        } else {
+          showNotification('success', 'No new missed keywords found');
+        }
+      } else {
+        showNotification('error', data.error || 'Scan failed');
+      }
+    } catch (e) {
+      showNotification('error', 'Failed to scan missed topics');
+    } finally {
+      setIsScanningMissed(false);
     }
   };
 
@@ -1073,6 +1146,28 @@ export default function App() {
     }
   };
 
+  const handleTogglePhotoReplyMessage2 = async () => {
+    const newState = !photoReplyMessage2Enabled;
+    setPhotoReplyMessage2Enabled(newState);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ photoReplyMessage2Enabled: newState }),
+      });
+      if (res.ok) {
+        showNotification('success', newState ? 'Second Photo Reply Enabled' : 'Second Photo Reply Disabled');
+        fetchStats();
+      } else {
+        setPhotoReplyMessage2Enabled(!newState);
+        showNotification('error', 'Failed to update setting');
+      }
+    } catch (err) {
+      setPhotoReplyMessage2Enabled(!newState);
+      showNotification('error', 'Failed to update setting');
+    }
+  };
+
   const handleToggleNotificationSound = async () => {
     const newState = !notificationSoundEnabled;
     setNotificationSoundEnabled(newState);
@@ -1165,6 +1260,8 @@ export default function App() {
           apiHash: apiHashInput,
           photoReplyEnabled,
           photoReplyMessage,
+          photoReplyMessage2Enabled,
+          photoReplyMessage2,
           photoReplyMax: Number(photoReplyMax) || 2,
           notificationSoundEnabled,
           notificationSoundType,
@@ -1853,7 +1950,7 @@ export default function App() {
                       initial={{ opacity: 0, y: 30, rotateX: -10 }}
                       animate={{ opacity: 1, y: 0, rotateX: 0 }}
                       transition={{ duration: 0.5, type: "spring" }}
-                      className="col-span-2"
+                      className="col-span-2 flex flex-col gap-4"
                     >
                       <button
                         onClick={handleCatchUp}
@@ -1879,6 +1976,27 @@ export default function App() {
                             : 'border-amber-500/30 bg-amber-500/10'
                         }`}>
                           {stats?.isSystemPaused ? 'Unpause to Reply' : 'Reply Now'}
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={handleScanMissed}
+                        disabled={isScanningMissed}
+                        className={`w-full p-6 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between group relative overflow-hidden ${
+                          darkMode ? 'bg-indigo-950/40 border-indigo-500/30 text-indigo-400 hover:bg-indigo-900/50' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100 shadow-xl shadow-indigo-500/10'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-4">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-500/20 text-indigo-600'}`}>
+                            {isScanningMissed ? <RefreshCw className="animate-spin" size={24} /> : <Search size={24} />}
+                          </div>
+                          <div className="text-left">
+                            <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Scan Missed</p>
+                            <h3 className="text-lg font-black tracking-tight">Scan Recent Topics</h3>
+                          </div>
+                        </div>
+                        <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-indigo-500/30 bg-indigo-500/10`}>
+                          Scan Now
                         </div>
                       </button>
                     </motion.div>
@@ -2100,6 +2218,36 @@ export default function App() {
                             rows={2}
                             className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
                           />
+                        </div>
+
+                        <div className="space-y-2 pt-4 border-t border-slate-100 dark:border-neutral-800">
+                          <div className="flex items-center justify-between">
+                            <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Second Reply Message</label>
+                            <button 
+                              onClick={handleTogglePhotoReplyMessage2}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${photoReplyMessage2Enabled ? 'bg-amber-500' : 'bg-slate-300'}`}
+                            >
+                              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${photoReplyMessage2Enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                            </button>
+                          </div>
+                          <AnimatePresence>
+                            {photoReplyMessage2Enabled && (
+                              <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <textarea
+                                  value={photoReplyMessage2}
+                                  onChange={(e) => setPhotoReplyMessage2(e.target.value)}
+                                  placeholder="Second message to send after the first one"
+                                  rows={2}
+                                  className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all mt-2 ${darkMode ? 'bg-amber-500/5 border-amber-500/20 text-white placeholder-white/20' : 'bg-amber-50 border-amber-200 text-slate-900 placeholder-slate-400'}`}
+                                />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
 
                         <div className="space-y-2">
@@ -3604,6 +3752,141 @@ export default function App() {
                     Cancel
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Scan Missed Modal */}
+      <AnimatePresence>
+        {showScanModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className={`w-full max-w-lg rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[80vh] ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}
+            >
+              <div className={`p-6 border-b flex items-center justify-between ${darkMode ? 'border-slate-800' : 'border-slate-100'}`}>
+                <div className="flex items-center space-x-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600'}`}>
+                    <Search size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black tracking-tight">Scan Results</h3>
+                    <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {scannedItems.length} new missed keywords found
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowScanModal(false)}
+                  className={`p-2 rounded-xl transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                {scannedItems.length === 0 ? (
+                  <div className="text-center py-8">
+                    <div className={`w-16 h-16 rounded-2xl mx-auto flex items-center justify-center mb-4 ${darkMode ? 'bg-slate-800/50 text-slate-500' : 'bg-slate-100 text-slate-400'}`}>
+                      <Check size={32} />
+                    </div>
+                    <h4 className="text-lg font-bold mb-1">All Caught Up!</h4>
+                    <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>No new missed keywords were found in the recent topics.</p>
+                  </div>
+                ) : (
+                  scannedItems.map((item, index) => {
+                    const isSelected = selectedScannedItems.has(item._id);
+                    return (
+                      <div 
+                        key={index} 
+                        onClick={() => {
+                          const newSet = new Set(selectedScannedItems);
+                          if (isSelected) newSet.delete(item._id);
+                          else newSet.add(item._id);
+                          setSelectedScannedItems(newSet);
+                        }}
+                        className={`p-4 rounded-2xl border cursor-pointer transition-colors flex items-start space-x-4 ${
+                          isSelected 
+                            ? (darkMode ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-indigo-50 border-indigo-200')
+                            : (darkMode ? 'bg-slate-800/30 border-slate-700/50 hover:bg-slate-800/50' : 'bg-slate-50 border-slate-200 hover:bg-slate-100')
+                        }`}
+                      >
+                        <div className={`mt-1 w-5 h-5 rounded flex items-center justify-center border ${
+                          isSelected 
+                            ? 'bg-indigo-500 border-indigo-500 text-white' 
+                            : (darkMode ? 'border-slate-600' : 'border-slate-300')
+                        }`}>
+                          {isSelected && <Check size={14} strokeWidth={3} />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className={`text-xs font-bold px-2 py-1 rounded-lg ${darkMode ? 'bg-indigo-500/20 text-indigo-300' : 'bg-indigo-100 text-indigo-700'}`}>
+                              {item.topicName}
+                            </span>
+                            <span className={`text-[10px] font-medium ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                              {new Date(item.date).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <p className={`text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                            Keyword: <span className="text-amber-500">"{item.keyword}"</span>
+                          </p>
+                          <p className={`text-xs italic line-clamp-2 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                            "{item.text}"
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              
+              <div className={`p-6 border-t flex items-center justify-end space-x-3 ${darkMode ? 'border-slate-800 bg-slate-900/50' : 'border-slate-100 bg-slate-50'}`}>
+                {isCatchingUp ? (
+                  <button
+                    onClick={handleCancelCatchUp}
+                    className="px-6 py-3 rounded-xl text-sm font-bold bg-red-500 text-white hover:bg-red-600 transition-colors shadow-lg shadow-red-500/20 flex items-center space-x-2"
+                  >
+                    <RefreshCw className="animate-spin" size={16} />
+                    <span>Cancel Catch Up</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setShowScanModal(false)}
+                      className={`px-6 py-3 rounded-xl text-sm font-bold transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`}
+                    >
+                      Close
+                    </button>
+                    {scannedItems.length > 0 && (
+                      <button
+                        onClick={() => {
+                          if (selectedScannedItems.size === 0) {
+                            showNotification('error', 'Please select at least one item');
+                            return;
+                          }
+                          handleCatchUp(Array.from(selectedScannedItems));
+                        }}
+                        disabled={selectedScannedItems.size === 0}
+                        className={`px-6 py-3 rounded-xl text-sm font-bold text-white transition-colors shadow-lg ${
+                          selectedScannedItems.size === 0
+                            ? 'bg-slate-400 cursor-not-allowed shadow-none'
+                            : 'bg-indigo-500 hover:bg-indigo-600 shadow-indigo-500/20'
+                        }`}
+                      >
+                        Catch Up Selected ({selectedScannedItems.size})
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </motion.div>
           </motion.div>
