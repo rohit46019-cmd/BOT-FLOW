@@ -152,13 +152,25 @@ const getSetting = async (key: string) => await Setting.findOne({ key });
 const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
 const getTopicCount = async () => await Topic.countDocuments();
 const getTodayTopicCount = async () => {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  return await Topic.countDocuments({ created_at: { $gte: startOfDay } });
+  const now = new Date();
+  // Get start of today in IST (Asia/Kolkata)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const nowIST = now.getTime() + istOffset;
+  const startOfTodayIST_ms = Math.floor(nowIST / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+  const startOfTodayUTC = new Date(startOfTodayIST_ms - istOffset);
+  
+  return await Topic.countDocuments({ created_at: { $gte: startOfTodayUTC } });
 };
-const logTopic = async (topicId: number, name: string) => {
+const logTopic = async (topicId: number, name: string, date?: Date) => {
   try {
-    await Topic.create({ telegram_topic_id: topicId, name });
+    await Topic.findOneAndUpdate(
+      { telegram_topic_id: topicId },
+      { 
+        $set: { name },
+        $setOnInsert: { created_at: date || new Date() }
+      },
+      { upsert: true }
+    );
   } catch (err) {}
 };
 
@@ -196,7 +208,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
         const topicMsg = messages[0];
         if (topicMsg.action && topicMsg.action instanceof Api.MessageActionTopicCreate) {
           topicName = topicMsg.action.title;
-          await logTopic(topicId, topicName);
+          await logTopic(topicId, topicName, topicMsg.date ? new Date(topicMsg.date * 1000) : undefined);
         }
       }
     } catch (e) {
@@ -463,6 +475,7 @@ async function initSettings() {
 }
 
 let userClient: TelegramClient | null = null;
+let isConnecting = false;
 let cancelCatchupFlag = false;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
@@ -1303,6 +1316,7 @@ async function startServer() {
     try {
       const topicCount = await getTopicCount();
       const todayTopicCount = await getTodayTopicCount();
+      const keywordCount = await Keyword.countDocuments();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
@@ -1346,7 +1360,7 @@ async function startServer() {
       }
       
       // Auto-reconnect attempt if disconnected but we have a session
-      if (!isUserBotConnected) {
+      if (!isUserBotConnected && !isConnecting) {
         const sessionString = (await getSetting("session_string"))?.value;
         const apiIdRaw = (await getSetting("api_id"))?.value || "";
         const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
@@ -1354,6 +1368,7 @@ async function startServer() {
 
         if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
           try {
+            isConnecting = true;
             console.log("Auto-reconnecting UserBot during stats check...");
             if (userClient) {
               try {
@@ -1386,19 +1401,21 @@ async function startServer() {
               console.log("Auto-reconnect successful but session is unauthorized/expired.");
               await userClient.disconnect();
               userClient = null;
-              // Optionally delete invalid session string
-              // await Setting.deleteOne({ key: "session_string" });
             }
           } catch (connErr: any) {
             console.error("Auto-reconnect failed:", connErr.message);
-            if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || connErr.message?.includes("TIMEOUT")) {
-              console.log("Session invalid or timed out. Clearing session string.");
+            if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || 
+                connErr.message?.includes("TIMEOUT") || 
+                connErr.message?.includes("AUTH_KEY_DUPLICATED")) {
+              console.log(`Session invalid or duplicated (${connErr.message}). Clearing session string.`);
               await Setting.deleteOne({ key: "session_string" });
               if (userClient) {
                 try { await userClient.disconnect(); } catch (e) {}
               }
               userClient = null;
             }
+          } finally {
+            isConnecting = false;
           }
         }
       }
@@ -1410,6 +1427,7 @@ async function startServer() {
       res.json({
         topicCount,
         todayTopicCount,
+        keywordCount,
         autoReply,
         delaySeconds,
         isSystemPaused,
@@ -1630,7 +1648,10 @@ async function startServer() {
 
     console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
 
+    if (isConnecting) return res.status(429).json({ error: "Connection already in progress. Please wait." });
+
     try {
+      isConnecting = true;
       if (userClient) {
         await userClient.disconnect();
       }
@@ -1650,6 +1671,8 @@ async function startServer() {
       console.error("SendCode error:", err);
       await saveLog(err.message, 'error', '/api/auth/send-code', { phone, apiId });
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
+    } finally {
+      isConnecting = false;
     }
   });
 
@@ -1829,6 +1852,10 @@ async function startServer() {
       for (const topic of topics) {
         const topicId = topic.id;
         const topicName = topic.title;
+        const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
+
+        // Log topic to database to ensure it's counted in today's topics if created today
+        await logTopic(topicId, topicName, topicDate);
 
         if (blockedTopicIds.has(topicId)) {
           console.log(`Skipping blocked topic: ${topicId}`);
@@ -2333,7 +2360,9 @@ async function startServer() {
     
     // Connect UserBot in background
     (async () => {
+      if (isConnecting) return;
       try {
+        isConnecting = true;
         let sessionString = (await getSetting("session_string"))?.value;
         
         const apiIdRaw = (await getSetting("api_id"))?.value || "";
@@ -2369,14 +2398,18 @@ async function startServer() {
       } catch (err: any) {
         console.error("Failed to connect UserBot on startup:", err);
         await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
-        if (err.message?.includes("AUTH_KEY_UNREGISTERED") || err.message?.includes("TIMEOUT")) {
-          console.log("Session invalid or timed out on startup. Clearing session string.");
+        if (err.message?.includes("AUTH_KEY_UNREGISTERED") || 
+            err.message?.includes("TIMEOUT") || 
+            err.message?.includes("AUTH_KEY_DUPLICATED")) {
+          console.log(`Session invalid or duplicated (${err.message}) on startup. Clearing session string.`);
           await Setting.deleteOne({ key: "session_string" });
           if (userClient) {
             try { await userClient.disconnect(); } catch (e) {}
           }
           userClient = null;
         }
+      } finally {
+        isConnecting = false;
       }
     })();
   });

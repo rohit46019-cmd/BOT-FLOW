@@ -55,6 +55,7 @@ import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, 
 interface Stats {
   topicCount: number;
   todayTopicCount: number;
+  keywordCount: number;
   autoReply: string;
   delaySeconds: number;
   isSystemPaused: boolean;
@@ -610,9 +611,9 @@ export default function App() {
         
         const options = { body: "Test notification successful!", icon: "/logo.svg" };
         if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.ready.then(reg => reg.showNotification("UserBot Pro", options));
+          navigator.serviceWorker.ready.then(reg => reg.showNotification("Rohit's UserBot Pro", options));
         } else {
-          new Notification("UserBot Pro", options);
+          new Notification("Rohit's UserBot Pro", options);
         }
       } else {
         showNotification('error', 'Permission denied');
@@ -685,13 +686,13 @@ export default function App() {
               // Try Service Worker notification first (required for Android Chrome)
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.ready.then(registration => {
-                  registration.showNotification("UserBot Pro", options);
+                  registration.showNotification("Rohit's UserBot Pro", options);
                 }).catch(() => {
                   // Fallback to constructor
-                  new Notification("UserBot Pro", options);
+                  new Notification("Rohit's UserBot Pro", options);
                 });
               } else {
-                new Notification("UserBot Pro", options);
+                new Notification("Rohit's UserBot Pro", options);
               }
             } catch (e) {
               console.error("Notification creation failed", e);
@@ -699,7 +700,7 @@ export default function App() {
               try {
                 if (Notification.permission === "granted") {
                    // Some environments might allow this if the constructor failed
-                   navigator.serviceWorker?.ready?.then(reg => reg.showNotification("UserBot Pro", options));
+                   navigator.serviceWorker?.ready?.then(reg => reg.showNotification("Rohit's UserBot Pro", options));
                 }
               } catch (innerErr) {
                 console.error("Final notification fallback failed", innerErr);
@@ -959,6 +960,7 @@ export default function App() {
         setSelectedScannedItems(new Set((data.items || []).map((i: any) => i._id)));
         setShowScanModal(true);
         fetchMissedCount();
+        fetchStats();
         if (data.count > 0) {
           showNotification('success', `Found ${data.count} new missed keywords`);
         } else {
@@ -1696,7 +1698,7 @@ export default function App() {
           transition={{ delay: 0.3, duration: 0.5 }}
           className="mt-6 text-center"
         >
-          <h1 className={`font-black text-3xl tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>UserBot</h1>
+          <h1 className={`font-black text-3xl tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>ROHIT'S USERBOT</h1>
           <p className="text-emerald-500 font-bold uppercase tracking-widest text-xs mt-1">Management</p>
         </motion.div>
       </motion.div>
@@ -1733,7 +1735,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex flex-col">
-            <h1 className={`font-black text-xl tracking-tight leading-none transition-colors duration-500 gradient-text`}>UserBot</h1>
+            <h1 className={`font-black text-xl tracking-tight leading-none transition-colors duration-500 gradient-text`}>ROHIT'S USERBOT</h1>
             <span className="text-[9px] font-black text-emerald-500 tracking-widest uppercase block">Management</span>
           </div>
         </div>
@@ -1890,13 +1892,13 @@ export default function App() {
                     <div className={`absolute inset-0 pattern-dots opacity-[0.07] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
                     <div className="relative z-10 pointer-events-auto">
                       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/20 text-emerald-600'}`}>
-                        <BarChart3 size={24} />
+                        <Key size={24} />
                       </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-300/60' : 'text-emerald-600/60'}`}>Total Topics</p>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-300/60' : 'text-emerald-600/60'}`}>Active Keywords</p>
                       {loading ? (
                         <Skeleton className="h-8 w-16" />
                       ) : (
-                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-emerald-900'}`}>{stats?.topicCount || 0}</h3>
+                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-emerald-900'}`}>{stats?.keywordCount || 0}</h3>
                       )}
                     </div>
                   </motion.div>
@@ -1913,11 +1915,13 @@ export default function App() {
                       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-500/20 text-blue-600'}`}>
                         <LayoutDashboard size={24} />
                       </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-300/60' : 'text-blue-600/60'}`}>Today</p>
+                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-300/60' : 'text-blue-600/60'}`}>Today / Total Topics</p>
                       {loading ? (
-                        <Skeleton className="h-8 w-16" />
+                        <Skeleton className="h-8 w-24" />
                       ) : (
-                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-blue-900'}`}>{stats?.todayTopicCount || 0}</h3>
+                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-blue-900'}`}>
+                          {stats?.todayTopicCount || 0} <span className="text-sm font-medium opacity-40 ml-1">/ {stats?.topicCount || 0}</span>
+                        </h3>
                       )}
                     </div>
                   </motion.div>
@@ -3892,6 +3896,11 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <footer className={`py-8 text-center border-t transition-colors duration-500 ${darkMode ? 'border-slate-800/50 text-slate-500' : 'border-slate-200/50 text-slate-400'}`}>
+        <p className="text-xs font-bold tracking-[0.2em] uppercase">Created by Rohit</p>
+        <p className="text-[10px] mt-2 opacity-50">© 2026 ROHIT'S USERBOT PRO • All Rights Reserved</p>
+      </footer>
     </motion.div>
   );
 }
