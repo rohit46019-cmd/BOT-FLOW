@@ -339,6 +339,29 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
 // SSE Clients
 let sseClients: any[] = [];
 
+async function broadcastLogout(reason: string) {
+  const logoutTime = new Date().toISOString();
+  await setSetting("last_logout_time", logoutTime);
+  await setSetting("last_logout_reason", reason);
+  
+  const payload = JSON.stringify({
+    type: "USERBOT_LOGOUT",
+    reason,
+    time: logoutTime
+  });
+  
+  sseClients.forEach(client => {
+    try {
+      client.res.write(`data: ${payload}\n\n`);
+    } catch (e) {
+      console.error("Failed to send SSE logout notification", e);
+    }
+  });
+  
+  await saveLog(`UserBot logged out. Reason: ${reason}`, 'warn', 'USERBOT');
+  await sendPushNotification("UserBot Logged Out", `Reason: ${reason}`);
+}
+
 // Helper to send push notifications to all subscribers
 async function sendPushNotification(title: string, body: string, data: any = {}) {
   try {
@@ -357,12 +380,12 @@ async function sendPushNotification(title: string, body: string, data: any = {})
       };
       
       return webpush.sendNotification(subscription, payload).catch(async (err) => {
-        if (err.statusCode === 404 || err.statusCode === 410) {
-          // Subscription expired or no longer valid
+        if (err.statusCode === 404 || err.statusCode === 410 || err.statusCode === 403) {
+          // Subscription expired, no longer valid, or VAPID key mismatch
           await PushSubscription.deleteOne({ endpoint: sub.endpoint });
-          console.log(`Deleted expired push subscription: ${sub.endpoint}`);
+          console.log(`Deleted invalid push subscription (${err.statusCode}): ${sub.endpoint}`);
         } else {
-          console.error(`Error sending push notification to ${sub.endpoint}:`, err.message);
+          console.error(`Error sending push notification to ${sub.endpoint}:`, err.message, "Status:", err.statusCode);
         }
       });
     });
@@ -1272,6 +1295,45 @@ async function startServer() {
     res.json({ publicKey: vapidPublicKey });
   });
 
+  app.post("/api/push/test", async (req, res) => {
+    try {
+      const subscriptions = await PushSubscription.find({});
+      if (subscriptions.length === 0) {
+        return res.status(400).json({ success: false, error: "No push subscriptions found. Please enable notifications in your browser." });
+      }
+
+      const payload = JSON.stringify({
+        title: "Test Notification",
+        body: "This is a test notification from your UserBot App!",
+        icon: "https://picsum.photos/seed/bot/128/128",
+        data: { url: "/" }
+      });
+
+      const results = await Promise.all(subscriptions.map(sub => {
+        const pushSub = {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.keys?.p256dh || '',
+            auth: sub.keys?.auth || ''
+          }
+        };
+        return webpush.sendNotification(pushSub as any, payload).catch(async (err) => {
+          if (err.statusCode === 404 || err.statusCode === 410 || err.statusCode === 403) {
+            console.log(`Deleting invalid push subscription (${err.statusCode}): ${sub.endpoint}`);
+            await PushSubscription.deleteOne({ endpoint: sub.endpoint });
+          } else {
+            console.error(`Push error for ${sub.endpoint}:`, err.message, "Status:", err.statusCode);
+          }
+          return null;
+        });
+      }));
+
+      res.json({ status: 'success', sentTo: results.filter(r => r !== null).length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/push/subscribe", async (req, res) => {
     try {
       const subscription = req.body;
@@ -1378,8 +1440,9 @@ async function startServer() {
               }
             }
             userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-              connectionRetries: 5,
-              requestRetries: 5,
+              connectionRetries: 10,
+              requestRetries: 10,
+              useWSS: true,
               deviceModel: "Desktop",
               systemVersion: "Windows 10",
               appVersion: "1.0.0",
@@ -1404,15 +1467,30 @@ async function startServer() {
             }
           } catch (connErr: any) {
             console.error("Auto-reconnect failed:", connErr.message);
-            if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || 
-                connErr.message?.includes("TIMEOUT") || 
-                connErr.message?.includes("AUTH_KEY_DUPLICATED")) {
-              console.log(`Session invalid or duplicated (${connErr.message}). Clearing session string.`);
-              await Setting.deleteOne({ key: "session_string" });
+            
+            const isSessionRevoked = connErr.message?.includes("AUTH_KEY_UNREGISTERED");
+            const isTimeout = connErr.message?.includes("TIMEOUT");
+            const isDuplicate = connErr.message?.includes("AUTH_KEY_DUPLICATED");
+
+            if (isSessionRevoked || isTimeout || isDuplicate) {
+              const reason = isSessionRevoked ? "Session Revoked" : 
+                             isTimeout ? "Connection Timeout" : "Duplicate Session";
+              
+              console.log(`UserBot connection issue: ${reason} (${connErr.message})`);
+              
+              // ONLY delete session string if it's explicitly revoked by Telegram
+              if (isSessionRevoked) {
+                console.log("Session explicitly revoked. Clearing session string.");
+                await Setting.deleteOne({ key: "session_string" });
+              }
+              
               if (userClient) {
                 try { await userClient.disconnect(); } catch (e) {}
               }
               userClient = null;
+              
+              // Broadcast logout to all clients
+              await broadcastLogout(reason);
             }
           } finally {
             isConnecting = false;
@@ -1423,6 +1501,8 @@ async function startServer() {
       const apiId = (await getSetting("api_id"))?.value || "";
       const apiHash = (await getSetting("api_hash"))?.value || "";
       const defaultPhone = (await getSetting("default_phone"))?.value || "";
+      const lastLogoutTime = (await getSetting("last_logout_time"))?.value || "";
+      const lastLogoutReason = (await getSetting("last_logout_reason"))?.value || "";
 
       res.json({
         topicCount,
@@ -1451,6 +1531,8 @@ async function startServer() {
         apiId,
         apiHash,
         defaultPhone,
+        lastLogoutTime,
+        lastLogoutReason
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
@@ -1656,7 +1738,9 @@ async function startServer() {
         await userClient.disconnect();
       }
       userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
-        connectionRetries: 5,
+        connectionRetries: 10,
+        requestRetries: 10,
+        useWSS: true,
         deviceModel: "Desktop",
         systemVersion: "Windows 10",
         appVersion: "1.0.0",

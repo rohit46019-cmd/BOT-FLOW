@@ -77,6 +77,8 @@ interface Stats {
   aiPersona: string;
   geminiApiKeys: string; // JSON string
   replyInGeneral: boolean;
+  lastLogoutTime?: string;
+  lastLogoutReason?: string;
 }
 
 interface AutoBlockKeyword {
@@ -275,6 +277,7 @@ export default function App() {
 
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
+  const [logoutElapsedTime, setLogoutElapsedTime] = useState<number>(0);
 
   useEffect(() => {
     const savedStartTime = localStorage.getItem("sessionStartTime");
@@ -295,6 +298,27 @@ export default function App() {
     return () => clearInterval(interval);
   }, [sessionStartTime]);
 
+  useEffect(() => {
+    if (stats?.isUserBotConnected || !stats?.lastLogoutTime) {
+      setLogoutElapsedTime(0);
+      return;
+    }
+    
+    const logoutDate = new Date(stats.lastLogoutTime);
+    const update = () => {
+      const diff = Date.now() - logoutDate.getTime();
+      if (isNaN(diff) || diff < 0) {
+        setLogoutElapsedTime(0);
+      } else {
+        setLogoutElapsedTime(Math.floor(diff / 1000));
+      }
+    };
+    
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [stats?.isUserBotConnected, stats?.lastLogoutTime]);
+
   const formatTime = (seconds: number) => {
     const d = Math.floor(seconds / 86400);
     const h = Math.floor((seconds % 86400) / 3600);
@@ -307,6 +331,7 @@ export default function App() {
   };
 
   const timer = formatTime(elapsedTime);
+  const logoutTimer = formatTime(logoutElapsedTime);
 
   const scrollToKeywordsTop = () => {
     keywordsTopRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -563,6 +588,13 @@ export default function App() {
       try {
         const registration = await navigator.serviceWorker.ready;
         
+        // Unsubscribe from any existing subscription to ensure we use the latest VAPID keys
+        const existingSub = await registration.pushManager.getSubscription();
+        if (existingSub) {
+          await existingSub.unsubscribe();
+          console.log('Unsubscribed from existing push subscription');
+        }
+
         // Get VAPID public key from server
         const response = await fetch('/api/push/vapid-public-key');
         const { publicKey } = await response.json();
@@ -705,6 +737,46 @@ export default function App() {
               } catch (innerErr) {
                 console.error("Final notification fallback failed", innerErr);
               }
+            }
+          }
+        } else if (parsed.type === 'USERBOT_LOGOUT') {
+          const reason = parsed.reason;
+          const time = parsed.time;
+          
+          // Update stats locally to reflect disconnection
+          setStats(prev => prev ? { 
+            ...prev, 
+            isUserBotConnected: false,
+            lastLogoutTime: time,
+            lastLogoutReason: reason
+          } : null);
+          
+          // Show in-app notification
+          showNotification('error', `UserBot Logged Out: ${reason}`);
+          
+          // Play sound if enabled
+          if (notificationSoundEnabled) {
+            playNotificationSound();
+          }
+          
+          // Show system notification
+          if ("Notification" in window && Notification.permission === "granted") {
+            const options = {
+              body: `UserBot Logged Out: ${reason} at ${new Date(time).toLocaleTimeString()}`,
+              icon: "/logo.svg",
+              silent: false,
+              requireInteraction: true,
+              tag: 'userbot-logout'
+            };
+            
+            try {
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(reg => reg.showNotification("UserBot Logout", options));
+              } else {
+                new Notification("UserBot Logout", options);
+              }
+            } catch (e) {
+              console.error("Logout notification failed", e);
             }
           }
         } else if (parsed.type === 'topic_blocked') {
@@ -1167,6 +1239,20 @@ export default function App() {
     } catch (err) {
       setPhotoReplyMessage2Enabled(!newState);
       showNotification('error', 'Failed to update setting');
+    }
+  };
+
+  const handleTestPush = async () => {
+    try {
+      const res = await fetch('/api/push/test', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'success') {
+        showNotification('success', 'Test notification sent! Check your device notifications.');
+      } else {
+        showNotification('error', 'Failed to send test notification');
+      }
+    } catch (err) {
+      showNotification('error', 'Error testing notifications');
     }
   };
 
@@ -1881,6 +1967,29 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
+              {!stats?.isUserBotConnected && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  whileHover={{ y: -4 }}
+                  onClick={() => setActiveTab('user')}
+                  className={`p-5 rounded-[2.5rem] border flex items-center justify-between cursor-pointer transition-all duration-500 glow-rose ${darkMode ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' : 'bg-rose-50 border-rose-200 text-rose-600 shadow-xl shadow-rose-500/10'}`}
+                >
+                  <div className="flex items-center space-x-4">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-500/10 text-rose-600'}`}>
+                      <ShieldAlert size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black uppercase tracking-widest">UserBot Disconnected</h3>
+                      <p className="text-[10px] font-bold opacity-60">Bot has been offline for {logoutTimer.days > 0 && `${logoutTimer.days}d `}{logoutTimer.time}</p>
+                    </div>
+                  </div>
+                  <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${darkMode ? 'border-rose-500/30 bg-rose-500/10' : 'border-rose-200 bg-white'}`}>
+                    Fix Now
+                  </div>
+                </motion.div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                   <motion.div 
                     whileHover={{ y: -8, scale: 1.02 }}
@@ -2187,6 +2296,57 @@ export default function App() {
                       </motion.div>
                     )}
                   </AnimatePresence>
+                </div>
+
+                <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-indigo-500/10 text-indigo-400' : 'bg-indigo-500/5 text-indigo-600'}`}>
+                        <Bell size={14} />
+                      </div>
+                      <h3 className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Notification Settings</h3>
+                    </div>
+                    <button 
+                      onClick={handleToggleNotificationSound}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${notificationSoundEnabled ? 'bg-indigo-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notificationSoundEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex flex-col space-y-3">
+                      <button
+                        onClick={handleTestPush}
+                        className={`w-full py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100'}`}
+                      >
+                        <Bell size={14} />
+                        <span>Test Background Notification</span>
+                      </button>
+                      <button
+                        onClick={subscribeToPush}
+                        className={`w-full py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-slate-500/10 border-slate-500/20 text-slate-400 hover:bg-slate-500/20' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                      >
+                        <RefreshCw size={14} />
+                        <span>Re-subscribe to Notifications</span>
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Sound Type</label>
+                      <select
+                        value={notificationSoundType}
+                        onChange={(e) => handleUpdateNotificationSoundType(e.target.value)}
+                        className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition-all ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white' : 'bg-indigo-50 border-indigo-200 text-slate-900'}`}
+                      >
+                        <option value="default">Default Alert</option>
+                        <option value="modern">Modern Ping</option>
+                        <option value="success">Success Chime</option>
+                        <option value="error">Error Alert</option>
+                        <option value="none">No Sound</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-neutral-800">
@@ -3093,6 +3253,41 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="space-y-6">
+                    {stats?.lastLogoutTime && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className={`p-5 rounded-3xl border ${darkMode ? 'bg-rose-500/10 border-rose-500/20' : 'bg-rose-50 border-rose-100'}`}
+                      >
+                        <div className="flex items-center space-x-3 mb-3">
+                          <div className={`p-2 rounded-xl ${darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-500/10 text-rose-600'}`}>
+                            <AlertCircle size={18} />
+                          </div>
+                          <div>
+                            <h4 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-rose-400' : 'text-rose-600'}`}>Last Logout</h4>
+                            <p className={`text-[10px] font-bold ${darkMode ? 'text-rose-300/60' : 'text-rose-600/60'}`}>{stats.lastLogoutReason || 'Unknown Reason'}</p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className={`text-[9px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Time Since Logout</p>
+                            <div className="flex items-center space-x-2">
+                              <span className={`text-2xl font-black ${darkMode ? 'text-rose-400' : 'text-rose-600'}`}>
+                                {logoutTimer.days > 0 && `${logoutTimer.days}d `}{logoutTimer.time}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className={`text-[9px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Logged Out At</p>
+                            <p className={`text-xs font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                              {new Date(stats.lastLogoutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+
                     {authStep === 'credentials' && (
                       <div className="space-y-5">
                         <div className="space-y-2">
