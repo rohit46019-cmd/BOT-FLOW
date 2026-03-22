@@ -148,6 +148,24 @@ const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSche
 
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function formatIST(date: Date): string {
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(date.getTime() + istOffset);
+  
+  let hours = istDate.getUTCHours();
+  const minutes = istDate.getUTCMinutes();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12; // the hour '0' should be '12'
+  const strMinutes = minutes < 10 ? '0' + minutes : minutes;
+  
+  const day = istDate.getUTCDate();
+  const month = istDate.getUTCMonth() + 1;
+  const year = istDate.getUTCFullYear();
+  
+  return `${day}/${month}/${year} ${hours}:${strMinutes} ${ampm} (IST)`;
+}
 const getSetting = async (key: string) => await Setting.findOne({ key });
 const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
 const getTopicCount = async () => await Topic.countDocuments();
@@ -338,16 +356,33 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
 
 // SSE Clients
 let sseClients: any[] = [];
+let bot: TelegramBot;
+const groupId = "-1003672030592"; // Strictly enforced Group ID
 
 async function broadcastLogout(reason: string) {
-  const logoutTime = new Date().toISOString();
-  await setSetting("last_logout_time", logoutTime);
+  console.log(`Broadcasting logout. Reason: ${reason}`);
+  const now = new Date();
+  const istTime = formatIST(now);
+  const isoTime = now.toISOString();
+  
+  // Avoid spamming the same logout reason to Telegram if it's already set
+  const lastReason = (await getSetting("last_logout_reason"))?.value;
+  const lastTime = (await getSetting("last_logout_time_iso"))?.value;
+  const nowTime = now.getTime();
+  const lastTimeMs = lastTime ? new Date(lastTime).getTime() : 0;
+  
+  // Only send Telegram notification if reason changed OR it's been more than 10 minutes
+  const shouldSendTelegram = bot && (lastReason !== reason || (nowTime - lastTimeMs > 600000));
+  
+  await setSetting("last_logout_time", istTime);
+  await setSetting("last_logout_time_iso", isoTime);
   await setSetting("last_logout_reason", reason);
   
   const payload = JSON.stringify({
     type: "USERBOT_LOGOUT",
     reason,
-    time: logoutTime
+    time: istTime,
+    timeISO: isoTime
   });
   
   sseClients.forEach(client => {
@@ -357,6 +392,19 @@ async function broadcastLogout(reason: string) {
       console.error("Failed to send SSE logout notification", e);
     }
   });
+  
+  // Send Telegram notification
+  if (shouldSendTelegram) {
+    try {
+      console.log(`Sending Telegram logout notification to ${groupId}...`);
+      await bot.sendMessage(groupId, `⚠️ *UserBot Logged Out*\n\n*Reason:* ${reason}\n*Time:* ${istTime}`, { parse_mode: 'Markdown' });
+      console.log("Telegram logout notification sent successfully.");
+    } catch (e) {
+      console.error("Failed to send Telegram logout notification", e);
+    }
+  } else if (!bot) {
+    console.warn("Telegram bot not initialized. Cannot send logout notification.");
+  }
   
   await saveLog(`UserBot logged out. Reason: ${reason}`, 'warn', 'USERBOT');
   await sendPushNotification("UserBot Logged Out", `Reason: ${reason}`);
@@ -499,6 +547,41 @@ async function initSettings() {
 
 let userClient: TelegramClient | null = null;
 let isConnecting = false;
+let isDuplicateSession = false;
+let lastReconnectAttempt = 0;
+const RECONNECT_COOLDOWN = 30000; // 30 seconds cooldown between auto-reconnect attempts
+let lastAuthCheck = 0;
+
+async function generateAIReply(prompt: string, context: string = "", apiKey?: string): Promise<string> {
+  const geminiApiKey = apiKey || process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) {
+    throw new Error("No Gemini API key found.");
+  }
+
+  const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+  const genAI = new GoogleGenAI({ apiKey: geminiApiKey });
+  
+  try {
+    const response = await genAI.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        { role: "user", parts: [{ text: `Context: ${context}\n\nUser Message: ${prompt}` }] }
+      ],
+      config: {
+        systemInstruction: aiPersona,
+        temperature: 0.7,
+        maxOutputTokens: 500,
+      }
+    });
+
+    return response.text?.trim() || "NO_REPLY";
+  } catch (err: any) {
+    console.error("AI Generation Error:", err.message);
+    throw err;
+  }
+}
+
+let cachedAuthStatus = false;
 let cancelCatchupFlag = false;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
@@ -513,41 +596,135 @@ async function refreshKeywordCache() {
   }
 }
 
-async function startServer() {
-  const app = express();
-  app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  const PORT = 3000;
+async function ensureUserBotConnected(source: string = "SYSTEM") {
+  if (isConnecting) return;
+  
+  const now = Date.now();
+  if (now - lastReconnectAttempt < RECONNECT_COOLDOWN) return;
 
-  // Connect to MongoDB
-  mongoose.connect(MONGODB_URI)
-    .then(async () => {
-      console.log("Connected to MongoDB");
-      await initSettings();
-      await setupVapid();
-    })
-    .catch((err) => {
-      console.error("MongoDB connection error:", err);
-    });
+  // Set flag immediately to prevent race conditions
+  isConnecting = true;
+  lastReconnectAttempt = now;
 
-  // Health check endpoint
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  try {
+    const sessionString = (await getSetting("session_string"))?.value;
+    const apiIdRaw = (await getSetting("api_id"))?.value || "";
+    const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+    const apiId = parseInt(apiIdRaw.trim(), 10);
 
-  const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
-  const groupId = "-1003672030592"; // Strictly enforced Group ID
-
-  const bot = new TelegramBot(token, { polling: true });
-
-  // Handle polling errors to prevent crash and clean up logs
-  bot.on("polling_error", (error: any) => {
-    if (error.message && error.message.includes("409 Conflict")) {
-      // This is expected during rapid restarts in this environment
+    if (!sessionString || isNaN(apiId) || apiId <= 0 || !apiHash) {
+      if (userClient && userClient.connected) {
+        console.log(`[${source}] No session credentials found. Disconnecting UserBot.`);
+        try { await userClient.disconnect(); } catch (e) {}
+        userClient = null;
+      }
+      isConnecting = false;
       return;
     }
-    console.error("Telegram Bot Polling Error:", error);
-  });
 
-  async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
+    if (!userClient || !userClient.connected) {
+      console.log(`[${source}] UserBot not connected. Attempting reconnection...`);
+      
+      if (userClient) {
+        try { 
+          await userClient.disconnect(); 
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } catch (e) {}
+      }
+
+      userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+        connectionRetries: 10,
+        requestRetries: 10,
+        useWSS: true,
+        deviceModel: "Desktop",
+        systemVersion: "Windows 10",
+        appVersion: "1.0.0",
+      });
+
+      await userClient.connect();
+      
+      const newSessionString = (userClient.session as StringSession).save();
+      if (newSessionString && newSessionString !== sessionString) {
+        await setSetting("session_string", newSessionString);
+      }
+
+      if (await userClient.isUserAuthorized()) {
+        console.log(`[${source}] UserBot reconnected successfully.`);
+        isDuplicateSession = false;
+        setupUserBotHandlers(userClient, groupId);
+        
+        (userClient as any).on("disconnected", async () => {
+          console.log("UserBot event: Disconnected.");
+          if (userClient) {
+            // Only broadcast if we're not already trying to reconnect
+            if (!isConnecting) {
+              await broadcastLogout("Unexpected Disconnect (Event)");
+            }
+            userClient = null;
+          }
+        });
+
+        // Set session start time if missing
+        const startTime = (await getSetting("session_start_time"))?.value;
+        if (!startTime) {
+          await setSetting("session_start_time", Date.now().toString());
+        }
+        
+        await saveLog(`UserBot reconnected successfully (${source})`, "info", source);
+      } else {
+        console.log(`[${source}] Reconnected but session is invalid.`);
+        await broadcastLogout("Session Invalid on Reconnect");
+        await userClient.disconnect();
+        userClient = null;
+      }
+    } else {
+      // Already connected, check authorization periodically
+      if (now - lastAuthCheck > 60000) {
+        try {
+          const authorized = await userClient.isUserAuthorized();
+          lastAuthCheck = now;
+          if (!authorized) {
+            console.log(`[${source}] UserBot unauthorized. Broadcasting logout.`);
+            await broadcastLogout("Session Expired (Background Check)");
+            try { await userClient.disconnect(); } catch (e) {}
+            userClient = null;
+          }
+        } catch (err: any) {
+          console.error(`[${source}] Authorization check failed:`, err.message);
+          if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
+            await broadcastLogout("Session Revoked (Background Check)");
+            await Setting.deleteOne({ key: "session_string" });
+            try { await userClient.disconnect(); } catch (e) {}
+            userClient = null;
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error(`[${source}] Reconnection failed:`, err.message);
+    
+    const isSessionRevoked = err.message?.includes("AUTH_KEY_UNREGISTERED");
+    const isDuplicate = err.message?.includes("AUTH_KEY_DUPLICATED");
+    const isTimeout = err.message?.includes("TIMEOUT");
+
+    if (isSessionRevoked) {
+      await broadcastLogout("Session Revoked");
+      await Setting.deleteOne({ key: "session_string" });
+      userClient = null;
+    } else if (isDuplicate) {
+      // Duplicate session - don't clear session, just log and notify
+      isDuplicateSession = true;
+      console.log("Duplicate session detected. Bot will retry later.");
+      await broadcastLogout("Duplicate Session (Retrying later)");
+    } else if (isTimeout) {
+      console.log("Connection timeout. Bot will retry later.");
+    }
+  } finally {
+    isConnecting = false;
+  }
+}
+
+async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
     if (!topicId) return "";
     try {
       const historyMessages = await client.getMessages(peerId, {
@@ -716,453 +893,158 @@ async function startServer() {
           // Pass true to bypass keyword check for photos
           const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, renameKeywordsStr, renameMatchMode, true);
           
-          // Notify frontend
-          sendSseEvent('photo_received', {
-            message: `${topicName} sent a photo`,
-            topicName: topicName,
-            timestamp: new Date()
-          });
-
           if (photoReplyEnabledSetting) {
             const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
-
-            // Check photo reply history for this topic
-            let history = await PhotoReplyHistory.findOne({ topic_id: topicId });
-            if (history && history.count >= photoReplyMax) {
-              console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
-            } else {
+            
+            // Check history
+            const photoHistory = await PhotoReplyHistory.findOne({ topic_id: topicId });
+            if (!photoHistory || photoHistory.count < photoReplyMax) {
               const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
-              const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
-              const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
-              console.log(`Photo detected. Sending auto-reply: "${photoReplyMessage}"`);
+              
+              // Small delay to feel more natural
+              await new Promise(resolve => setTimeout(resolve, 2000));
               
               await client.sendMessage(message.peerId, {
                 message: photoReplyMessage,
                 replyTo: replyTo,
               });
 
-              if (photoReplyMessage2Enabled && photoReplyMessage2) {
-                console.log(`Sending second photo auto-reply: "${photoReplyMessage2}"`);
+              // Send second message if enabled
+              const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
+              if (photoReplyMessage2Enabled) {
+                const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
+                // Small delay between messages
+                await new Promise(resolve => setTimeout(resolve, 2000));
                 await client.sendMessage(message.peerId, {
                   message: photoReplyMessage2,
                   replyTo: replyTo,
                 });
               }
 
-              // Update history
-              if (!history) {
-                await PhotoReplyHistory.create({ topic_id: topicId, count: 1 });
+              if (photoHistory) {
+                photoHistory.count += 1;
+                await photoHistory.save();
               } else {
-                history.count += 1;
-                history.last_updated = new Date();
-                await history.save();
+                await PhotoReplyHistory.create({ topic_id: topicId, count: 1 });
               }
               
-              await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT');
+              await saveLog(`Photo Auto-Reply in topic ${topicId}`, 'info', 'USERBOT');
+              
+              // Notify frontend
+              sendSseEvent('photo_received', {
+                message: `New photo in topic ${topicName || topicId}`,
+                topicName: topicName || topicId,
+                timestamp: new Date()
+              });
             }
           }
-        } catch (err: any) {
-          console.error("Failed to process photo message:", err);
-          await saveLog(`Failed to process photo message: ${err.message}`, 'error', 'USERBOT');
+        } catch (photoErr) {
+          console.error("Error in photo handler:", photoErr);
+        }
+        return; // Stop processing photo as keyword
+      }
+
+      if (message.out || !message.message) return;
+
+      const text = message.message.toLowerCase();
+
+      // 1. Handle Topic Renaming via Keywords
+      const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+      const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
+      const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+      
+      const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, renameKeywordsStr, renameMatchMode);
+
+      // 2. Handle Keyword Reset
+      if (autoResetEnabled) {
+        const resetKeywords = ["reset", "restart", "clear"].map(k => k.trim().toLowerCase());
+        if (resetKeywords.includes(text)) {
+          await ReplyHistory.deleteMany({ topic_id: topicId });
+          console.log(`Reply history reset for topic ${topicId}`);
+          await saveLog(`Reply history reset for topic ${topicId}`, 'info', 'USERBOT');
+          await client.sendMessage(message.peerId, {
+            message: "✅ Reply history has been reset for this topic.",
+            replyTo: replyTo,
+          });
+          return;
         }
       }
 
-      // 1. Topic Creation Handler
-      if (message.action instanceof Api.MessageActionTopicCreate) {
-        const topicName = message.action.title;
-        const topicId = message.id;
-        await logTopic(topicId, topicName);
-        
-        const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
-        const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
-        
-        setTimeout(async () => {
-          try {
-            const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
-            await client.sendMessage(message.peerId, {
-              message: autoReply,
-              replyTo: replyInGeneral ? undefined : topicId,
-            });
-          } catch (err) {
-            console.error("UserBot failed to send auto-reply:", err);
-          }
-        }, delaySeconds * 1000);
-      }
-
-      // 2. Keyword Handler
-      let keywordMatched = false;
-      if (message.message && !message.out) {
-        const text = message.message.toLowerCase().trim();
-        const matches: { kw: any, index: number, matchedWord: string }[] = [];
-        
-        console.log(`Checking keywords for: "${text}"`);
-        
-        for (const kw of cachedKeywords) {
-          // Collect all trigger words for this rule (legacy + new array)
-          const triggerWords = [...(kw.keywords || [])];
-          if (kw.keyword && !triggerWords.includes(kw.keyword)) {
-            triggerWords.push(kw.keyword);
-          }
-
-          // Check each trigger word
-          for (const word of triggerWords) {
-            const wordLower = word.toLowerCase().trim();
-            if (!wordLower) continue;
-
-            const escapedWord = escapeRegExp(wordLower);
-            let regex: RegExp;
-            
-            if (kw.match_mode === 'partial') {
-              regex = new RegExp(escapedWord, 'gi');
-            } else {
-              // Unicode-friendly boundary check: matches if surrounded by non-letters/numbers or at start/end
-              regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
-            }
-            
-            let match;
-            let found = false;
-
-            // Regex match
-            while ((match = regex.exec(text)) !== null) {
-              console.log(`Keyword "${wordLower}" matched via regex (${kw.match_mode || 'exact'}) at index ${match.index}`);
-              matches.push({ kw, index: match.index, matchedWord: wordLower });
-              found = true;
-              break; // Only match this specific word once per message
-            }
-          }
+      // 3. Handle Auto-Replies
+      const matchingKeywords = cachedKeywords.filter(kw => {
+        const keywords = kw.keywords || [kw.keyword];
+        if (kw.match_mode === "exact") {
+          return keywords.some(k => k.toLowerCase() === text);
+        } else {
+          return keywords.some(k => text.includes(k.toLowerCase()));
         }
+      });
 
-        // Sort matches by their appearance in the message
-        matches.sort((a, b) => a.index - b.index);
+      if (matchingKeywords.length > 0) {
+        const match = matchingKeywords[0];
+        
+        // Check history
+        const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: match._id });
+        if (!history || history.count < match.reply_limit) {
+          const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+          if (delaySeconds > 0) {
+            await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+          }
 
-        if (matches.length > 0) {
-          keywordMatched = true;
-          console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
-          const processedRuleIds = new Set<string>();
-
-          for (const match of matches) {
-            const kw = match.kw;
-            
-            if (processedRuleIds.has(kw._id.toString())) {
-              console.log(`Skipping duplicate match for rule ${kw._id} (word: ${match.matchedWord})`);
-              continue;
-            }
-            processedRuleIds.add(kw._id.toString());
-            
-            console.log(`DEBUG: Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
-            
-            // Normalize links
-            const linksToProcess = [...(kw.message_links || [])];
-            if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
-              linksToProcess.push(kw.message_link);
-            }
-            const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
-
-            try {
-              const replyToMsgId = message.id;
-              let replySent = false;
-              
-              console.log(`DEBUG: Attempting to send reply for keyword: ${match.matchedWord}. replyInGeneral: ${replyInGeneral}, topicId: ${topicId}, replyTo: ${replyTo}`);
-
-              // If system is paused, save as missed trigger and skip reply
-              if (isSystemPaused) {
-                await MissedTrigger.create({
-                  message_id: message.id,
-                  chat_id: chatId,
-                  topic_id: topicId,
-                  text: message.message,
-                  matched_keyword: match.matchedWord,
-                  rule_id: kw._id
-                });
-                console.log(`Saved missed trigger for keyword "${match.matchedWord}" while paused.`);
-                continue;
-              }
-
-              // Rate limiting check: Max replies per keyword rule per topic
-              if (topicId) {
-                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
-                const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
-                
-                let currentCount = 0;
-                if (history) {
-                  const lastUpdated = new Date(history.last_updated);
-                  const today = new Date();
-                  
-                  // Check if same day in IST (Indian Standard Time)
-                  const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                  const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                  
-                  if (lastUpdatedIST === todayIST || !autoResetEnabled) {
-                    currentCount = history.count;
-                  } else {
-                    // It's a new day and reset is enabled
-                    currentCount = 0;
-                  }
-                }
-
-                if (maxReplies > 0 && currentCount >= maxReplies) {
-                  console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${currentCount}/${maxReplies}).`);
-                  continue;
-                }
-              }
-
-              // Add a small delay between replies
-              await new Promise(resolve => setTimeout(resolve, 1000));
-
-              // 1. AI Reply (if enabled)
-              if (kw.ai_reply_enabled) {
-                console.log(`Triggering AI reply for keyword: ${match.matchedWord}`);
-                const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
-                
-                // Only proceed if global AI mode is also enabled? 
-                // The user request implies this is a specific override/feature.
-                // Let's assume it works even if global AI mode is disabled, OR we check global mode.
-                // Usually "AI Mode" toggle is a master switch. Let's respect it.
-                if (aiModeEnabled) {
-                   const geminiApiKeysSetting = await getSetting("gemini_api_keys");
-                   let apiKeys: string[] = [];
-                   try {
-                     apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
-                   } catch (e) {}
-                   
-                   const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-                   if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
-                   
-                   if (apiKeys.length > 0) {
-                     const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
-                     const conversationContext = await getRecentConversationContext(client, message.peerId, topicId);
-                     
-                     for (const apiKey of apiKeys) {
-                       try {
-                         const genAI = new GoogleGenAI({ apiKey });
-                         const response = await genAI.models.generateContent({
-                           model: "gemini-3-flash-preview",
-                           contents: [
-                             {
-                               role: "user",
-                               parts: [
-                                 { text: `System Instruction: ${aiPersona}` },
-                                 { text: conversationContext },
-                                 { text: `User Message: "${message.message}"` },
-                                 { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
-                               ]
-                             }
-                           ]
-                         });
-                         
-                         const aiReply = response.text.trim();
-                         if (aiReply && aiReply !== "NO_REPLY") {
-                           console.log(`AI Reply (Keyword Triggered): "${aiReply}"`);
-                           await client.sendMessage(message.peerId, {
-                             message: aiReply,
-                             replyTo: replyTo,
-                           });
-                           await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
-                           replySent = true;
-                           break; // Success
-                         }
-                       } catch (e) {
-                         console.error("AI Keyword Reply failed:", e);
-                       }
-                     }
-                   }
-                }
-              }
-
-              if (kw.photo) {
-                console.log(`Sending photo reply for keyword: ${kw.keyword}`);
-                const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
-                const buffer = Buffer.from(base64Data, "base64");
-                
-                const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
-                const toUpload = await client.uploadFile({
-                  file: fileToUpload,
-                  workers: 1,
-                });
-
-                await client.sendFile(message.peerId, {
-                  file: toUpload,
-                  caption: kw.reply || "",
-                  replyTo: replyTo,
-                  forceDocument: false,
-                });
-                replySent = true;
-              } else if (kw.reply) {
-                console.log(`Sending text reply for keyword: ${kw.keyword}`);
-                await client.sendMessage(message.peerId, {
-                  message: kw.reply,
-                  replyTo: replyTo,
-                });
-                replySent = true;
-              }
-
-              if (linksToProcess.length > 0) {
-                console.log(`Handling ${linksToProcess.length} message links for keyword: ${match.matchedWord}`);
-
-                for (const link of linksToProcess) {
-                  const parts = link.split("/").filter(p => p.length > 0);
-                  const messageId = parseInt(parts[parts.length - 1], 10);
-                  
-                  if (!isNaN(messageId)) {
-                    let fromPeer: any = targetGroupId;
-                    
-                    if (link.includes("/c/")) {
-                      const cIndex = parts.indexOf("c");
-                      if (cIndex !== -1 && parts[cIndex + 1]) {
-                        fromPeer = `-100${parts[cIndex + 1]}`;
-                      }
-                    } else {
-                      const tmeIndex = parts.indexOf("t.me");
-                      if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
-                        fromPeer = parts[tmeIndex + 1];
-                      } else if (parts.length >= 3) {
-                        fromPeer = parts[2];
-                      }
-                    }
-
-                    const topMsgId = topicId;
-                    
-                    try {
-                      let inputPeer;
-                      try {
-                        inputPeer = await client.getInputEntity(fromPeer);
-                      } catch (e: any) {
-                        console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
-                        throw e;
-                      }
-
-                      await client.invoke(
-                        new Api.messages.ForwardMessages({
-                          fromPeer: inputPeer,
-                          id: [messageId],
-                          randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                          toPeer: message.peerId,
-                          topMsgId: replyInGeneral ? undefined : topMsgId,
-                        }) as any
-                      );
-                      console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
-                      replySent = true;
-                    } catch (forwardErr: any) {
-                      console.error("Forwarding failed, trying fallback:", forwardErr.message);
-                      try {
-                        await client.forwardMessages(message.peerId, {
-                          messages: [messageId],
-                          fromPeer: fromPeer,
-                          topMsgId: replyInGeneral ? undefined : topMsgId,
-                        } as any);
-                        replySent = true;
-                      } catch (fallbackErr: any) {
-                         console.error("Fallback forwarding also failed:", fallbackErr.message);
-                      }
-                    }
-                  }
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                }
-              }
-              
-              // Update reply history count and save log asynchronously (fire-and-forget)
-              (async () => {
-                try {
-                  if (topicId) {
-                    const today = new Date();
-                    const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
-                    let isSameDay = false;
-                    
-                    if (history) {
-                      const lastUpdated = new Date(history.last_updated);
-                      const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                      const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                      
-                      if (lastUpdatedIST === todayIST) {
-                        isSameDay = true;
-                      }
-                    }
-
-                    if (history && isSameDay) {
-                       await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
-                    } else {
-                       await ReplyHistory.findOneAndUpdate(
-                          { topic_id: topicId, keyword_id: kw._id },
-                          { count: 1, last_updated: today },
-                          { upsert: true }
-                       );
-                    }
-                  }
-                  
-                  await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
-                } catch (err) {
-                  console.error("Async log/history update failed:", err);
-                }
-              })();
-              
-              // If a reply was sent, we continue to the next keyword match
-              if (replySent) {
-                console.log("Reply sent for keyword. Continuing to next match.");
-              }
-
-              // Add a small delay between replies to avoid spamming/rate limits
-              if (matches.length > 1) {
-                await new Promise(resolve => setTimeout(resolve, 500));
-              }
-            } catch (err: any) {
-              console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
-              await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT');
+          let replyText = match.reply_text;
+          
+          // AI Mode handling
+          const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+          if (aiModeEnabled && match.ai_enabled) {
+            console.log(`AI Mode triggered for topic ${topicId}, keyword: ${match.keyword || match.keywords?.[0]}`);
+            const context = await getRecentConversationContext(client, message.peerId, topicId);
+            const aiReply = await generateAIReply(message.message, context);
+            if (aiReply && aiReply !== "NO_REPLY") {
+              replyText = aiReply;
+            } else if (aiReply === "NO_REPLY") {
+              console.log("AI decided NO_REPLY. Skipping.");
+              return;
             }
           }
-        }
-      }
 
-      // 3. AI Smart Reply (Fallback)
-      if (!keywordMatched && message.message && !message.out) {
+          await client.sendMessage(message.peerId, {
+            message: replyText,
+            replyTo: replyTo,
+          });
+
+          if (history) {
+            history.count += 1;
+            await history.save();
+          } else {
+            await ReplyHistory.create({ topic_id: topicId, keyword_id: match._id, count: 1 });
+          }
+          
+          await saveLog(`Auto-Reply to "${message.message}" in topic ${topicId}`, 'info', 'USERBOT', { keyword: match.keyword || match.keywords?.[0] });
+        }
+      } else {
+        // No keyword match, check if we should still use AI for general conversation
         const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
-        if (aiModeEnabled) {
-          // Fetch keys from settings
-          const geminiApiKeysSetting = await getSetting("gemini_api_keys");
-          let apiKeys: string[] = [];
-          try {
-            apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
-          } catch (e) {
-            console.error("Failed to parse gemini_api_keys setting", e);
-          }
-
-          // Add environment variable key as fallback/primary if not in list
-          const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-          if (envKey && !apiKeys.includes(envKey)) {
-            apiKeys.push(envKey);
-          }
-
-          if (apiKeys.length === 0) {
-            console.warn("AI Mode is enabled but no Gemini API Keys found (neither in settings nor environment).");
+        const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+        
+        if (aiModeEnabled && replyInGeneral) {
+          const geminiApiKeysStr = (await getSetting("gemini_api_keys"))?.value || "[]";
+          const geminiApiKeys = JSON.parse(geminiApiKeysStr);
+          
+          if (geminiApiKeys.length === 0) {
+            console.warn("AI Mode enabled but no Gemini API keys found.");
             return;
           }
 
-          const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
-          const conversationContext = await getRecentConversationContext(client, message.peerId, topicId);
-          
+          // Randomly pick a key or use round-robin (simple random for now)
           let aiReply = null;
           let success = false;
-
-          // Try keys one by one
-          for (const apiKey of apiKeys) {
+          
+          // Try keys until one works
+          const shuffledKeys = [...geminiApiKeys].sort(() => Math.random() - 0.5);
+          for (const apiKey of shuffledKeys) {
             try {
-              console.log(`Attempting AI reply with key ending in ...${apiKey.slice(-4)}`);
-              const genAI = new GoogleGenAI({ apiKey });
-              const response = await genAI.models.generateContent({
-                model: "gemini-3-flash-preview",
-                contents: [
-                  {
-                    role: "user",
-                    parts: [
-                      { text: `System Instruction: ${aiPersona}` },
-                      { text: conversationContext },
-                      { text: `User Message: "${message.message}"` },
-                      { text: `Context: This is a Telegram group chat. Reply naturally considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
-                    ]
-                  }
-                ]
-              });
-              
-              aiReply = response.text.trim();
+              const context = await getRecentConversationContext(client, message.peerId, topicId);
+              aiReply = await generateAIReply(message.message, context, apiKey);
               success = true;
               break; // Success! Stop trying keys.
             } catch (aiErr: any) {
@@ -1229,6 +1111,59 @@ async function startServer() {
       }
     });
   }
+
+async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  const PORT = 3000;
+
+  // Connect to MongoDB
+  mongoose.connect(MONGODB_URI)
+    .then(async () => {
+      console.log("Connected to MongoDB");
+      await initSettings();
+      await setupVapid();
+    })
+    .catch((err) => {
+      console.error("MongoDB connection error:", err);
+    });
+
+  // Health check endpoint
+  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+
+  const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
+
+  bot = new TelegramBot(token, { polling: true });
+
+  // Background Login Status Check & Reconnector (every 1 minute)
+  setInterval(async () => {
+    await ensureUserBotConnected("BACKGROUND_CHECK");
+  }, 60000); // 1 minute
+
+  // Self-ping to keep server alive (every 5 minutes)
+  const APP_URL = process.env.APP_URL || "http://localhost:3000";
+  setInterval(async () => {
+    try {
+      const response = await fetch(`${APP_URL}/api/health`);
+      if (response.ok) {
+        console.log("Self-ping successful: Server is alive.");
+      } else {
+        console.warn(`Self-ping failed with status: ${response.status}`);
+      }
+    } catch (err: any) {
+      console.error("Self-ping error:", err.message);
+    }
+  }, 300000); // 5 minutes
+
+  // Handle polling errors to prevent crash and clean up logs
+  bot.on("polling_error", (error: any) => {
+    if (error.message && error.message.includes("409 Conflict")) {
+      // This is expected during rapid restarts in this environment
+      return;
+    }
+    console.error("Telegram Bot Polling Error:", error);
+  });
 
   // Bot Logic (Logging only, no auto-replies)
   bot.on("message", async (msg) => {
@@ -1371,9 +1306,6 @@ async function startServer() {
     }
   });
 
-  let lastAuthCheck = 0;
-  let cachedAuthStatus = false;
-
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
@@ -1399,109 +1331,19 @@ async function startServer() {
       const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
       const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
       
-      let isUserBotConnected = !!userClient && userClient.connected;
-      
-      // Check if actually authorized, not just connected (with 1-minute cache to avoid rate limits)
-      if (isUserBotConnected && userClient) {
-        const now = Date.now();
-        if (now - lastAuthCheck > 60000) {
-          try {
-            cachedAuthStatus = await userClient.isUserAuthorized();
-            lastAuthCheck = now;
-            if (!cachedAuthStatus) {
-              console.log("UserBot connected but not authorized. Marking as disconnected.");
-              isUserBotConnected = false;
-            }
-          } catch (e) {
-            console.error("Error checking authorization:", e);
-            isUserBotConnected = false;
-          }
-        } else {
-          isUserBotConnected = cachedAuthStatus;
-        }
-      }
-      
       // Auto-reconnect attempt if disconnected but we have a session
-      if (!isUserBotConnected && !isConnecting) {
-        const sessionString = (await getSetting("session_string"))?.value;
-        const apiIdRaw = (await getSetting("api_id"))?.value || "";
-        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-        const apiId = parseInt(apiIdRaw.trim(), 10);
-
-        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-          try {
-            isConnecting = true;
-            console.log("Auto-reconnecting UserBot during stats check...");
-            if (userClient) {
-              try {
-                await userClient.disconnect();
-              } catch (e) {
-                console.error("Error disconnecting existing client:", e);
-              }
-            }
-            userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-              connectionRetries: 10,
-              requestRetries: 10,
-              useWSS: true,
-              deviceModel: "Desktop",
-              systemVersion: "Windows 10",
-              appVersion: "1.0.0",
-            });
-            await userClient.connect();
-            
-            const newSessionString = (userClient.session as StringSession).save();
-            if (newSessionString && newSessionString !== sessionString) {
-              await setSetting("session_string", newSessionString);
-            }
-            
-            // Re-verify authorization after connect
-            const authorized = await userClient.isUserAuthorized();
-            if (authorized) {
-              setupUserBotHandlers(userClient, groupId);
-              isUserBotConnected = true;
-              await saveLog("UserBot auto-reconnected during stats check", "info", "/api/stats");
-            } else {
-              console.log("Auto-reconnect successful but session is unauthorized/expired.");
-              await userClient.disconnect();
-              userClient = null;
-            }
-          } catch (connErr: any) {
-            console.error("Auto-reconnect failed:", connErr.message);
-            
-            const isSessionRevoked = connErr.message?.includes("AUTH_KEY_UNREGISTERED");
-            const isTimeout = connErr.message?.includes("TIMEOUT");
-            const isDuplicate = connErr.message?.includes("AUTH_KEY_DUPLICATED");
-
-            if (isSessionRevoked || isTimeout || isDuplicate) {
-              const reason = isSessionRevoked ? "Session Revoked" : 
-                             isTimeout ? "Connection Timeout" : "Duplicate Session";
-              
-              console.log(`UserBot connection issue: ${reason} (${connErr.message})`);
-              
-              // ONLY delete session string if it's explicitly revoked by Telegram
-              if (isSessionRevoked) {
-                console.log("Session explicitly revoked. Clearing session string.");
-                await Setting.deleteOne({ key: "session_string" });
-              }
-              
-              if (userClient) {
-                try { await userClient.disconnect(); } catch (e) {}
-              }
-              userClient = null;
-              
-              // Broadcast logout to all clients
-              await broadcastLogout(reason);
-            }
-          } finally {
-            isConnecting = false;
-          }
-        }
-      }
+      await ensureUserBotConnected("STATS_CHECK");
+      
+      const isUserBotConnected = !!userClient && userClient.connected;
+      const sessionString = (await getSetting("session_string"))?.value;
+      const hasSession = !!sessionString;
+      const sessionStartTime = (await getSetting("session_start_time"))?.value || "";
 
       const apiId = (await getSetting("api_id"))?.value || "";
       const apiHash = (await getSetting("api_hash"))?.value || "";
       const defaultPhone = (await getSetting("default_phone"))?.value || "";
       const lastLogoutTime = (await getSetting("last_logout_time"))?.value || "";
+      const lastLogoutTimeISO = (await getSetting("last_logout_time_iso"))?.value || "";
       const lastLogoutReason = (await getSetting("last_logout_reason"))?.value || "";
 
       res.json({
@@ -1528,11 +1370,15 @@ async function startServer() {
         geminiApiKeys,
         replyInGeneral,
         isUserBotConnected,
+        hasSession,
+        isDuplicateSession,
         apiId,
         apiHash,
         defaultPhone,
         lastLogoutTime,
-        lastLogoutReason
+        lastLogoutTimeISO,
+        lastLogoutReason,
+        sessionStartTime
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
@@ -1738,14 +1584,17 @@ async function startServer() {
         await userClient.disconnect();
       }
       userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
-        connectionRetries: 10,
-        requestRetries: 10,
+        connectionRetries: 15,
+        requestRetries: 15,
+        timeout: 60, // Increase global timeout to 60s
         useWSS: true,
         deviceModel: "Desktop",
         systemVersion: "Windows 10",
         appVersion: "1.0.0",
       });
+      console.log("Connecting to Telegram...");
       await userClient.connect();
+      console.log("Connected. Sending code...");
       const result = await userClient.sendCode({ apiId, apiHash }, phone);
       phoneCodeHash = result.phoneCodeHash;
       phoneNumber = phone;
@@ -1793,6 +1642,7 @@ async function startServer() {
 
       const sessionString = (userClient.session as StringSession).save();
       await setSetting("session_string", sessionString);
+      await setSetting("session_start_time", Date.now().toString());
       setupUserBotHandlers(userClient, groupId);
       await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', '/api/auth/signin');
       res.json({ success: true });
@@ -1809,6 +1659,7 @@ async function startServer() {
         userClient = null;
       }
       await Setting.deleteOne({ key: "session_string" });
+      await Setting.deleteOne({ key: "session_start_time" });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/auth/logout] ${err.message}` });
@@ -2411,6 +2262,21 @@ async function startServer() {
     }
   });
 
+  // Test Telegram Notification
+  app.post("/api/test-notification", async (req, res) => {
+    try {
+      if (!bot) {
+        return res.status(500).json({ error: "Telegram bot not initialized" });
+      }
+      const testMessage = `🔔 *Test Notification*\n\nThis is a test message to verify that the UserBot notification system is working correctly.\n\n*Time:* ${formatIST(new Date())}`;
+      await bot.sendMessage(groupId, testMessage, { parse_mode: 'Markdown' });
+      res.json({ success: true, message: "Test notification sent to Telegram group." });
+    } catch (err: any) {
+      console.error("Test notification failed:", err);
+      res.status(500).json({ error: `Failed to send test notification: ${err.message}` });
+    }
+  });
+
   // API 404 Handler
   app.use("/api/*", (req, res) => {
     console.log(`API endpoint not found: ${req.originalUrl}`);
@@ -2444,56 +2310,10 @@ async function startServer() {
     
     // Connect UserBot in background
     (async () => {
-      if (isConnecting) return;
       try {
-        isConnecting = true;
-        let sessionString = (await getSetting("session_string"))?.value;
-        
-        const apiIdRaw = (await getSetting("api_id"))?.value || "";
-        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-        const apiId = parseInt(apiIdRaw.trim(), 10);
-
-        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-          console.log("Attempting to connect UserBot...");
-          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-            connectionRetries: 5,
-            requestRetries: 5,
-            deviceModel: "Desktop",
-            systemVersion: "Windows 10",
-            appVersion: "1.0.0",
-          });
-          await userClient.connect();
-          
-          const newSessionString = (userClient.session as StringSession).save();
-          if (newSessionString && newSessionString !== sessionString) {
-            await setSetting("session_string", newSessionString);
-          }
-          
-          if (await userClient.isUserAuthorized()) {
-            console.log("UserBot connected successfully.");
-            setupUserBotHandlers(userClient, groupId);
-            await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
-          } else {
-            console.log("UserBot connected but session is invalid/expired.");
-            await userClient.disconnect();
-            userClient = null;
-          }
-        }
+        await ensureUserBotConnected("STARTUP");
       } catch (err: any) {
         console.error("Failed to connect UserBot on startup:", err);
-        await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
-        if (err.message?.includes("AUTH_KEY_UNREGISTERED") || 
-            err.message?.includes("TIMEOUT") || 
-            err.message?.includes("AUTH_KEY_DUPLICATED")) {
-          console.log(`Session invalid or duplicated (${err.message}) on startup. Clearing session string.`);
-          await Setting.deleteOne({ key: "session_string" });
-          if (userClient) {
-            try { await userClient.disconnect(); } catch (e) {}
-          }
-          userClient = null;
-        }
-      } finally {
-        isConnecting = false;
       }
     })();
   });

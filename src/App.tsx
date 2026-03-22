@@ -77,8 +77,12 @@ interface Stats {
   aiPersona: string;
   geminiApiKeys: string; // JSON string
   replyInGeneral: boolean;
+  hasSession: boolean;
+  isDuplicateSession: boolean;
   lastLogoutTime?: string;
+  lastLogoutTimeISO?: string;
   lastLogoutReason?: string;
+  sessionStartTime?: string;
 }
 
 interface AutoBlockKeyword {
@@ -200,6 +204,27 @@ const TabButton = ({
 
 export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [sessionRunningTime, setSessionRunningTime] = useState<string>("");
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (stats?.isUserBotConnected && stats?.sessionStartTime) {
+      const startTime = parseInt(stats.sessionStartTime, 10);
+      const updateTimer = () => {
+        const now = Date.now();
+        const diff = now - startTime;
+        const hours = Math.floor(diff / 3600000);
+        const minutes = Math.floor((diff % 3600000) / 60000);
+        const seconds = Math.floor((diff % 60000) / 1000);
+        setSessionRunningTime(`${hours}h ${minutes}m ${seconds}s`);
+      };
+      updateTimer();
+      interval = setInterval(updateTimer, 1000);
+    } else {
+      setSessionRunningTime("");
+    }
+    return () => clearInterval(interval);
+  }, [stats?.isUserBotConnected, stats?.sessionStartTime]);
   const [autoReplyInput, setAutoReplyInput] = useState("");
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
   const [apiIdInput, setApiIdInput] = useState("");
@@ -299,12 +324,12 @@ export default function App() {
   }, [sessionStartTime]);
 
   useEffect(() => {
-    if (stats?.isUserBotConnected || !stats?.lastLogoutTime) {
+    if (stats?.isUserBotConnected || !stats?.lastLogoutTimeISO) {
       setLogoutElapsedTime(0);
       return;
     }
     
-    const logoutDate = new Date(stats.lastLogoutTime);
+    const logoutDate = new Date(stats.lastLogoutTimeISO);
     const update = () => {
       const diff = Date.now() - logoutDate.getTime();
       if (isNaN(diff) || diff < 0) {
@@ -317,7 +342,7 @@ export default function App() {
     update();
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
-  }, [stats?.isUserBotConnected, stats?.lastLogoutTime]);
+  }, [stats?.isUserBotConnected, stats?.lastLogoutTimeISO]);
 
   const formatTime = (seconds: number) => {
     const d = Math.floor(seconds / 86400);
@@ -467,6 +492,20 @@ export default function App() {
       }
     } catch (err) {
       showNotification('error', 'Failed to unblock topic');
+    }
+  };
+
+  const handleTestNotification = async () => {
+    try {
+      const response = await fetch('/api/test-notification', { method: 'POST' });
+      const data = await response.json();
+      if (response.ok) {
+        showNotification('success', 'Test notification sent to Telegram group!');
+      } else {
+        showNotification('error', data.error || 'Failed to send test notification');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to send test notification');
     }
   };
 
@@ -1551,13 +1590,18 @@ export default function App() {
 
   const handleSendCode = async () => {
     setAuthLoading(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout
+    
     try {
       const res = await fetch("/api/auth/send-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone }),
+        signal: controller.signal,
       });
       
+      clearTimeout(timeoutId);
       const data = await res.json().catch(() => null);
 
       if (res.ok) {
@@ -1566,9 +1610,14 @@ export default function App() {
       } else {
         showNotification('error', data?.error || `Failed to send code: ${res.statusText}`);
       }
-    } catch (err) {
-      console.error(err);
-      showNotification('error', 'Connection error: Check console');
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        showNotification('error', 'Request timed out. Please check your API ID/Hash and try again.');
+      } else {
+        console.error(err);
+        showNotification('error', 'Connection error: Check console');
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -1576,13 +1625,18 @@ export default function App() {
 
   const handleSignIn = async () => {
     setAuthLoading(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout
+    
     try {
       const res = await fetch("/api/auth/signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, password }),
+        signal: controller.signal,
       });
       
+      clearTimeout(timeoutId);
       const data = await res.json().catch(() => null);
 
       if (res.ok) {
@@ -1594,9 +1648,14 @@ export default function App() {
       } else {
         showNotification('error', data?.error || `Sign in failed: ${res.statusText}`);
       }
-    } catch (err) {
-      console.error(err);
-      showNotification('error', 'Connection error: Check console');
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        showNotification('error', 'Request timed out. Please try again.');
+      } else {
+        console.error(err);
+        showNotification('error', 'Connection error: Check console');
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -1827,9 +1886,32 @@ export default function App() {
         </div>
         
         <div className="flex items-center space-x-2">
-          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${stats?.isUserBotConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            <span>{stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}</span>
+          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all duration-300 ${
+            stats?.isUserBotConnected 
+              ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
+              : stats?.isDuplicateSession
+                ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                : 'bg-rose-500/10 text-rose-500 border-rose-500/20'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              stats?.isUserBotConnected 
+                ? 'bg-emerald-500 animate-pulse' 
+                : stats?.isDuplicateSession
+                  ? 'bg-amber-500 animate-bounce'
+                  : 'bg-rose-500'
+            }`} />
+            <span>
+              {stats?.isUserBotConnected 
+                ? 'Connected' 
+                : stats?.isDuplicateSession
+                  ? 'Duplicate Session'
+                  : 'Disconnected'}
+            </span>
+            {stats?.isUserBotConnected && sessionRunningTime && (
+              <span className="ml-2 pl-2 border-l border-emerald-500/20 text-emerald-500/70 lowercase font-mono tracking-normal">
+                {sessionRunningTime}
+              </span>
+            )}
           </div>
           
           <div className="relative">
@@ -1981,11 +2063,28 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="text-sm font-black uppercase tracking-widest">UserBot Disconnected</h3>
-                      <p className="text-[10px] font-bold opacity-60">Bot has been offline for {logoutTimer.days > 0 && `${logoutTimer.days}d `}{logoutTimer.time}</p>
+                      <p className="text-[10px] font-bold opacity-60">
+                        {logoutTimer.days > 0 || logoutTimer.time !== "00:00:00" 
+                          ? `Offline for ${logoutTimer.days > 0 ? `${logoutTimer.days}d ` : ''}${logoutTimer.time}`
+                          : 'Bot is currently offline'}
+                      </p>
+                      {stats?.lastLogoutReason && (
+                        <p className="text-[9px] font-black text-rose-400 mt-1 uppercase tracking-tighter">
+                          Reason: {stats.lastLogoutReason}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${darkMode ? 'border-rose-500/30 bg-rose-500/10' : 'border-rose-200 bg-white'}`}>
-                    Fix Now
+                  <div className="flex flex-col items-end space-y-2">
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); fetchStats(); }}
+                      className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest border transition-all ${darkMode ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'border-emerald-200 bg-white text-emerald-600 hover:bg-emerald-50'}`}
+                    >
+                      Try Reconnect
+                    </button>
+                    <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${darkMode ? 'border-rose-500/30 bg-rose-500/10' : 'border-rose-200 bg-white'}`}>
+                      Fix Now
+                    </div>
                   </div>
                 </motion.div>
               )}
@@ -2321,7 +2420,14 @@ export default function App() {
                         className={`w-full py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100'}`}
                       >
                         <Bell size={14} />
-                        <span>Test Background Notification</span>
+                        <span>Test Push Notification</span>
+                      </button>
+                      <button
+                        onClick={handleTestNotification}
+                        className={`w-full py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'}`}
+                      >
+                        <MessageCircle size={14} />
+                        <span>Test Telegram Notification</span>
                       </button>
                       <button
                         onClick={subscribeToPush}
@@ -3281,7 +3387,7 @@ export default function App() {
                           <div className="text-right">
                             <p className={`text-[9px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Logged Out At</p>
                             <p className={`text-xs font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-                              {new Date(stats.lastLogoutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              {stats.lastLogoutTime}
                             </p>
                           </div>
                         </div>
