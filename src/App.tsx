@@ -1,9 +1,25 @@
-import React, { useState, useEffect, useRef, useDeferredValue, useMemo } from "react";
+import React, { useState, useEffect, useRef, useDeferredValue, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Toaster, toast } from 'react-hot-toast';
 import { Skeleton } from './components/Skeleton';
+import Dashboard from './components/Dashboard';
+import KeywordsManager from './components/KeywordsManager';
+import SettingsPanel from './components/SettingsPanel';
+import CatchUpPage from './components/CatchUpPage';
+import NotificationPanel from './components/NotificationPanel';
+import PhotoStats from './components/PhotoStats';
+import ActivityLogs from './components/ActivityLogs';
+import BroadcastPanel from './components/BroadcastPanel';
+import AutoBlockManager from './components/AutoBlockManager';
+import Analytics from './components/Analytics';
+import Tester from './components/Tester';
+import Insights from './components/Insights';
+import MediaManager from './components/MediaManager';
+import UserManager from './components/UserManager';
+import AddKeywordSection from './components/AddKeywordSection';
 import { 
   MessageSquare, 
+  LayoutGrid,
   Send, 
   Settings, 
   BarChart3, 
@@ -56,13 +72,29 @@ import {
   Menu,
   Save,
   LogOut,
-  ExternalLink
+  ExternalLink,
+  Image,
+  Home,
+  MessageSquareText,
+  Megaphone,
+  SlidersHorizontal,
+  Terminal,
+  Radio,
+  Activity
 } from "lucide-react";
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
 
 interface Stats {
   topicCount: number;
   todayTopicCount: number;
+  todayPhotoSentStats?: {
+    count: number;
+    topics: { name: string; link: string; time: string }[];
+  };
+  past24hPhotoSentStats?: {
+    count: number;
+    topics: { name: string; link: string; time: string }[];
+  };
   keywordCount: number;
   autoReply: string;
   delaySeconds: number;
@@ -77,6 +109,7 @@ interface Stats {
   apiHash: string;
   defaultPhone: string;
   topicIcon: string;
+  topicRenameEmoji: string;
   topicRenameKeywords: string;
   topicRenameMatchMode: 'exact' | 'partial';
   autoResetKeywords: boolean;
@@ -85,6 +118,8 @@ interface Stats {
   aiPersona: string;
   geminiApiKeys: string; // JSON string
   replyInGeneral: boolean;
+  sessionStartTime: number | null;
+  lastLoginTime: string;
   loginUser?: {
     id: string;
     firstName?: string;
@@ -149,7 +184,7 @@ interface HeatmapItem {
   value: number;
 }
 
-const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights'] as const;
+const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights', 'photo_stats', 'catchup'] as const;
 type TabType = typeof TABS[number];
 
 const TabButton = ({ 
@@ -170,18 +205,22 @@ const TabButton = ({
   darkMode: boolean
 }) => {
   const isActive = activeTab === id;
-  const colors = {
-    dashboard: 'from-emerald-400 to-emerald-600',
-    analytics: 'from-cyan-400 to-cyan-600',
-    keywords: 'from-blue-400 to-blue-600',
-    broadcast: 'from-purple-400 to-purple-600',
-    settings: 'from-amber-400 to-amber-600',
-    tester: 'from-orange-400 to-orange-600',
-    user: 'from-pink-400 to-pink-600',
-    logs: 'from-slate-400 to-slate-600',
-    media: 'from-indigo-400 to-indigo-600',
-    insights: 'from-rose-400 to-rose-600'
+  const colors: Record<TabType, { bg: string, text: string, glow: string }> = {
+    dashboard: { bg: 'from-emerald-400 to-emerald-600', text: 'text-emerald-500', glow: 'shadow-emerald-500/50' },
+    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-500', glow: 'shadow-cyan-500/50' },
+    keywords: { bg: 'from-blue-400 to-blue-600', text: 'text-blue-500', glow: 'shadow-blue-500/50' },
+    broadcast: { bg: 'from-purple-400 to-purple-600', text: 'text-purple-500', glow: 'shadow-purple-500/50' },
+    settings: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/50' },
+    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-500', glow: 'shadow-orange-500/50' },
+    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-500', glow: 'shadow-pink-500/50' },
+    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-500', glow: 'shadow-slate-500/50' },
+    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-500', glow: 'shadow-indigo-500/50' },
+    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/50' },
+    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/50' },
+    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/50' }
   };
+
+  const theme = colors[id] || colors.dashboard;
 
   return (
     <button
@@ -193,18 +232,18 @@ const TabButton = ({
           setActiveTab(id);
         }
       }}
-      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition-all duration-300 relative group ${
-        isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? "text-slate-500 hover:text-slate-300" : "text-slate-400 hover:text-slate-700")
+      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition duration-300 relative group ${
+        isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? `${theme.text} hover:text-white` : `${theme.text} hover:text-slate-900`)
       }`}
     >
-      <div className={`p-2 rounded-xl transition-all duration-300 ${isActive ? `bg-gradient-to-tr ${colors[id]} shadow-lg shadow-emerald-500/20` : "group-hover:bg-slate-500/5"}`}>
-        <Icon className={`w-5 h-5 sm:w-6 sm:h-6 transition-transform ${isActive ? "scale-110 text-white" : "group-hover:scale-110"}`} />
+      <div className={`p-2 rounded-xl transition duration-300 ${isActive ? `bg-gradient-to-tr ${theme.bg} shadow-lg ${theme.glow}` : `group-hover:bg-gradient-to-tr group-hover:${theme.bg} group-hover:shadow-lg group-hover:${theme.glow} bg-transparent`}`}>
+        <Icon strokeWidth={2.5} className={`w-7 h-7 sm:w-8 sm:h-8 transition duration-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] ${isActive ? "scale-110 text-white" : `group-hover:scale-110 group-hover:text-white ${darkMode ? 'drop-shadow-[0_0_8px_currentColor]' : ''}`}`} />
       </div>
-      <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition-all ${isActive ? "opacity-100" : "opacity-60"}`}>{label}</span>
+      <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition ${isActive ? "opacity-100" : "opacity-70"}`}>{label}</span>
       {isActive && (
         <motion.div 
           layoutId="activeTab"
-          className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${colors[id]} rounded-full`}
+          className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${theme.bg} rounded-full`}
           transition={{ type: "spring", stiffness: 500, damping: 30 }}
         />
       )}
@@ -212,512 +251,21 @@ const TabButton = ({
   );
 };
 
-const KeywordInput = ({ value, onChange, onRemove, showRemove, darkMode, index }: any) => {
-  const [localValue, setLocalValue] = useState(value);
-  const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
-  const color = colors[(index || 0) % 6];
-
+const useDebounce = (value: any, delay: number) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
-
-  const handleBlur = () => {
-    if (localValue !== value) {
-      onChange(localValue);
-    }
-  };
-
-  return (
-    <div className="flex items-center space-x-2 group">
-      <input
-        type="text"
-        value={localValue}
-        onChange={(e) => setLocalValue(e.target.value)}
-        onBlur={handleBlur}
-        placeholder="e.g. hello"
-        className={`flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-${color}-500 outline-none text-sm transition-all ${darkMode ? `bg-${color}-500/10 border-${color}-500/30 text-white placeholder-white/20` : `bg-${color}-50 border-${color}-200 text-slate-900 placeholder-slate-400`}`}
-      />
-      {showRemove && (
-        <button 
-          onClick={onRemove}
-          className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-lg transition-all"
-        >
-          <Trash2 size={16} />
-        </button>
-      )}
-    </div>
-  );
-};
-
-const ReplyInput = ({ value, onChange, darkMode }: any) => {
-  const [localValue, setLocalValue] = useState(value);
-
-  useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
-
-  const handleBlur = () => {
-    if (localValue !== value) {
-      onChange(localValue);
-    }
-  };
-
-  return (
-    <textarea
-      value={localValue}
-      onChange={(e) => setLocalValue(e.target.value)}
-      onBlur={handleBlur}
-      placeholder="What should I reply?"
-      rows={4}
-      className={`w-full p-4 border rounded-xl focus:ring-2 focus:ring-purple-500 outline-none text-sm transition-all resize-none ${darkMode ? 'bg-purple-500/10 border-purple-500/30 text-white placeholder-white/20' : 'bg-purple-50 border-purple-200 text-slate-900 placeholder-slate-400'}`}
-    />
-  );
-};
-
-const AddKeywordSection = ({ 
-  editingKeyword, 
-  onSave, 
-  onCancel, 
-  darkMode, 
-  keywordsTopRef 
-}: any) => {
-  const [newKeywords, setNewKeywords] = useState<string[]>([""]);
-  const [newReply, setNewReply] = useState("");
-  const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
-  const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
-  const [newMaxReplies, setNewMaxReplies] = useState<number | string>(0);
-  const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
-
-  useEffect(() => {
-    if (editingKeyword) {
-      const kws = editingKeyword.keywords && editingKeyword.keywords.length > 0 
-        ? [...editingKeyword.keywords] 
-        : (editingKeyword.keyword ? [editingKeyword.keyword] : [""]);
-      setNewKeywords(kws);
-      setNewReply(editingKeyword.reply || "");
-      const links = editingKeyword.message_links && editingKeyword.message_links.length > 0 
-        ? [...editingKeyword.message_links] 
-        : (editingKeyword.message_link ? [editingKeyword.message_link] : [""]);
-      setNewMessageLinks(links);
-      setNewMaxReplies(editingKeyword.max_replies !== undefined ? editingKeyword.max_replies : 0);
-      setNewMatchMode(editingKeyword.match_mode || 'exact');
-      setNewAiReplyEnabled(!!editingKeyword.ai_reply_enabled);
-    } else {
-      setNewKeywords([""]);
-      setNewReply("");
-      setNewMessageLinks([""]);
-      setNewMaxReplies(0);
-      setNewMatchMode('exact');
-      setNewAiReplyEnabled(false);
-    }
-  }, [editingKeyword]);
-
-  const addKeywordField = () => setNewKeywords([...newKeywords, ""]);
-  const updateKeywordField = (index: number, value: string) => {
-    const updated = [...newKeywords];
-    updated[index] = value;
-    setNewKeywords(updated);
-  };
-  const removeKeywordField = (index: number) => {
-    if (newKeywords.length > 1) {
-      setNewKeywords(newKeywords.filter((_, i) => i !== index));
-    }
-  };
-
-  const addMessageLinkField = () => setNewMessageLinks([...newMessageLinks, ""]);
-  const updateMessageLinkField = (index: number, value: string) => {
-    const updated = [...newMessageLinks];
-    updated[index] = value;
-    setNewMessageLinks(updated);
-  };
-  const removeMessageLinkField = (index: number) => {
-    if (newMessageLinks.length > 1) {
-      setNewMessageLinks(newMessageLinks.filter((_, i) => i !== index));
-    }
-  };
-
-  const handleSave = () => {
-    onSave({
-      keywords: newKeywords,
-      reply: newReply,
-      match_mode: newMatchMode,
-      message_links: newMessageLinks,
-      max_replies: newMaxReplies,
-      ai_reply_enabled: newAiReplyEnabled
-    });
-  };
-
-  return (
-    <div ref={keywordsTopRef} className={`p-6 rounded-3xl border transition-all duration-500 ${darkMode ? 'bg-slate-900/50 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/50'}`}>
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center space-x-3">
-          <div className={`p-3 rounded-2xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
-            <Plus className="w-6 h-6 text-blue-500" />
-          </div>
-          <div>
-            <h2 className={`text-xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-              {editingKeyword ? "Edit Rule" : "Create New Rule"}
-            </h2>
-            <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              {editingKeyword ? "Update your existing auto-reply rule" : "Set up a new automated response"}
-            </p>
-          </div>
-        </div>
-        {editingKeyword && (
-          <button onClick={onCancel} className={`p-2 rounded-xl transition-all ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-            <X size={20} />
-          </button>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-6">
-          <div>
-            <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Keywords to Match
-            </label>
-            <div className="space-y-3">
-              {newKeywords.map((kw, index) => (
-                <KeywordInput 
-                  key={index}
-                  index={index}
-                  value={kw}
-                  onChange={(val: string) => updateKeywordField(index, val)}
-                  onRemove={() => removeKeywordField(index)}
-                  showRemove={newKeywords.length > 1}
-                  darkMode={darkMode}
-                />
-              ))}
-              <button 
-                onClick={addKeywordField}
-                className={`w-full p-3 border-2 border-dashed rounded-xl text-sm font-bold transition-all flex items-center justify-center space-x-2 ${darkMode ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400' : 'border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-500'}`}
-              >
-                <Plus size={16} />
-                <span>Add Another Keyword</span>
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Auto-Reply Message
-            </label>
-            <ReplyInput 
-              value={newReply}
-              onChange={setNewReply}
-              darkMode={darkMode}
-            />
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                Match Mode
-              </label>
-              <div className={`p-1 rounded-xl flex ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`}>
-                <button 
-                  onClick={() => setNewMatchMode('exact')}
-                  className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${newMatchMode === 'exact' ? (darkMode ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-white text-blue-600 shadow-md') : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700')}`}
-                >
-                  Exact
-                </button>
-                <button 
-                  onClick={() => setNewMatchMode('partial')}
-                  className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${newMatchMode === 'partial' ? (darkMode ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-white text-blue-600 shadow-md') : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700')}`}
-                >
-                  Partial
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                Max Replies
-              </label>
-              <div className="relative">
-                <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <input
-                  type="number"
-                  value={newMaxReplies}
-                  onChange={(e) => setNewMaxReplies(e.target.value)}
-                  placeholder="0 = Unlimited"
-                  className={`w-full pl-10 pr-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'}`}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Message Links (Optional)
-            </label>
-            <div className="space-y-3">
-              {newMessageLinks.map((link, index) => {
-                const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
-                const color = colors[index % 6];
-                return (
-                  <div key={index} className="flex items-center space-x-2">
-                    <div className="relative flex-1">
-                      <Link className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-${color}-500`} />
-                      <input
-                        type="text"
-                        value={link}
-                        onChange={(e) => updateMessageLinkField(index, e.target.value)}
-                        placeholder="https://t.me/..."
-                        className={`w-full pl-10 pr-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-${color}-500 outline-none text-sm transition-all ${darkMode ? `bg-${color}-500/10 border-${color}-500/30 text-white placeholder-white/20` : `bg-${color}-50 border-${color}-200 text-slate-900 placeholder-slate-400`}`}
-                      />
-                    </div>
-                    {newMessageLinks.length > 1 && (
-                      <button onClick={() => removeMessageLinkField(index)} className="p-2.5 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all">
-                        <Trash2 size={18} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-              <button 
-                onClick={addMessageLinkField}
-                className={`w-full p-2.5 border-2 border-dashed rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 ${darkMode ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400' : 'border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-500'}`}
-              >
-                <Plus size={14} />
-                <span>Add Another Link</span>
-              </button>
-            </div>
-          </div>
-
-          <div className={`p-4 rounded-2xl border transition-all ${newAiReplyEnabled ? (darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className={`p-2 rounded-lg ${newAiReplyEnabled ? 'bg-blue-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
-                  <Sparkles size={18} />
-                </div>
-                <div>
-                  <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>AI Smart Reply</p>
-                  <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Use Gemini AI to enhance responses</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
-                className={`w-12 h-6 rounded-full p-1 transition-all duration-300 ${newAiReplyEnabled ? 'bg-blue-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
-              >
-                <div className={`w-4 h-4 rounded-full bg-white transition-all duration-300 ${newAiReplyEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-10 flex space-x-4">
-        <button 
-          onClick={handleSave}
-          className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center space-x-3"
-        >
-          <Zap size={20} />
-          <span>{editingKeyword ? "Update Rule" : "Create Rule"}</span>
-        </button>
-        {editingKeyword && (
-          <button 
-            onClick={onCancel}
-            className={`px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-sm transition-all ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const NotificationPanel = ({ isOpen, onClose, logs, darkMode }: any) => {
-  const notificationLogs = logs.filter((l: any) => 
-    l.message.toLowerCase().includes('photo') || 
-    l.message.toLowerCase().includes('block')
-  );
-  
-  // Extract unique senders (only for photo logs)
-  const recentSenders = Array.from(new Set(notificationLogs.filter((l: any) => l.message.toLowerCase().includes('photo')).map((l: any) => {
-    try {
-      const details = l.details ? JSON.parse(l.details) : {};
-      const topicId = details.topicId || l.message.match(/topic (\d+)/)?.[1];
-      const topicName = l.message.replace('Photo received from ', '').replace('Photo auto-reply sent to ', '').split(':')[0];
-      return JSON.stringify({ name: topicName, id: topicId });
-    } catch (e) {
-      return null;
-    }
-  }).filter(Boolean))).map(s => JSON.parse(s as string));
-
-  const [activeSubTab, setActiveSubTab] = useState<'senders' | 'alerts'>('senders');
-
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
-          />
-          <motion.div
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className={`fixed top-0 right-0 bottom-0 w-80 z-[101] shadow-2xl flex flex-col ${darkMode ? 'bg-slate-950 border-l border-white/10' : 'bg-white border-l border-slate-200'}`}
-          >
-            <div className={`p-6 border-b flex items-center justify-between ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-              <div className="flex items-center space-x-2">
-                <Bell className="text-blue-500" size={18} />
-                <h2 className={`font-black text-sm uppercase tracking-widest ${darkMode ? 'text-white' : 'text-slate-900'}`}>Notifications</h2>
-              </div>
-              <button onClick={onClose} className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className={`flex border-b ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-              <button 
-                onClick={() => setActiveSubTab('senders')}
-                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all relative ${activeSubTab === 'senders' ? (darkMode ? 'text-blue-400' : 'text-blue-600') : (darkMode ? 'text-slate-500' : 'text-slate-400')}`}
-              >
-                Recent Senders
-                {activeSubTab === 'senders' && <motion.div layoutId="subtab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-              </button>
-              <button 
-                onClick={() => setActiveSubTab('alerts')}
-                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all relative ${activeSubTab === 'alerts' ? (darkMode ? 'text-blue-400' : 'text-blue-600') : (darkMode ? 'text-slate-500' : 'text-slate-400')}`}
-              >
-                All Alerts
-                {activeSubTab === 'alerts' && <motion.div layoutId="subtab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-              </button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {activeSubTab === 'senders' ? (
-                recentSenders.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center space-y-2 opacity-50">
-                    <User size={40} className="mb-2" />
-                    <p className="text-xs font-bold uppercase tracking-widest">No recent senders</p>
-                  </div>
-                ) : (
-                  recentSenders.map((sender, i) => (
-                    <div 
-                      key={i} 
-                      onClick={() => {
-                        navigator.clipboard.writeText(sender.id);
-                        toast.success(`Copied Topic ID: ${sender.id}`);
-                      }}
-                      className={`p-4 rounded-2xl border transition-all flex items-center justify-between cursor-pointer group ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-slate-50 border-slate-100 hover:bg-slate-100'}`}
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 rounded-full overflow-hidden bg-blue-500/20 flex items-center justify-center border border-blue-500/30 group-hover:scale-105 transition-transform">
-                          <img 
-                            src={`https://picsum.photos/seed/${sender.id}/100`} 
-                            alt={sender.name} 
-                            className="w-full h-full object-cover"
-                            referrerPolicy="no-referrer"
-                          />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className={`text-xs font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>{sender.name}</span>
-                          <span className={`text-[9px] font-mono opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Topic ID: {sender.id}</span>
-                        </div>
-                      </div>
-                      <div className={`p-2 rounded-lg transition-all ${darkMode ? 'text-blue-400 group-hover:bg-blue-500/20' : 'text-blue-600 group-hover:bg-blue-500/10'}`}>
-                        <Grip size={16} />
-                      </div>
-                    </div>
-                  ))
-                )
-              ) : (
-                notificationLogs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center space-y-2 opacity-50">
-                    <Bell size={40} className="mb-2" />
-                    <p className="text-xs font-bold uppercase tracking-widest">No notifications</p>
-                  </div>
-                ) : (
-                  notificationLogs.slice(0, 50).map((log: any, i: number) => {
-                    let topicId = null;
-                    let topicName = null;
-                    let topicLink = null;
-                    try {
-                      const details = log.details ? JSON.parse(log.details) : {};
-                      topicId = details.topicId;
-                      topicName = details.topicName || details.name;
-                      topicLink = details.link;
-                    } catch(e) {}
-
-                    const isBlockLog = log.message.toLowerCase().includes('block');
-
-                    return (
-                      <div key={i} className={`p-4 rounded-2xl border transition-all ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? (isBlockLog ? 'text-rose-400' : 'text-blue-400') : (isBlockLog ? 'text-rose-600' : 'text-blue-600')}`}>{log.type || (isBlockLog ? 'BLOCK' : 'PHOTO')}</span>
-                          <span className="text-[8px] opacity-40 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                        <p className={`text-xs leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>{log.message}</p>
-                        
-                        {(topicName || topicLink) && isBlockLog && (
-                          <div className="mt-2 pt-2 border-t border-white/5 flex flex-col gap-1">
-                            {topicName && (
-                              <p className={`text-[10px] font-bold ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                                Topic: <span className={darkMode ? 'text-slate-200' : 'text-slate-800'}>{topicName}</span>
-                              </p>
-                            )}
-                            {topicLink && (
-                              <a 
-                                href={topicLink} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:underline inline-flex items-center gap-1"
-                              >
-                                View Topic <ExternalLink size={8} />
-                              </a>
-                            )}
-                          </div>
-                        )}
-
-                        {topicId && !isBlockLog && (
-                          <div className="mt-2 pt-2 border-t border-white/5 flex justify-end">
-                            <button 
-                              onClick={() => {
-                                navigator.clipboard.writeText(topicId);
-                                toast.success(`Copied ID: ${topicId}`);
-                              }}
-                              className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:underline"
-                            >
-                              Copy Topic ID: {topicId}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )
-              )}
-            </div>
-            
-            <div className={`p-4 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-              <button 
-                onClick={onClose}
-                className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-              >
-                Close Panel
-              </button>
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
-  );
+    const handler = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+  return debouncedValue;
 };
 
 export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [autoReplyInput, setAutoReplyInput] = useState("");
+  const [autoReply2Enabled, setAutoReply2Enabled] = useState(false);
+  const [autoReply2Input, setAutoReply2Input] = useState("");
+  const [autoReply2DelayInput, setAutoReply2DelayInput] = useState(1);
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
   const [apiIdInput, setApiIdInput] = useState("");
   const [apiHashInput, setApiHashInput] = useState("");
@@ -725,8 +273,11 @@ export default function App() {
   const [photoReplyMessage, setPhotoReplyMessage] = useState("");
   const [photoReplyMessage2Enabled, setPhotoReplyMessage2Enabled] = useState(false);
   const [photoReplyMessage2, setPhotoReplyMessage2] = useState("");
+  const [photoReplyMessage2StartTime, setPhotoReplyMessage2StartTime] = useState("");
+  const [photoReplyMessage2EndTime, setPhotoReplyMessage2EndTime] = useState("");
   const [photoReplyMax, setPhotoReplyMax] = useState<number | string>(2);
-  const [topicIcon, setTopicIcon] = useState("🛑");
+  const [topicIcon, setTopicIcon] = useState("✅");
+  const [topicRenameEmoji, setTopicRenameEmoji] = useState("🛑");
   const [topicRenameKeywords, setTopicRenameKeywords] = useState("");
   const [topicRenameMatchMode, setTopicRenameMatchMode] = useState<'exact' | 'partial'>('exact');
   const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
@@ -735,17 +286,23 @@ export default function App() {
   const [autoBlockKeywords, setAutoBlockKeywords] = useState<AutoBlockKeyword[]>([]);
   const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(false);
   const [broadcastMessage, setBroadcastMessage] = useState("");
+  const [broadcastTarget, setBroadcastTarget] = useState<'all' | 'general'>('all');
+  const [broadcastProgress, setBroadcastProgress] = useState({ total: 0, current: 0, status: 'idle' });
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
   const [logSearch, setLogSearch] = useState("");
+  const debouncedLogSearch = useDebounce(logSearch, 300);
   const [logLevelFilter, setLogLevelFilter] = useState<string>("all");
   const [logCategoryFilter, setLogCategoryFilter] = useState<string>("all");
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [visibleLogsCount, setVisibleLogsCount] = useState(100);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isAddingNewRule, setIsAddingNewRule] = useState(false);
   const [keywordSearch, setKeywordSearch] = useState("");
+  const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
   const [expandedKeywordId, setExpandedKeywordId] = useState<string | null>(null);
   const deferredKeywordSearch = useDeferredValue(keywordSearch);
+  const [visibleKeywordsCount, setVisibleKeywordsCount] = useState(50);
   const [blockedTopics, setBlockedTopics] = useState<any[]>([]);
   const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
   const [blockedTopicSearch, setBlockedTopicSearch] = useState("");
@@ -754,6 +311,7 @@ export default function App() {
   const [aiPersona, setAiPersona] = useState("");
   const [geminiApiKeys, setGeminiApiKeys] = useState<string[]>([]);
   const [replyInGeneral, setReplyInGeneral] = useState(false);
+  const [photoStatsTab, setPhotoStatsTab] = useState<'today' | '24h'>('today');
   
   const [analyticsData, setAnalyticsData] = useState<{keywordData: any[], topicData: any[]}>({ keywordData: [], topicData: [] });
   const [testMessage, setTestMessage] = useState("");
@@ -768,13 +326,16 @@ export default function App() {
   const [newMediaName, setNewMediaName] = useState("");
   
   const [missedCount, setMissedCount] = useState(0);
+  const [missedList, setMissedList] = useState<any[]>([]);
+  const [isFetchingMissed, setIsFetchingMissed] = useState(false);
   const [isCatchingUp, setIsCatchingUp] = useState(false);
   const [isScanningMissed, setIsScanningMissed] = useState(false);
   const [scannedItems, setScannedItems] = useState<any[]>([]);
   const [selectedScannedItems, setSelectedScannedItems] = useState<Set<string>>(new Set());
   const [showScanModal, setShowScanModal] = useState(false);
+  const [replyingIds, setReplyingIds] = useState<Set<string>>(new Set());
   
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -798,23 +359,23 @@ export default function App() {
   const castTopRef = useRef<HTMLDivElement>(null);
   const castBottomRef = useRef<HTMLDivElement>(null);
   const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem("darkMode");
-    return saved !== null ? JSON.parse(saved) : true;
+    try {
+      const saved = localStorage.getItem("darkMode");
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch (e) {
+      console.error("Error parsing darkMode from localStorage", e);
+      return true;
+    }
   });
 
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
 
   useEffect(() => {
-    const savedStartTime = localStorage.getItem("sessionStartTime");
-    if (savedStartTime) {
-      setSessionStartTime(parseInt(savedStartTime));
-    } else {
-      const now = Date.now();
-      setSessionStartTime(now);
-      localStorage.setItem("sessionStartTime", now.toString());
+    if (stats?.sessionStartTime) {
+      setSessionStartTime(stats?.sessionStartTime);
     }
-  }, []);
+  }, [stats?.sessionStartTime]);
 
   useEffect(() => {
     if (!sessionStartTime) return;
@@ -1196,9 +757,9 @@ export default function App() {
         
         const options = { body: "Test notification successful!", icon: "/logo.svg" };
         if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.ready.then(reg => reg.showNotification("Rohit's UserBot Pro", options));
+          navigator.serviceWorker.ready.then(reg => reg.showNotification("UserBot Pro", options));
         } else {
-          new Notification("Rohit's UserBot Pro", options);
+          new Notification("UserBot Pro", options);
         }
       } else {
         showNotification('error', 'Permission denied');
@@ -1246,6 +807,23 @@ export default function App() {
       try {
         const parsed = JSON.parse(event.data);
         console.log("Received notification event:", parsed);
+        
+        if (parsed.type === 'broadcast_update') {
+          const data = parsed.data;
+          setBroadcastProgress(data);
+          if (data.status === 'completed') {
+            showNotification('success', 'Broadcast completed successfully!');
+            setBroadcasting(false);
+          } else if (data.status === 'cancelled') {
+            showNotification('warn', 'Broadcast cancelled');
+            setBroadcasting(false);
+          } else if (data.status === 'error') {
+            showNotification('error', 'Broadcast encountered an error');
+            setBroadcasting(false);
+          }
+          return;
+        }
+
         if (parsed.type === 'photo_received') {
           const message = parsed.data.message;
           
@@ -1259,39 +837,49 @@ export default function App() {
           
           // Show system notification
           if ("Notification" in window && Notification.permission === "granted") {
+            const notificationUrl = parsed.data.url || '/';
+            console.log("Showing system notification with URL:", notificationUrl);
+            
             const options = {
               body: message,
               icon: "/logo.svg",
               silent: notificationSoundEnabled,
               requireInteraction: true,
-              tag: 'photo-received'
+              tag: 'photo-received',
+              data: {
+                url: notificationUrl
+              }
             };
 
             try {
               // Try Service Worker notification first (required for Android Chrome)
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.ready.then(registration => {
-                  registration.showNotification("Rohit's UserBot Pro", options);
+                  registration.showNotification("UserBot Pro", options);
                 }).catch(() => {
                   // Fallback to constructor
-                  new Notification("Rohit's UserBot Pro", options);
+                  const n = new Notification("UserBot Pro", options);
+                  n.onclick = (e) => {
+                    e.preventDefault();
+                    window.focus();
+                    window.open(notificationUrl, '_blank');
+                  };
                 });
               } else {
-                new Notification("Rohit's UserBot Pro", options);
+                const n = new Notification("UserBot Pro", options);
+                n.onclick = (e) => {
+                  e.preventDefault();
+                  window.focus();
+                  window.open(notificationUrl, '_blank');
+                };
               }
             } catch (e) {
               console.error("Notification creation failed", e);
-              // Final fallback attempt
-              try {
-                if (Notification.permission === "granted") {
-                   // Some environments might allow this if the constructor failed
-                   navigator.serviceWorker?.ready?.then(reg => reg.showNotification("Rohit's UserBot Pro", options));
-                }
-              } catch (innerErr) {
-                console.error("Final notification fallback failed", innerErr);
-              }
             }
           }
+        } else if (parsed.type === 'photo_sent') {
+          // Fetch stats to update the photo sent count
+          fetchStats();
         } else if (parsed.type === 'topic_blocked') {
           const message = parsed.data.message;
           showNotification('warn', message);
@@ -1304,6 +892,25 @@ export default function App() {
         console.error("SSE Parse Error", e);
       }
     };
+
+    // Fetch initial broadcast status
+    fetch("/api/broadcast/status")
+      .then(async res => {
+        const text = await res.text();
+        if (text.includes("Rate exceeded")) return null;
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          return null;
+        }
+      })
+      .then(data => {
+        if (data && data.status === 'running') {
+          setBroadcasting(true);
+          setBroadcastProgress(data);
+        }
+      })
+      .catch(err => console.error("Error fetching broadcast status:", err));
 
     return () => {
       console.log("Closing SSE connection");
@@ -1331,6 +938,9 @@ export default function App() {
         const data = JSON.parse(text);
         setStats(data);
         setAutoReplyInput(data.autoReply);
+        setAutoReply2Enabled(data.autoReply2Enabled);
+        setAutoReply2Input(data.autoReply2);
+        setAutoReply2DelayInput(data.autoReply2Delay || 1);
         setDelaySecondsInput(data.delaySeconds);
         setApiIdInput(data.apiId);
         setApiHashInput(data.apiHash);
@@ -1338,8 +948,11 @@ export default function App() {
         setPhotoReplyMessage(data.photoReplyMessage);
         setPhotoReplyMessage2Enabled(data.photoReplyMessage2Enabled);
         setPhotoReplyMessage2(data.photoReplyMessage2);
+        setPhotoReplyMessage2StartTime(data.photoReplyMessage2StartTime || "");
+        setPhotoReplyMessage2EndTime(data.photoReplyMessage2EndTime || "");
         setPhotoReplyMax(data.photoReplyMax || 2);
-        setTopicIcon(data.topicIcon || "🛑");
+        setTopicIcon(data.topicIcon || "✅");
+        setTopicRenameEmoji(data.topicRenameEmoji || "🛑");
         setTopicRenameKeywords(data.topicRenameKeywords || "");
         setTopicRenameMatchMode(data.topicRenameMatchMode || "exact");
         setAiModeEnabled(data.aiModeEnabled);
@@ -1399,6 +1012,33 @@ export default function App() {
     }
   };
 
+  const filteredKeywords = useMemo(() => {
+    const searchLower = deferredKeywordSearch.toLowerCase();
+    return keywords.filter(kw => {
+      const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
+      const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
+      const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
+      return matchesKeyword || matchesReply;
+    });
+  }, [keywords, deferredKeywordSearch]);
+
+  const displayedKeywords = useMemo(() => {
+    return filteredKeywords.slice(0, visibleKeywordsCount);
+  }, [filteredKeywords, visibleKeywordsCount]);
+
+  useEffect(() => {
+    setVisibleKeywordsCount(50);
+  }, [deferredKeywordSearch]);
+
+  const handleKeywordsScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop <= clientHeight + 100) {
+      if (visibleKeywordsCount < filteredKeywords.length) {
+        setVisibleKeywordsCount(prev => prev + 50);
+      }
+    }
+  };
+
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       const matchesSearch = log.message.toLowerCase().includes(logSearch.toLowerCase()) || 
@@ -1409,11 +1049,28 @@ export default function App() {
     });
   }, [logs, logSearch, logLevelFilter, logCategoryFilter]);
 
+  const displayedLogs = useMemo(() => {
+    return filteredLogs.slice(0, visibleLogsCount);
+  }, [filteredLogs, visibleLogsCount]);
+
+  useEffect(() => {
+    setVisibleLogsCount(100);
+  }, [logSearch, logLevelFilter, logCategoryFilter]);
+
   const logCategories = useMemo(() => {
     const cats = new Set<string>();
     logs.forEach(l => { if (l.category) cats.add(l.category); });
     return Array.from(cats);
   }, [logs]);
+
+  const handleLogsScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop <= clientHeight + 100) {
+      if (visibleLogsCount < filteredLogs.length) {
+        setVisibleLogsCount(prev => prev + 100);
+      }
+    }
+  };
 
   const fetchLogs = async () => {
     setRefreshingLogs(true);
@@ -1552,6 +1209,57 @@ export default function App() {
     }
   };
 
+  const fetchMissedList = async () => {
+    setIsFetchingMissed(true);
+    try {
+      const res = await fetch("/api/missed-list");
+      const text = await res.text();
+      if (text.includes("Rate exceeded")) return;
+      if (!res.ok) return;
+      try {
+        const data = JSON.parse(text);
+        setMissedList(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error("Failed to parse missed list JSON:", text);
+      }
+    } catch (err) {
+      console.error("Failed to fetch missed list", err);
+    } finally {
+      setIsFetchingMissed(false);
+    }
+  };
+
+  const handleSkipMissed = async (id: string) => {
+    try {
+      const res = await fetch("/api/missed-skip", {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      if (res.ok) {
+        setMissedList(prev => prev.filter(item => item._id !== id));
+        setMissedCount(prev => Math.max(0, prev - 1));
+        showNotification('success', 'Item skipped');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to skip item');
+    }
+  };
+
+  const handleSkipAllMissed = async () => {
+    if (!confirm("Are you sure you want to skip all missed items?")) return;
+    try {
+      const res = await fetch("/api/missed-skip-all", { method: 'POST' });
+      if (res.ok) {
+        setMissedList([]);
+        setMissedCount(0);
+        showNotification('success', 'All items skipped');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to skip all items');
+    }
+  };
+
   const handleCatchUp = async (triggerIds?: string[] | any) => {
     if (isCatchingUp) return;
     setIsCatchingUp(true);
@@ -1603,8 +1311,69 @@ export default function App() {
     }
   };
 
+  const handleClearAllMissed = async () => {
+    try {
+      const res = await fetch("/api/missed-triggers", { method: "DELETE" });
+      if (res.ok) {
+        setScannedItems([]);
+        setMissedCount(0);
+        showNotification('success', 'All missed triggers cleared');
+      } else {
+        showNotification('error', 'Failed to clear missed triggers');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to clear missed triggers');
+    }
+  };
+
+  const handleReplyToSingleMissed = async (triggerId: string) => {
+    if (replyingIds.has(triggerId)) return;
+    
+    setReplyingIds(prev => new Set(prev).add(triggerId));
+    try {
+      const res = await fetch("/api/reply-single-missed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ triggerId })
+      });
+      
+      const text = await res.text();
+      let data: any = {};
+      if (text.includes("Rate exceeded")) {
+        data = { success: false, error: "Rate limit exceeded. Please try again later." };
+      } else {
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          data = { success: false, error: "Invalid response from server" };
+        }
+      }
+      
+      if (data.success) {
+        showNotification('success', 'Reply sent successfully');
+        setScannedItems(prev => prev.filter(item => item._id !== triggerId));
+        setMissedCount(prev => Math.max(0, prev - 1));
+        fetchStats();
+      } else {
+        showNotification('error', data.error || 'Failed to send reply');
+      }
+    } catch (err) {
+      showNotification('error', 'Failed to send reply');
+    } finally {
+      setReplyingIds(prev => {
+        const next = new Set(prev);
+        next.delete(triggerId);
+        return next;
+      });
+    }
+  };
+
   const handleScanMissed = async () => {
     if (isScanningMissed) return;
+    if (stats?.isSystemPaused) {
+      showNotification('error', 'System is paused. Cannot scan for missed items.');
+      return;
+    }
     setIsScanningMissed(true);
     try {
       const res = await fetch("/api/scan-missed", { method: "POST" });
@@ -1621,6 +1390,9 @@ export default function App() {
         setShowScanModal(true);
         fetchMissedCount();
         fetchStats();
+        if (activeTab === 'catchup') {
+          fetchMissedList();
+        }
         if (data.count > 0) {
           showNotification('success', `Found ${data.count} new missed keywords`);
         } else {
@@ -1671,6 +1443,8 @@ export default function App() {
       fetchLogs();
     } else if (activeTab === 'analytics') {
       fetchAnalytics();
+    } else if (activeTab === 'catchup') {
+      fetchMissedList();
     }
   }, [activeTab]);
 
@@ -1680,7 +1454,7 @@ export default function App() {
 
   const confirmTogglePause = async () => {
     if (!stats) return;
-    const newPausedState = !stats.isSystemPaused;
+    const newPausedState = !stats?.isSystemPaused;
     setShowPauseConfirmation(false);
     
     // Optimistic update
@@ -1917,6 +1691,9 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           autoReply: autoReplyInput,
+          autoReply2Enabled,
+          autoReply2: autoReply2Input,
+          autoReply2Delay: autoReply2DelayInput,
           delaySeconds: delaySecondsInput,
           apiId: apiIdInput,
           apiHash: apiHashInput,
@@ -1924,10 +1701,13 @@ export default function App() {
           photoReplyMessage,
           photoReplyMessage2Enabled,
           photoReplyMessage2,
+          photoReplyMessage2StartTime,
+          photoReplyMessage2EndTime,
           photoReplyMax: Number(photoReplyMax) || 2,
           notificationSoundEnabled,
           notificationSoundType,
           topicIcon,
+          topicRenameEmoji,
           topicRenameKeywords,
           topicRenameMatchMode,
           aiModeEnabled,
@@ -1964,8 +1744,11 @@ export default function App() {
       showNotification('error', "Please enter at least one keyword");
       return;
     }
-    if (!data.reply.trim() && !data.ai_reply_enabled) {
-      showNotification('error', "Please enter a reply message or enable AI reply");
+    
+    const hasMessageLinks = data.message_links && data.message_links.filter((l: string) => l.trim().length > 0).length > 0;
+    
+    if (!data.reply.trim() && !data.ai_reply_enabled && !hasMessageLinks) {
+      showNotification('error', "Please enter a reply message, a message link, or enable AI reply");
       return;
     }
 
@@ -1993,7 +1776,17 @@ export default function App() {
         setEditingKeywordId(null);
         fetchKeywords();
       } else {
-        const errData = await res.json();
+        const text = await res.text();
+        let errData: any = {};
+        if (text.includes("Rate exceeded")) {
+          errData = { error: "Rate limit exceeded. Please try again later." };
+        } else {
+          try {
+            errData = JSON.parse(text);
+          } catch (e) {
+            errData = { error: "Invalid response from server" };
+          }
+        }
         showNotification('error', errData?.error || 'Failed to save rule');
       }
     } catch (error) {
@@ -2153,6 +1946,29 @@ export default function App() {
     }
   };
 
+  const handleResetKeywords = async () => {
+    try {
+      const response = await fetch("/api/keywords/reset-all", { method: "POST" });
+      if (response.ok) {
+        setShowResetKeywordsConfirm(false);
+        // Refresh keywords to show updated counts
+        const kwRes = await fetch("/api/keywords");
+        const kwText = await kwRes.text();
+        if (kwText.includes("Rate exceeded")) return;
+        try {
+          const kwData = JSON.parse(kwText);
+          setKeywords(kwData);
+          showNotification('success', 'All keywords reset!');
+        } catch (e) {
+          console.error("Failed to parse keywords after reset", e);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to reset keywords:", error);
+      showNotification('error', 'Failed to reset keywords');
+    }
+  };
+
   const handleImportData = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2192,7 +2008,6 @@ export default function App() {
     try {
       const res = await fetch("/api/auth/logout", { method: "POST" });
       if (res.ok) {
-        localStorage.removeItem("sessionStartTime");
         showNotification('success', 'Logged out');
         fetchStats();
         window.location.reload();
@@ -2205,22 +2020,61 @@ export default function App() {
   const handleBroadcast = async () => {
     if (!broadcastMessage.trim()) return;
     setBroadcasting(true);
+    setBroadcastProgress({ total: 0, current: 0, status: 'running' });
     try {
       const res = await fetch("/api/broadcast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: broadcastMessage }),
+        body: JSON.stringify({ 
+          message: broadcastMessage,
+          target: broadcastTarget
+        }),
       });
       if (res.ok) {
-        showNotification('success', 'Broadcast sent!');
+        showNotification('success', 'Broadcast started');
         setBroadcastMessage("");
       } else {
-        showNotification('error', 'Broadcast failed');
+        const text = await res.text();
+        let data: any = {};
+        if (text.includes("Rate exceeded")) {
+          data = { error: "Rate limit exceeded. Please try again later." };
+        } else {
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            data = { error: "Invalid response from server" };
+          }
+        }
+        showNotification('error', data.error || 'Broadcast failed');
+        setBroadcasting(false);
       }
     } catch (err) {
       showNotification('error', 'Connection error');
-    } finally {
       setBroadcasting(false);
+    }
+  };
+
+  const handleCancelBroadcast = async () => {
+    try {
+      const res = await fetch("/api/broadcast/cancel", { method: "POST" });
+      if (res.ok) {
+        showNotification('warn', 'Cancelling broadcast...');
+      } else {
+        const text = await res.text();
+        let data: any = {};
+        if (text.includes("Rate exceeded")) {
+          data = { error: "Rate limit exceeded. Please try again later." };
+        } else {
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            data = { error: "Invalid response from server" };
+          }
+        }
+        showNotification('error', data.error || 'Failed to cancel');
+      }
+    } catch (err) {
+      showNotification('error', 'Connection error');
     }
   };
 
@@ -2286,47 +2140,16 @@ export default function App() {
     })
   };
 
-  if (loading) {
-    return (
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className={`min-h-screen flex flex-col items-center justify-center ${darkMode ? 'bg-black' : 'bg-slate-50'}`}
-      >
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.5, ease: "easeOut" }}
-          className="relative w-20 h-20"
-        >
-          <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl rotate-3 opacity-40"></div>
-          <div className={`relative w-full h-full rounded-2xl overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
-            <img src="/logo.svg" alt="Logo" className="w-12 h-12 object-contain" />
-          </div>
-        </motion.div>
-        <motion.div
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.3, duration: 0.5 }}
-          className="mt-6 text-center"
-        >
-          <h1 className={`font-black text-3xl tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>ROHIT'S USERBOT</h1>
-          <p className="text-emerald-500 font-bold uppercase tracking-widest text-xs mt-1">Management</p>
-        </motion.div>
-      </motion.div>
-    );
-  }
 
   return (
     <motion.div 
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.5 }}
-      className={`min-h-screen transition-colors duration-500 ${darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans pb-24 relative overflow-x-hidden`}
+      className={`min-h-screen transition-colors duration-500 ${activeTab === 'logs' || darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans ${activeTab === 'logs' ? 'pb-0' : 'pb-24'} relative overflow-x-hidden`}
     >
       {/* Background Decorative Elements */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+      <div className={`fixed inset-0 pointer-events-none overflow-hidden z-0 transition-opacity duration-500 ${activeTab === 'logs' ? 'opacity-0' : 'opacity-100'}`}>
         <div className={`absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-emerald-500' : 'bg-emerald-300'}`} />
         <div className={`absolute top-[20%] -right-[10%] w-[35%] h-[35%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-blue-500' : 'bg-blue-300'}`} />
         <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
@@ -2339,210 +2162,58 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className={`px-6 py-2 flex items-center justify-between fixed top-0 left-0 right-0 z-50 border-b transition-all duration-500 ${darkMode ? 'bg-slate-950 border-white/10' : 'bg-indigo-700 border-white/10 text-white'}`}>
-        <div className="flex items-center space-x-3">
+      <header className={`px-3 sm:px-6 py-2 flex items-center justify-between fixed top-0 left-0 right-0 z-50 border-b transition-all duration-500 bg-black border-white/10 text-white shadow-2xl ${activeTab === 'logs' ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
+        
+        {/* Oval glow effect */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80%] h-[200%] rounded-[100%] blur-3xl opacity-20 bg-white" />
+        </div>
+
+        <div className="flex items-center space-x-3 relative z-10">
           <div className="relative">
             <button 
               onClick={() => setIsMenuOpen(!isMenuOpen)}
-              className={`p-2 rounded-xl transition-all relative group ${darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-white hover:bg-white/10'}`}
+              className="p-2 rounded-xl transition relative group text-blue-400 hover:text-white hover:bg-white/10"
             >
-              <div className="relative z-10">
-                <Menu size={22} className={isMenuOpen ? 'rotate-90 transition-transform duration-300' : 'transition-transform duration-300'} />
+              <div className="relative z-10 flex items-center justify-center w-[22px] h-[22px]">
+                <div className="flex flex-col items-start justify-center w-full h-full space-y-1.5 transition duration-300 drop-shadow-[0_0_8px_rgba(255,255,255,0.6)] group-hover:drop-shadow-[0_0_12px_rgba(255,255,255,1)]">
+                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-[22px] translate-y-2 rotate-45 bg-white' : 'w-[22px] bg-white'}`}></span>
+                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-0 opacity-0 bg-white' : 'w-[16px] bg-white'}`}></span>
+                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-[22px] -translate-y-2 -rotate-45 bg-white' : 'w-[10px] bg-white'}`}></span>
+                </div>
                 {isMenuOpen && (
                   <motion.div 
                     layoutId="menu-glow"
-                    className="absolute inset-0 bg-blue-500/40 blur-xl rounded-full -z-10"
+                    className="absolute inset-0 bg-white/20 blur-xl rounded-full -z-10"
                   />
                 )}
               </div>
               <div className="absolute inset-0 bg-white/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
             </button>
-            
-            <AnimatePresence>
-              {isMenuOpen && (
-                <>
-                  <motion.div 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    onClick={() => setIsMenuOpen(false)}
-                    className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
-                  />
-                  <motion.div
-                    initial={{ x: '-100%' }}
-                    animate={{ x: 0 }}
-                    exit={{ x: '-100%' }}
-                    transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                    className={`fixed top-0 left-0 bottom-0 w-1/2 min-w-[280px] z-[101] shadow-2xl flex flex-col overflow-hidden ${darkMode ? 'bg-slate-950 border-r border-white/10' : 'bg-white border-r border-slate-200'}`}
-                  >
-                    <div className={`p-6 border-b flex items-center justify-between ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-                      <div className="flex items-center space-x-3">
-                        <div className="relative w-8 h-8">
-                          <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40"></div>
-                          <div className={`relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
-                            <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
-                          </div>
-                        </div>
-                        <div className="flex flex-col">
-                          <h1 className={`font-black text-sm tracking-tight leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>ROHIT'S</h1>
-                          <span className="text-[7px] font-black text-emerald-500 tracking-widest uppercase block">UserBot</span>
-                          {stats?.loginUser && (
-                            <span className={`text-[9px] font-medium mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                              {stats.loginUser.firstName || ''} {stats.loginUser.lastName || ''} {stats.loginUser.phone ? `(${stats.loginUser.phone})` : ''}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button onClick={() => setIsMenuOpen(false)} className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-                        <X size={20} />
-                      </button>
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                      <button
-                        onClick={() => {
-                          setIsNotificationOpen(true);
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all group ${darkMode ? 'text-blue-400 hover:bg-white/5' : 'text-blue-600 hover:bg-black/5'}`}
-                      >
-                        <div className={`p-2 rounded-xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
-                          <Bell size={20} />
-                        </div>
-                        <div className="flex flex-col items-start">
-                          <span className="text-xs font-black uppercase tracking-widest">Notifications</span>
-                          <span className="text-[9px] opacity-50">View recent alerts</span>
-                        </div>
-                      </button>
-                      
-                      <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
-
-                      <button
-                        onClick={() => {
-                          setActiveTab('analytics');
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${activeTab === 'analytics' ? (darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-50 text-cyan-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
-                      >
-                        <PieChart size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Analytics</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveTab('tester');
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${activeTab === 'tester' ? (darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-50 text-orange-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
-                      >
-                        <Bot size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">AI Test</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveTab('media');
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${activeTab === 'media' ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
-                      >
-                        <Library size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Media Library</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveTab('insights');
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${activeTab === 'insights' ? (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
-                      >
-                        <BarChart3 size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Insights</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveTab('user');
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${activeTab === 'user' ? (darkMode ? 'bg-pink-500/20 text-pink-400' : 'bg-pink-50 text-pink-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
-                      >
-                        <User size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Profile</span>
-                      </button>
-
-                      <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
-
-                      <button
-                        onClick={() => {
-                          setShowClearDataConfirm(true);
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
-                      >
-                        <Trash size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Clear All Data</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setShowDeleteLastKeywordConfirm(true);
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition-all ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
-                      >
-                        <Trash2 size={20} />
-                        <span className="text-xs font-black uppercase tracking-widest">Delete Last Keyword</span>
-                      </button>
-                    </div>
-
-                    <div className={`p-6 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Theme</span>
-                        <button 
-                          onClick={() => setDarkMode(!darkMode)}
-                          className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-white/5 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}
-                        >
-                          {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-                        </button>
-                      </div>
-                      <button 
-                        onClick={() => setIsMenuOpen(false)}
-                        className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                      >
-                        Close Menu
-                      </button>
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
+            {/* Status dot overlapping the 3-line bar */}
+            <div className={`absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full border-2 border-black z-20 ${stats?.isUserBotConnected ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+               <div className={`absolute inset-0 rounded-full animate-ping opacity-75 ${stats?.isUserBotConnected ? 'bg-emerald-400' : 'bg-rose-400'}`}></div>
+            </div>
           </div>
 
           <div className="flex items-center space-x-3">
             <div className="relative w-8 h-8 group cursor-pointer">
               <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40 group-hover:rotate-6 transition-transform duration-500"></div>
-              <div className={`relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border transition-colors duration-500 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
+              <div className="relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border transition-colors duration-500 bg-neutral-900 border-white/10">
                 <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
               </div>
             </div>
             <div className="flex flex-col">
-              <h1 className={`font-black text-lg tracking-tight leading-none transition-colors duration-500 ${darkMode ? 'gradient-text' : 'text-white'}`}>ROHIT'S</h1>
-              <span className="text-[8px] font-black text-emerald-500 tracking-widest uppercase block">UserBot</span>
+              <h1 className="font-black text-base sm:text-lg tracking-tight leading-none transition-colors duration-500 text-white">USERBOT</h1>
+              <span className="text-[8px] font-black text-emerald-400 tracking-widest uppercase block">PRO</span>
             </div>
           </div>
         </div>
         
-        <div className="flex items-center space-x-2">
-          <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest transition-all duration-300 ${stats?.isUserBotConnected ? 'bg-emerald-500 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'bg-rose-500 text-white shadow-[0_0_15px_rgba(244,63,94,0.4)]'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full bg-white ${stats?.isUserBotConnected ? 'animate-pulse' : ''}`} />
-            <span>{stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}</span>
-          </div>
-
+        <div className="flex items-center space-x-2 relative z-10 shrink-0">
           <button 
             onClick={() => setIsNotificationOpen(true)}
-            className={`p-2 rounded-xl transition-all relative group ${darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-white hover:bg-white/10'}`}
+            className="p-2 rounded-xl transition relative group text-rose-400 hover:text-white hover:bg-white/10"
           >
             <motion.div
               animate={unreadCount > 0 ? {
@@ -2557,13 +2228,13 @@ export default function App() {
                 ease: "easeInOut"
               }}
             >
-              <Bell size={22} className={unreadCount > 0 ? 'text-rose-500' : ''} />
+              <Bell size={22} className={`transition duration-300 drop-shadow-[0_0_8px_rgba(251,113,133,0.8)] group-hover:drop-shadow-[0_0_12px_rgba(255,255,255,0.8)] ${unreadCount > 0 ? 'text-rose-500' : ''}`} />
             </motion.div>
             {unreadCount > 0 && (
               <motion.span 
                 initial={{ scale: 0, rotate: -45 }}
                 animate={{ scale: 1, rotate: 0 }}
-                className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white text-[9px] font-black flex items-center justify-center rounded-full border-2 border-slate-950 shadow-[0_0_15px_rgba(244,63,94,0.8)] group-hover:scale-125 transition-transform"
+                className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white text-[9px] font-black flex items-center justify-center rounded-full border-2 border-black shadow-[0_0_15px_rgba(244,63,94,0.8)] group-hover:scale-125 transition-transform"
               >
                 {unreadCount > 99 ? '99+' : unreadCount}
               </motion.span>
@@ -2571,6 +2242,198 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <AnimatePresence>
+        {isMenuOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMenuOpen(false)}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
+            />
+            <motion.div
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className={`fixed top-0 left-0 bottom-0 w-1/2 min-w-[280px] z-[101] shadow-2xl flex flex-col overflow-hidden ${darkMode ? 'bg-slate-950 border-r border-white/10' : 'bg-white border-r border-slate-200'}`}
+            >
+              <div className={`p-6 border-b flex flex-col space-y-6 ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="relative w-8 h-8">
+                      <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40"></div>
+                      <div className={`relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
+                        <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
+                      </div>
+                    </div>
+                    <div className="flex flex-col">
+                      <h1 className={`font-black text-sm tracking-tight leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT</h1>
+                      <span className="text-[7px] font-black text-emerald-500 tracking-widest uppercase block">PRO</span>
+                      {stats?.loginUser && (
+                        <span className={`text-[9px] font-medium mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          {stats?.loginUser?.firstName || ''} {stats?.loginUser?.lastName || ''} {stats?.loginUser?.phone ? `(${stats?.loginUser?.phone})` : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button onClick={() => setIsMenuOpen(false)} className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* Beautiful Connected Shape */}
+                <div className={`relative overflow-hidden rounded-2xl p-4 border transition duration-500 ${
+                  stats?.isUserBotConnected 
+                    ? (darkMode ? 'bg-emerald-500/10 border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.15)]' : 'bg-emerald-50 border-emerald-200 shadow-[0_0_20px_rgba(16,185,129,0.15)]')
+                    : (darkMode ? 'bg-rose-500/10 border-rose-500/20 shadow-[0_0_20px_rgba(244,63,94,0.15)]' : 'bg-rose-50 border-rose-200 shadow-[0_0_20px_rgba(244,63,94,0.15)]')
+                }`}>
+                  <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl -mr-10 -mt-10 opacity-50 ${
+                    stats?.isUserBotConnected ? 'bg-emerald-500' : 'bg-rose-500'
+                  }`}></div>
+                  <div className="relative z-10 flex items-center space-x-4">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg relative ${
+                      stats?.isUserBotConnected ? 'bg-emerald-500 shadow-emerald-500/30' : 'bg-rose-500 shadow-rose-500/30'
+                    }`}>
+                      <div className="absolute inset-0 rounded-full animate-ping opacity-50 bg-inherit"></div>
+                      {stats?.isUserBotConnected ? <CheckCircle2 size={24} className="text-white relative z-10" /> : <X size={24} className="text-white relative z-10" />}
+                    </div>
+                    <div className="flex flex-col">
+                      <span className={`text-sm font-black uppercase tracking-widest ${
+                        stats?.isUserBotConnected ? (darkMode ? 'text-emerald-400' : 'text-emerald-600') : (darkMode ? 'text-rose-400' : 'text-rose-600')
+                      }`}>
+                        {stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}
+                      </span>
+                      <span className={`text-[10px] font-medium mt-0.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {stats?.isUserBotConnected ? 'System is online and active' : 'System is currently offline'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                <button
+                  onClick={() => {
+                    setIsNotificationOpen(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition group ${darkMode ? 'text-blue-400 hover:bg-white/5' : 'text-blue-600 hover:bg-black/5'}`}
+                >
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+                    <Bell size={20} />
+                  </div>
+                  <div className="flex flex-col items-start">
+                    <span className="text-xs font-black uppercase tracking-widest">Notifications</span>
+                    <span className="text-[9px] opacity-50">View recent alerts</span>
+                  </div>
+                </button>
+                
+                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
+
+                <button
+                  onClick={() => {
+                    setActiveTab('analytics');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'analytics' ? (darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-50 text-cyan-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                >
+                  <PieChart size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Analytics</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('tester');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'tester' ? (darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-50 text-orange-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                >
+                  <Bot size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">AI Test</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('media');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'media' ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                >
+                  <Library size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Media Library</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('insights');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'insights' ? (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                >
+                  <BarChart3 size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Insights</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('user');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'user' ? (darkMode ? 'bg-pink-500/20 text-pink-400' : 'bg-pink-50 text-pink-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                >
+                  <User size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Profile</span>
+                </button>
+
+                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
+
+                <button
+                  onClick={() => {
+                    setShowClearDataConfirm(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                >
+                  <Trash size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Clear All Data</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowDeleteLastKeywordConfirm(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                >
+                  <Trash2 size={20} />
+                  <span className="text-xs font-black uppercase tracking-widest">Delete Last Keyword</span>
+                </button>
+              </div>
+
+              <div className={`p-6 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Theme</span>
+                  <button 
+                    onClick={() => setDarkMode(!darkMode)}
+                    className={`p-2 rounded-xl transition ${darkMode ? 'bg-white/5 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}
+                  >
+                    {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+                  </button>
+                </div>
+                <button 
+                  onClick={() => setIsMenuOpen(false)}
+                  className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  Close Menu
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       <NotificationPanel 
         isOpen={isNotificationOpen} 
@@ -2582,971 +2445,134 @@ export default function App() {
       {/* Floating Dark Mode Button */}
       <button 
         onClick={() => setDarkMode(!darkMode)}
-        className={`fixed bottom-24 right-4 z-50 p-4 rounded-full shadow-xl transition-all ${darkMode ? 'bg-neutral-900 text-yellow-400 hover:bg-neutral-800 border border-neutral-800' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
+        className={`fixed bottom-24 right-4 z-50 p-3 rounded-full shadow-lg transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none' : 'opacity-100'} ${darkMode ? 'bg-neutral-900 text-yellow-400 hover:bg-neutral-800 border border-neutral-800' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
       >
-        {darkMode ? <Sun size={24} /> : <Moon size={24} />}
+        {darkMode ? <Sun size={20} /> : <Moon size={20} />}
       </button>
 
       <main 
-        className="p-4 pt-24 max-w-md mx-auto relative z-10"
+        className={`mx-auto relative z-10 transition-all duration-500 ${activeTab === 'logs' ? 'max-w-none w-full p-0 pt-0 pb-0' : 'max-w-md p-4 pt-24 pb-28'}`}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
         <AnimatePresence mode="wait" custom={direction}>
           {activeTab === 'dashboard' && (
-            <motion.div
-              key="dashboard"
-              custom={direction}
-              variants={slideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="space-y-6 w-full"
-            >
-              <div className="grid grid-cols-2 gap-4">
-                  <motion.div 
-                    whileHover={{ y: -8, scale: 1.02 }}
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, type: "spring" }}
-                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d relative overflow-hidden group ${darkMode ? 'bg-emerald-700 border-emerald-600 shadow-lg shadow-emerald-500/50' : 'bg-emerald-500 border-emerald-400 shadow-lg shadow-emerald-500/50'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-dots opacity-[0.15] pointer-events-none ${darkMode ? 'text-emerald-100' : 'text-emerald-100'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-emerald-800 text-emerald-100' : 'bg-emerald-400 text-emerald-50'}`}>
-                        <Key size={24} />
-                      </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-emerald-100/80' : 'text-emerald-50/80'}`}>Active Keywords</p>
-                      {loading ? (
-                        <Skeleton className="h-8 w-16" />
-                      ) : (
-                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-white'}`}>{stats?.keywordCount || 0}</h3>
-                      )}
-                    </div>
-                  </motion.div>
+            <Dashboard 
+              darkMode={darkMode}
+              stats={stats}
+              setActiveTab={setActiveTab}
+              handleScanMissed={handleScanMissed}
+              isScanningMissed={isScanningMissed}
+              missedCount={missedCount}
+              isCatchingUp={isCatchingUp}
+              handleCancelCatchUp={handleCancelCatchUp}
+              handleTogglePause={handleTogglePause}
+              loading={loading}
+            />
+          )}
 
-                  <motion.div 
-                    whileHover={{ y: -8, scale: 1.02 }}
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, delay: 0.1, type: "spring" }}
-                    className={`p-6 rounded-[2.5rem] border transition-all duration-500 card-3d relative overflow-hidden group ${darkMode ? 'bg-blue-700 border-blue-600 shadow-lg shadow-blue-500/50' : 'bg-blue-500 border-blue-400 shadow-lg shadow-blue-500/50'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-grid opacity-[0.15] pointer-events-none ${darkMode ? 'text-blue-100' : 'text-blue-100'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-blue-800 text-blue-100' : 'bg-blue-400 text-blue-50'}`}>
-                        <LayoutDashboard size={24} />
-                      </div>
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-blue-100/80' : 'text-blue-50/80'}`}>Today / Total Topics</p>
-                      {loading ? (
-                        <Skeleton className="h-8 w-24" />
-                      ) : (
-                        <h3 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-white'}`}>
-                          {stats?.todayTopicCount || 0} <span className="text-sm font-medium opacity-80 ml-1">/ {stats?.topicCount || 0}</span>
-                        </h3>
-                      )}
-                    </div>
-                  </motion.div>
-
-                  <motion.div 
-                    initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                    animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                    transition={{ duration: 0.5, delay: 0.2, type: "spring" }}
-                    whileHover={{ y: -8 }}
-                    className={`col-span-2 p-8 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between card-3d relative overflow-hidden group ${darkMode ? 'bg-amber-700 border-amber-600 shadow-lg shadow-amber-500/50' : 'bg-amber-500 border-amber-400 shadow-lg shadow-amber-500/50'}`}
-                  >
-                    <div className={`absolute inset-0 pattern-lines opacity-[0.15] pointer-events-none ${darkMode ? 'text-amber-100' : 'text-amber-100'}`} />
-                    <div className="relative z-10 pointer-events-auto">
-                      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkMode ? 'text-amber-100/80' : 'text-amber-50/80'}`}>Response Delay</p>
-                      <motion.h3 
-                        className={`text-6xl font-black tracking-tight text-white`}
-                        animate={{ scale: [1, 1.05, 1] }}
-                        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                      >
-                        {stats?.delaySeconds || 0}<span className="text-2xl font-medium opacity-80 ml-1 text-white">sec</span>
-                      </motion.h3>
-                    </div>
-                    <div className={`relative z-10 w-14 h-14 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-amber-800 text-amber-100' : 'bg-amber-400 text-amber-50'}`}>
-                      <RefreshCw size={28} />
-                    </div>
-                  </motion.div>
-                  
-                  <motion.div 
-                      whileHover={{ y: -8, scale: 1.02 }}
-                      initial={{ opacity: 0, y: 30, rotateX: -10 }}
-                      animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                      transition={{ duration: 0.5, type: "spring" }}
-                      className="col-span-2 flex flex-col gap-4"
-                    >
-                      <button
-                        onClick={handleCatchUp}
-                        disabled={isCatchingUp || stats?.isSystemPaused}
-                        className={`w-full p-6 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between group relative overflow-hidden ${
-                          stats?.isSystemPaused 
-                            ? (darkMode ? 'bg-slate-800 border-slate-700 text-slate-400 cursor-not-allowed' : 'bg-slate-200 border-slate-300 text-slate-500 cursor-not-allowed')
-                            : (darkMode ? 'bg-rose-700 border-rose-600 text-white shadow-lg shadow-rose-500/50 hover:bg-rose-800' : 'bg-rose-500 border-rose-400 text-white shadow-lg shadow-rose-500/50 hover:bg-rose-600')
-                        }`}
-                      >
-                        <div className="flex items-center space-x-4">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-rose-800 text-rose-100' : 'bg-rose-400 text-rose-50'}`}>
-                            {isCatchingUp ? <RefreshCw className="animate-spin" size={24} /> : <RotateCcw size={24} />}
-                          </div>
-                          <div className="text-left">
-                            <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Manual Catch Up</p>
-                            <h3 className="text-lg font-black tracking-tight">{missedCount > 0 ? `${missedCount} Missed Keywords` : 'No Missed Keywords'}</h3>
-                          </div>
-                        </div>
-                        <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border ${
-                          stats?.isSystemPaused 
-                            ? 'border-slate-700 bg-slate-700/20' 
-                            : 'border-rose-400 bg-rose-400/20'
-                        }`}>
-                          {stats?.isSystemPaused ? 'Unpause to Reply' : 'Reply Now'}
-                        </div>
-                      </button>
-
-                      <button
-                        onClick={handleScanMissed}
-                        disabled={isScanningMissed}
-                        className={`w-full p-6 rounded-[2.5rem] border transition-all duration-500 flex items-center justify-between group relative overflow-hidden ${
-                          darkMode ? 'bg-indigo-700 border-indigo-600 text-white shadow-lg shadow-indigo-500/50 hover:bg-indigo-800' : 'bg-indigo-500 border-indigo-400 text-white shadow-lg shadow-indigo-500/50 hover:bg-indigo-600'
-                        }`}
-                      >
-                        <div className="flex items-center space-x-4">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 ${darkMode ? 'bg-indigo-800 text-indigo-100' : 'bg-indigo-400 text-indigo-50'}`}>
-                            {isScanningMissed ? <RefreshCw className="animate-spin" size={24} /> : <Search size={24} />}
-                          </div>
-                          <div className="text-left">
-                            <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Scan Missed</p>
-                            <h3 className="text-lg font-black tracking-tight">Scan Recent Topics</h3>
-                          </div>
-                        </div>
-                        <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-indigo-400 bg-indigo-400/20`}>
-                          Scan Now
-                        </div>
-                      </button>
-                    </motion.div>
-              </div>
-
-              {/* System Pause/Resume Button */}
-              <motion.button
-                whileHover={{ scale: 1.02, y: -4 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleTogglePause}
-                className={`w-full p-8 rounded-[2.5rem] border transition-all duration-500 relative overflow-hidden group ${
-                  stats?.isSystemPaused 
-                    ? (darkMode ? 'bg-rose-700 border-rose-600 text-white shadow-lg shadow-rose-500/50' : 'bg-rose-500 border-rose-400 text-white shadow-lg shadow-rose-500/50') 
-                    : (darkMode ? 'bg-emerald-700 border-emerald-600 text-white shadow-lg shadow-emerald-500/50' : 'bg-emerald-500 border-emerald-400 text-white shadow-lg shadow-emerald-500/50')
-                }`}
-              >
-                <div className="flex items-center space-x-4 relative z-10">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border transition-colors ${
-                    stats?.isSystemPaused 
-                      ? (darkMode ? 'bg-rose-800 border-rose-700 text-rose-100' : 'bg-rose-400 border-rose-300 text-rose-50') 
-                      : (darkMode ? 'bg-emerald-800 border-emerald-700 text-emerald-100' : 'bg-emerald-400 border-emerald-300 text-emerald-50')
-                  }`}>
-                    {stats?.isSystemPaused ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
-                  </div>
-                  <div className="text-left">
-                    <p className={`text-[10px] font-bold uppercase tracking-widest mb-0.5 opacity-80 text-white`}>Auto Reply System</p>
-                    <h3 className="text-xl font-bold tracking-tight text-white">{stats?.isSystemPaused ? 'System Paused' : 'System Active'}</h3>
-                  </div>
-                </div>
-                <div className={`absolute right-8 top-8 px-4 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border transition-all ${
-                  stats?.isSystemPaused 
-                    ? (darkMode ? 'bg-rose-800 border-rose-700 text-rose-100' : 'bg-rose-400 border-rose-300 text-rose-50') 
-                    : (darkMode ? 'bg-emerald-800 border-emerald-700 text-emerald-100' : 'bg-emerald-400 border-emerald-300 text-emerald-50')
-                }`}>
-                  {stats?.isSystemPaused ? 'Resume' : 'Pause'}
-                </div>
-              </motion.button>
-
-              <motion.div 
-                whileHover={{ y: -4, scale: 1.01 }}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: 0.3 }}
-                className={`p-6 rounded-[2rem] border transition-all duration-500 relative overflow-hidden group ${darkMode ? 'bg-indigo-950/40 border-indigo-500/30' : 'bg-indigo-50 border-indigo-200 shadow-xl shadow-indigo-500/10'}`}
-              >
-                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
-                <div className="relative z-10 pointer-events-auto">
-                  <div className="flex items-center space-x-2 mb-4">
-                    <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-500/10 text-indigo-600'}`}>
-                      <MessageSquare size={14} />
-                    </div>
-                    <p className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-indigo-300/60' : 'text-indigo-600/60'}`}>Current Auto Reply</p>
-                  </div>
-                  <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-black/20 border-indigo-500/20' : 'bg-white/60 border-indigo-100'}`}>
-                    <p className={`text-sm font-medium leading-relaxed italic ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                      "{stats?.autoReply || 'No message set'}"
-                    </p>
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
+          {activeTab === 'catchup' && (
+            <CatchUpPage 
+              darkMode={darkMode} 
+              setActiveTab={setActiveTab} 
+              scannedItems={scannedItems} 
+              handleClearAllMissed={handleClearAllMissed} 
+              handleReplyToSingleMissed={handleReplyToSingleMissed} 
+              replyingIds={replyingIds}
+              handleScanMissed={handleScanMissed}
+              isScanningMissed={isScanningMissed}
+            />
           )}
 
           {activeTab === 'settings' && (
-            <motion.div
-              key="settings"
-              custom={direction}
-              variants={slideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="space-y-6 w-full pb-20"
-            >
-              {/* General Settings Card */}
-              <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center space-x-3 mb-6">
-                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600'}`}>
-                    <Bot size={18} />
-                  </div>
-                  <h3 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>General Bot Settings</h3>
-                </div>
-                
-                <div className="space-y-6">
-                  <div className="space-y-2">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Welcome Message</label>
-                    <textarea
-                      value={autoReplyInput}
-                      onChange={(e) => setAutoReplyInput(e.target.value)}
-                      placeholder="Message sent to new users..."
-                      rows={3}
-                      className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Reply Delay (Seconds)</label>
-                    <input
-                      type="number"
-                      value={delaySecondsInput}
-                      onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
-                      className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* AI Integration Card */}
-              <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3">
-                    <div className={`p-2 rounded-xl ${darkMode ? 'bg-purple-500/10 text-purple-400' : 'bg-purple-50 text-purple-600'}`}>
-                      <Zap size={18} />
-                    </div>
-                    <h3 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>AI Smart Reply</h3>
-                  </div>
-                  <button 
-                    onClick={handleToggleAiMode}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${aiModeEnabled ? 'bg-purple-500' : 'bg-slate-300'}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${aiModeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {aiModeEnabled && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      className="space-y-6 overflow-hidden"
-                    >
-                      <div className="space-y-3">
-                        <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Gemini API Keys (Rotation)</label>
-                        <div className="space-y-2">
-                          {geminiApiKeys.map((key, index) => (
-                            <div key={index} className="flex items-center space-x-2">
-                              <input
-                                type="text"
-                                value={key}
-                                onChange={(e) => {
-                                  const newKeys = [...geminiApiKeys];
-                                  newKeys[index] = e.target.value;
-                                  setGeminiApiKeys(newKeys);
-                                }}
-                                placeholder="AIzaSy..."
-                                className={`flex-1 p-3 border rounded-xl outline-none text-sm ${darkMode ? 'bg-neutral-950 border-white/5 text-white' : 'bg-slate-50 border-slate-100 text-slate-900'}`}
-                              />
-                              <div className="flex space-x-1">
-                                <button
-                                  onClick={() => verifyKey(key)}
-                                  disabled={!key}
-                                  className={`p-3 rounded-xl transition-all ${!key ? 'opacity-30' : (darkMode ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100')}`}
-                                >
-                                  <CheckCircle2 size={16} />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    const newKeys = [...geminiApiKeys];
-                                    newKeys.splice(index, 1);
-                                    setGeminiApiKeys(newKeys);
-                                  }}
-                                  className={`p-3 rounded-xl transition-all ${darkMode ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                          <button
-                            onClick={() => setGeminiApiKeys([...geminiApiKeys, ""])}
-                            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}
-                          >
-                            <Plus size={14} />
-                            <span>Add New Key</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 pt-4 border-t border-slate-100 dark:border-neutral-800">
-                        <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>AI Persona / System Prompt</label>
-                        <textarea
-                          value={aiPersona}
-                          onChange={(e) => setAiPersona(e.target.value)}
-                          placeholder="You are a smart assistant..."
-                          rows={5}
-                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-purple-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-                        />
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Photo Reply Card */}
-              <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3">
-                    <div className={`p-2 rounded-xl ${darkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>
-                      <ImageIcon size={18} />
-                    </div>
-                    <h3 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Photo Automation</h3>
-                  </div>
-                  <button 
-                    onClick={handleTogglePhotoReply}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${photoReplyEnabled ? 'bg-amber-500' : 'bg-slate-300'}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${photoReplyEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {photoReplyEnabled && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      className="space-y-6 overflow-hidden"
-                    >
-                      <div className="space-y-2">
-                        <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Primary Reply Message</label>
-                        <textarea
-                          value={photoReplyMessage}
-                          onChange={(e) => setPhotoReplyMessage(e.target.value)}
-                          placeholder="Reply to photos..."
-                          rows={2}
-                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-                        />
-                      </div>
-
-                      <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-neutral-800">
-                        <div className="flex items-center justify-between">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Second Reply Message</label>
-                          <button 
-                            onClick={handleTogglePhotoReplyMessage2}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${photoReplyMessage2Enabled ? 'bg-amber-500' : 'bg-slate-300'}`}
-                          >
-                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${photoReplyMessage2Enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                          </button>
-                        </div>
-                        <AnimatePresence>
-                          {photoReplyMessage2Enabled && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              className="overflow-hidden"
-                            >
-                              <textarea
-                                value={photoReplyMessage2}
-                                onChange={(e) => setPhotoReplyMessage2(e.target.value)}
-                                placeholder="Follow-up message..."
-                                rows={2}
-                                className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-                              />
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100 dark:border-neutral-800">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Topic Icon</label>
-                          <input
-                            type="text"
-                            value={topicIcon}
-                            onChange={(e) => setTopicIcon(e.target.value)}
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white' : 'bg-slate-50 border-slate-100 text-slate-900'}`}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Max Replies</label>
-                          <input
-                            type="number"
-                            value={photoReplyMax}
-                            onChange={(e) => setPhotoReplyMax(e.target.value === '' ? '' : parseInt(e.target.value) || 1)}
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-white' : 'bg-slate-50 border-slate-100 text-slate-900'}`}
-                          />
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Notifications Card */}
-              <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3">
-                    <div className={`p-2 rounded-xl ${darkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
-                      <Bell size={18} />
-                    </div>
-                    <h3 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Notification Settings</h3>
-                  </div>
-                  <button 
-                    onClick={handleToggleNotificationSound}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${notificationSoundEnabled ? 'bg-blue-500' : 'bg-slate-300'}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notificationSoundEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {notificationSoundEnabled && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      className="space-y-6 overflow-hidden"
-                    >
-                      <div className="grid grid-cols-3 gap-2">
-                        {['default', 'bell', 'chime', 'ping', 'digital', 'rising', 'double', 'low', 'laser'].map((type) => (
-                          <button
-                            key={type}
-                            onClick={() => handleUpdateNotificationSoundType(type)}
-                            className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${
-                              notificationSoundType === type 
-                                ? (darkMode ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-50 border-blue-200 text-blue-600') 
-                                : (darkMode ? 'bg-neutral-950 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-slate-50 border-slate-100 text-slate-400 hover:text-slate-600 shadow-sm')
-                            }`}
-                          >
-                            {type}
-                          </button>
-                        ))}
-                      </div>
-                      <button
-                        onClick={requestNotificationPermission}
-                        className={`w-full flex items-center justify-center space-x-2 py-4 rounded-2xl border font-black text-[10px] uppercase tracking-widest transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-slate-400 hover:bg-neutral-900' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm'}`}
-                      >
-                        <Bell size={14} />
-                        <span>Test Push Notification</span>
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Data & Backup Card */}
-              <div className={`p-6 rounded-[2rem] border transition-all duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-                <div className="flex items-center space-x-3 mb-6">
-                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-orange-500/10 text-orange-400' : 'bg-orange-50 text-orange-600'}`}>
-                    <Database size={18} />
-                  </div>
-                  <h3 className={`text-xs font-black uppercase tracking-widest ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Data & Backup</h3>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <button 
-                    onClick={handleExportData}
-                    className={`flex flex-col items-center justify-center space-y-2 p-6 rounded-[1.5rem] border transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-slate-300 hover:bg-neutral-900' : 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-white shadow-sm'}`}
-                  >
-                    <Download size={20} className="text-blue-500" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">Export Data</span>
-                  </button>
-                  <button 
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={importing}
-                    className={`flex flex-col items-center justify-center space-y-2 p-6 rounded-[1.5rem] border transition-all ${darkMode ? 'bg-neutral-950 border-white/5 text-slate-300 hover:bg-neutral-900' : 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-white shadow-sm'}`}
-                  >
-                    <Upload size={20} className="text-purple-500" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">{importing ? 'Importing...' : 'Import Data'}</span>
-                  </button>
-                  <input type="file" ref={fileInputRef} onChange={handleImportData} accept=".json" className="hidden" />
-                </div>
-              </div>
-
-              {/* Save Button */}
-              <div className="fixed bottom-24 left-4 right-4 z-40">
-                <motion.button
-                  whileHover={{ scale: 1.02, y: -2 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleUpdateSettings}
-                  disabled={saving}
-                  className={`w-full py-5 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-2xl flex items-center justify-center space-x-3 ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/40' : 'bg-emerald-500 text-white shadow-emerald-500/30'}`}
-                >
-                  {saving ? (
-                    <RefreshCw className="animate-spin" size={18} />
-                  ) : (
-                    <Save size={18} />
-                  )}
-                  <span>{saving ? 'Saving Changes...' : 'Save All Settings'}</span>
-                </motion.button>
-              </div>
-            </motion.div>
+            <SettingsPanel 
+              darkMode={darkMode}
+              autoReplyInput={autoReplyInput}
+              setAutoReplyInput={setAutoReplyInput}
+              autoReply2Enabled={autoReply2Enabled}
+              setAutoReply2Enabled={setAutoReply2Enabled}
+              autoReply2Input={autoReply2Input}
+              setAutoReply2Input={setAutoReply2Input}
+              autoReply2DelayInput={autoReply2DelayInput}
+              setAutoReply2DelayInput={setAutoReply2DelayInput}
+              delaySecondsInput={delaySecondsInput}
+              setDelaySecondsInput={setDelaySecondsInput}
+              handleToggleAutoReset={handleToggleAutoReset}
+              autoResetKeywords={autoResetKeywords}
+              handleToggleAiMode={handleToggleAiMode}
+              aiModeEnabled={aiModeEnabled}
+              geminiApiKeys={geminiApiKeys}
+              setGeminiApiKeys={setGeminiApiKeys}
+              verifyKey={verifyKey}
+              aiPersona={aiPersona}
+              setAiPersona={setAiPersona}
+              handleTogglePhotoReply={handleTogglePhotoReply}
+              photoReplyEnabled={photoReplyEnabled}
+              photoReplyMessage={photoReplyMessage}
+              setPhotoReplyMessage={setPhotoReplyMessage}
+              handleTogglePhotoReplyMessage2={handleTogglePhotoReplyMessage2}
+              photoReplyMessage2Enabled={photoReplyMessage2Enabled}
+              photoReplyMessage2={photoReplyMessage2}
+              setPhotoReplyMessage2={setPhotoReplyMessage2}
+              photoReplyMessage2StartTime={photoReplyMessage2StartTime}
+              setPhotoReplyMessage2StartTime={setPhotoReplyMessage2StartTime}
+              photoReplyMessage2EndTime={photoReplyMessage2EndTime}
+              setPhotoReplyMessage2EndTime={setPhotoReplyMessage2EndTime}
+              topicIcon={topicIcon}
+              setTopicIcon={setTopicIcon}
+              topicRenameEmoji={topicRenameEmoji}
+              setTopicRenameEmoji={setTopicRenameEmoji}
+              photoReplyMax={photoReplyMax}
+              setPhotoReplyMax={setPhotoReplyMax}
+              handleToggleNotificationSound={handleToggleNotificationSound}
+              notificationSoundEnabled={notificationSoundEnabled}
+              notificationSoundType={notificationSoundType}
+              handleUpdateNotificationSoundType={handleUpdateNotificationSoundType}
+              requestNotificationPermission={requestNotificationPermission}
+              testPush={testPush}
+              handleExportData={handleExportData}
+              handleImportData={handleImportData}
+              fileInputRef={fileInputRef}
+              importing={importing}
+              handleUpdateSettings={handleUpdateSettings}
+              saving={saving}
+              direction={direction}
+              slideVariants={slideVariants}
+            />
           )}
 
           {activeTab === 'keywords' && (
-            <motion.div
-              key="keywords"
-              custom={direction}
-              variants={slideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="space-y-6 w-full"
-            >
-              {keywords.length > 0 && (
-                <div className="space-y-2">
-                  <motion.div 
-                    initial={false}
-                    animate={{ 
-                      scale: isSearchFocused ? 1.02 : 1,
-                      boxShadow: isSearchFocused ? (darkMode ? "0 0 20px rgba(59, 130, 246, 0.2)" : "0 10px 25px -5px rgba(59, 130, 246, 0.1)") : "none"
-                    }}
-                    className="relative group"
-                  >
-                    <div className="relative h-14">
-                      <div className={`absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none transition-colors duration-300 ${isSearchFocused ? 'text-blue-500' : (darkMode ? 'text-slate-500' : 'text-slate-400')}`}>
-                        <Search size={18} className={`${isSearchFocused ? 'scale-110' : 'scale-100'} transition-transform duration-300`} />
-                      </div>
-                      <input
-                        type="text"
-                        value={keywordSearch}
-                        onFocus={() => setIsSearchFocused(true)}
-                        onBlur={() => setIsSearchFocused(false)}
-                        onChange={(e) => setKeywordSearch(e.target.value)}
-                        placeholder="Search keywords or replies..."
-                        className={`w-full h-full pl-11 pr-12 border rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all duration-300 ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
-                      />
-                      <AnimatePresence>
-                        {keywordSearch && (
-                          <motion.button 
-                            initial={{ opacity: 0, scale: 0.8 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.8 }}
-                            onClick={() => setKeywordSearch("")}
-                            className={`absolute inset-y-0 right-0 pr-4 flex items-center ${darkMode ? 'text-slate-500 hover:text-rose-400' : 'text-slate-400 hover:text-rose-600'}`}
-                          >
-                            <X size={18} className="hover:rotate-90 transition-transform duration-300" />
-                          </motion.button>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  </motion.div>
-                </div>
-              )}
-
-              {/* Add/Edit Rule Form - Hidden when searching to bring results closer */}
-              <button
-                onClick={() => setIsAddingNewRule(!isAddingNewRule)}
-                className={`w-full p-4 rounded-2xl font-black uppercase tracking-widest text-sm transition-all ${
-                  darkMode 
-                    ? 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20' 
-                    : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-                }`}
-              >
-                {isAddingNewRule || editingKeywordId ? 'Hide Form' : 'Create New Rule'}
-              </button>
-              <AnimatePresence>
-                {(isAddingNewRule || editingKeywordId) && !keywordSearch && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <AddKeywordSection 
-                      editingKeyword={editingKeywordId ? keywords.find(k => k._id === editingKeywordId) : null}
-                      onSave={(data: any) => {
-                        handleAddKeyword(data);
-                        setIsAddingNewRule(false);
-                      }}
-                      onCancel={() => {
-                        cancelEdit();
-                        setIsAddingNewRule(false);
-                      }}
-                      darkMode={darkMode}
-                      keywordsTopRef={keywordsTopRef}
-                    />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {keywords.length > 0 && (
-                <div className="space-y-4">
-
-                  <div className="space-y-3">
-                    {keywords.filter(kw => {
-                      const searchLower = deferredKeywordSearch.toLowerCase();
-                      const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
-                      const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
-                      const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
-                      return matchesKeyword || matchesReply;
-                    }).map((kw, index) => {
-                      const colorName = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'][index % 6];
-                      
-                      const editButtonClasses = [
-                        { dark: 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30', light: 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' },
-                        { dark: 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30', light: 'bg-blue-50 text-blue-600 hover:bg-blue-100' },
-                        { dark: 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30', light: 'bg-rose-50 text-rose-600 hover:bg-rose-100' },
-                        { dark: 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30', light: 'bg-amber-50 text-amber-600 hover:bg-amber-100' },
-                        { dark: 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30', light: 'bg-purple-50 text-purple-600 hover:bg-purple-100' },
-                        { dark: 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30', light: 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' },
-                      ][index % 6];
-
-                      return (
-                      <motion.div 
-                      layout
-                      key={kw._id}
-                      whileHover={{ scale: 1.01, y: -2 }}
-                      className={`p-6 rounded-[2rem] border transition-all duration-500 flex items-start justify-between relative overflow-hidden ${
-                        darkMode 
-                          ? `bg-neutral-900/40 border-white/5 hover:border-${colorName}-500/30` 
-                          : `bg-white border-slate-100 shadow-sm hover:shadow-xl hover:border-${colorName}-200`
-                      }`}
-                    >
-                      <div className={`absolute inset-0 pattern-dots opacity-[0.03] text-${colorName}-500`} />
-                      <div className="relative z-10 flex-1 min-w-0">
-                        <div className="flex items-center gap-3">
-                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
-                            #{index + 1}
-                          </span>
-                          <div className="flex flex-wrap gap-1.5">
-                            {(kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]).map((k, i) => (
-                              <span key={i} className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-lg ${darkMode ? `bg-${colorName}-500/10 text-${colorName}-400` : `bg-${colorName}-500/5 text-${colorName}-600`}`}>
-                                {k}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                        
-                        <div className="space-y-2 overflow-hidden mt-3">
-                          <p className={`text-sm font-medium leading-relaxed ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                            {kw.reply || <span className="italic opacity-40">No reply message</span>}
-                          </p>
-                          
-                          <div className="flex items-center gap-3 pt-2">
-                            <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                              <RefreshCw size={10} />
-                              <span>Max: {kw.max_replies === 0 ? '∞' : kw.max_replies || 0}</span>
-                            </div>
-                            <div className={`flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest ${kw.match_mode === 'partial' ? 'text-orange-400' : 'text-blue-400'}`}>
-                              <Hash size={10} />
-                              <span>{kw.match_mode || 'exact'}</span>
-                            </div>
-                            {((kw.message_links && kw.message_links.length > 0) || kw.message_link) && (
-                              <div className="flex items-center space-x-1 text-[10px] font-bold uppercase tracking-widest text-pink-400">
-                                <FileText size={10} />
-                                <span>{kw.message_links?.length || 1} Forward</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="flex flex-col space-y-2 ml-4 relative z-10">
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); handleEditKeyword(kw); }}
-                          className={`p-2.5 rounded-xl transition-all ${darkMode ? editButtonClasses.dark : editButtonClasses.light}`}
-                        >
-                          <Settings size={16} />
-                        </button>
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw._id); }}
-                          className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </motion.div>
-                    );
-                  })}
-
-                  {keywords.filter(kw => {
-                    const searchLower = keywordSearch.toLowerCase();
-                    const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
-                    const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
-                    const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
-                    return matchesKeyword || matchesReply;
-                  }).length === 0 && keywordSearch && (
-                    <div className={`text-center py-12 rounded-[2rem] border border-dashed ${darkMode ? 'border-white/10 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
-                      <Search size={32} className="mx-auto mb-3 opacity-20" />
-                      <p className="text-sm font-medium">No keywords found matching "{keywordSearch}"</p>
-                    </div>
-                  )}
-                </div>
-                <div ref={keywordsBottomRef} />
-              </div>
-              )}
-
-              {keywords.length > 5 && (
-                <div className={`fixed bottom-24 left-4 flex flex-col rounded-full shadow-xl border overflow-hidden z-40 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-slate-200'}`}>
-                  <motion.button
-                    whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={scrollToKeywordsTop}
-                    className={`p-3 transition-all ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
-                  >
-                    <ArrowUp size={20} />
-                  </motion.button>
-                  <div className={`h-px w-full ${darkMode ? 'bg-white/10' : 'bg-slate-200'}`} />
-                  <motion.button
-                    whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={scrollToKeywordsBottom}
-                    className={`p-3 transition-all ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
-                  >
-                    <ArrowDown size={20} />
-                  </motion.button>
-                </div>
-              )}
-            </motion.div>
+            <KeywordsManager 
+              darkMode={darkMode}
+              keywordSearch={keywordSearch}
+              setKeywordSearch={setKeywordSearch}
+              isAddingNewRule={isAddingNewRule}
+              setIsAddingNewRule={setIsAddingNewRule}
+              editingKeywordId={editingKeywordId}
+              keywords={keywords}
+              handleAddKeyword={handleAddKeyword}
+              handleDeleteKeyword={handleDeleteKeyword}
+              cancelEdit={cancelEdit}
+              visibleKeywordsCount={visibleKeywordsCount}
+              handleKeywordsScroll={handleKeywordsScroll}
+              keywordsTopRef={keywordsTopRef}
+              direction={direction}
+              slideVariants={slideVariants}
+              isSearchFocused={isSearchFocused}
+              setIsSearchFocused={setIsSearchFocused}
+              displayedKeywords={displayedKeywords}
+              filteredKeywords={filteredKeywords}
+              handleEditKeyword={handleEditKeyword}
+            />
           )}
 
           {activeTab === 'broadcast' && (
-            <motion.div
+            <div
               key="broadcast"
-              custom={direction}
-              variants={slideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
               className="space-y-6 w-full"
             >
               <div ref={castTopRef} />
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-purple relative overflow-hidden group ${darkMode ? 'bg-purple-950/40 border-purple-500/30' : 'bg-purple-50 border-purple-200 shadow-xl shadow-purple-500/10'}`}>
-                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
-                <div className="relative z-10 space-y-3 pointer-events-auto">
-                  <div className="flex items-center justify-between ml-1">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Message</label>
-                    <span className={`text-[10px] font-bold ${broadcastMessage.length > 500 ? 'text-rose-500' : darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                      {broadcastMessage.length} / 500
-                    </span>
-                  </div>
-                  <textarea
-                    value={broadcastMessage}
-                    onChange={(e) => setBroadcastMessage(e.target.value)}
-                    placeholder="Type your announcement here..."
-                    className={`w-full h-32 p-5 border rounded-3xl focus:ring-4 focus:ring-purple-500/20 outline-none text-sm transition-all ${darkMode ? 'bg-purple-950/20 border-purple-500/20 text-white placeholder-white/20' : 'bg-white border-purple-100 text-slate-900 placeholder-slate-400 shadow-inner'}`}
-                  />
-                </div>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleBroadcast}
-                  disabled={broadcasting || !broadcastMessage.trim() || broadcastMessage.length > 500}
-                  className={`w-full py-5 rounded-3xl font-black uppercase tracking-widest text-sm transition-all disabled:opacity-50 flex items-center justify-center space-x-3 shadow-xl ${darkMode ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-500 hover:to-blue-500' : 'bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 shadow-purple-500/20'}`}
-                >
-                  <Send size={18} />
-                  <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
-                </motion.button>
-              </div>
-
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-amber relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}>
-                <div className={`absolute inset-0 pattern-grid opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
-                <div className="relative z-10 space-y-6 pointer-events-auto">
-                  
-                  <div className="grid gap-4">
-                    <div className={`flex items-center justify-between p-6 rounded-3xl border transition-all duration-300 ${darkMode ? 'bg-neutral-900/40 border-white/5 hover:bg-neutral-900/60' : 'bg-white border-slate-100 shadow-sm hover:shadow-md'}`}>
-                      <div className="space-y-1 pr-4">
-                        <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Reply in General</p>
-                        <p className={`text-[10px] leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Redirect bot replies to the general section instead of specific topics.</p>
-                      </div>
-                      <button
-                        onClick={handleToggleReplyInGeneral}
-                        className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none shadow-inner ${replyInGeneral ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                      >
-                        <span
-                          className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-sm ${replyInGeneral ? 'translate-x-6' : 'translate-x-1'}`}
-                        />
-                      </button>
-                    </div>
-                    
-                    <div className={`h-px w-full ${darkMode ? 'bg-white/5' : 'bg-slate-200/50'}`} />
-
-                    <div className={`flex items-center justify-between p-6 rounded-3xl border transition-all duration-300 ${darkMode ? 'bg-neutral-900/40 border-white/5 hover:bg-neutral-900/60' : 'bg-white border-slate-100 shadow-sm hover:shadow-md'}`}>
-                      <div className="space-y-1 pr-4">
-                        <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Push Notifications</p>
-                        <p className={`text-[10px] leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                          {Notification.permission === 'granted' ? 'Real-time alerts for photo triggers are active.' : 'Enable browser notifications for instant alerts.'}
-                        </p>
-                      </div>
-                      <div className="flex items-center space-x-3">
-                        {Notification.permission === 'granted' && (
-                          <button
-                            onClick={testPush}
-                            className={`p-2.5 rounded-xl transition-all ${darkMode ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}`}
-                            title="Send Test Push"
-                          >
-                            <Send size={16} />
-                          </button>
-                        )}
-                        <button
-                          onClick={requestNotificationPermission}
-                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none shadow-inner ${Notification.permission === 'granted' ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                        >
-                          <span
-                            className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-sm ${Notification.permission === 'granted' ? 'translate-x-6' : 'translate-x-1'}`}
-                          />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className={`h-px w-full ${darkMode ? 'bg-white/5' : 'bg-slate-200/50'}`} />
-
-                    <div className={`flex items-center justify-between p-5 rounded-3xl border transition-all duration-300 ${darkMode ? 'bg-neutral-900/40 border-white/5 hover:bg-neutral-900/60' : 'bg-white border-slate-100 shadow-sm hover:shadow-md'}`}>
-                      <div className="space-y-1 pr-4">
-                        <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Auto Reset Keywords</p>
-                        <p className={`text-[10px] leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Automatically reset all keyword reply limits daily at 12:00 AM IST.</p>
-                      </div>
-                      <button
-                        onClick={handleToggleAutoReset}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${autoResetKeywords ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoResetKeywords ? 'translate-x-6' : 'translate-x-1'}`}
-                        />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="pt-4">
-                    <motion.button
-                      whileHover={{ scale: 1.02, y: -2 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => setShowResetKeywordsConfirm(true)}
-                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-3 border-2 ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20' : 'bg-white border-amber-200 text-amber-600 hover:bg-amber-50 shadow-lg shadow-amber-500/10'}`}
-                    >
-                      <RotateCcw size={16} />
-                      <span>Reset All Keywords Now</span>
-                    </motion.button>
-                  </div>
-                </div>
-              </div>
-
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
-                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
-                <div className="relative z-10 space-y-4 pointer-events-auto">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Auto-Block Keywords</label>
-                      <ShieldAlert size={16} className="text-rose-500" />
-                    </div>
-                    <button
-                      onClick={() => setAutoBlockKeywordsExpanded(!autoBlockKeywordsExpanded)}
-                      className={`p-2 rounded-xl transition-all ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-black/5 text-slate-500'}`}
-                    >
-                      {autoBlockKeywordsExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                    </button>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div className="flex flex-col space-y-3">
-                      <div className="grid grid-cols-2 gap-3">
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={addAutoBlockKeyword}
-                          className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500' : 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600 shadow-emerald-500/20'}`}
-                        >
-                          <Plus size={14} />
-                          <span>Add Keyword</span>
-                        </motion.button>
-
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={handleUpdateAutoBlockKeywords}
-                          disabled={saving}
-                          className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 flex items-center justify-center space-x-2 shadow-lg ${saving ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
-                        >
-                          {saving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                          <span>Save Rules</span>
-                        </motion.button>
-                      </div>
-                    </div>
-
-                    <AnimatePresence>
-                      {autoBlockKeywordsExpanded && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          className="space-y-4 overflow-hidden"
-                        >
-                          <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>If these keywords are found in a topic, the bot will automatically block it.</p>
-                          
-                          <div className="space-y-3">
-                            {autoBlockKeywords.map((item, index) => (
-                              <div key={index} className={`p-4 rounded-2xl border space-y-3 ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                <div className="flex items-center space-x-2 w-full">
-                                  <input
-                                    type="text"
-                                    value={item.keyword}
-                                    onChange={(e) => updateAutoBlockKeyword(index, 'keyword', e.target.value)}
-                                    placeholder="Keyword..."
-                                    className={`flex-1 min-w-0 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition-all ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
-                                  />
-                                  <button
-                                    onClick={() => removeAutoBlockKeyword(index)}
-                                    className={`flex-shrink-0 p-2.5 rounded-xl transition-all ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-600 hover:bg-rose-200'}`}
-                                    title="Delete Keyword"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
-                                </div>
-                                
-                                <div className="flex items-center space-x-2">
-                                  <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Match:</span>
-                                  <div className="flex bg-slate-100 dark:bg-neutral-900 rounded-lg p-1">
-                                    <button
-                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'exact')}
-                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${item.matchMode === 'exact' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
-                                    >
-                                      Exact
-                                    </button>
-                                    <button
-                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'partial')}
-                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${item.matchMode === 'partial' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
-                                    >
-                                      Partial
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                </div>
-              </div>
-
               <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
                 <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
                 <div className="relative z-10 space-y-4 pointer-events-auto">
@@ -3565,7 +2591,7 @@ export default function App() {
                         value={newBlockedTopicLink}
                         onChange={(e) => setNewBlockedTopicLink(e.target.value)}
                         placeholder="Paste topic link here..."
-                        className={`w-full pl-9 p-3 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition-all ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                        className={`w-full pl-9 p-3 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
                       />
                     </div>
                     <motion.button
@@ -3573,7 +2599,7 @@ export default function App() {
                       whileTap={{ scale: 0.98 }}
                       onClick={handleBlockTopic}
                       disabled={blockingTopic || !newBlockedTopicLink.trim()}
-                      className={`px-6 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-all flex items-center space-x-2 ${blockingTopic || !newBlockedTopicLink.trim() ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                      className={`px-6 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors flex items-center space-x-2 ${blockingTopic || !newBlockedTopicLink.trim() ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
                     >
                       {blockingTopic ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
                       <span>{blockedTopics.some(t => t.link === newBlockedTopicLink) ? 'Unblock' : 'Block'}</span>
@@ -3591,7 +2617,7 @@ export default function App() {
                           value={blockedTopicSearch}
                           onChange={(e) => setBlockedTopicSearch(e.target.value)}
                           placeholder="Search blocked topics..."
-                          className={`w-full pl-9 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-[10px] transition-all ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
+                          className={`w-full pl-9 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-[10px] transition ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
                         />
                       </div>
 
@@ -3615,7 +2641,7 @@ export default function App() {
                               </div>
                               <button
                                 onClick={() => handleUnblockTopic(topic._id, topic.name)}
-                                className={`p-2 rounded-lg transition-all ${darkMode ? 'hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400' : 'hover:bg-emerald-50 text-slate-400 hover:text-emerald-600'}`}
+                                className={`p-2 rounded-lg transition ${darkMode ? 'hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400' : 'hover:bg-emerald-50 text-slate-400 hover:text-emerald-600'}`}
                                 title="Unblock Topic"
                               >
                                 <ShieldCheck size={16} />
@@ -3628,6 +2654,185 @@ export default function App() {
                   )}
                 </div>
               </div>
+
+              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-purple relative overflow-hidden group ${darkMode ? 'bg-purple-950/40 border-purple-500/30' : 'bg-purple-50 border-purple-200 shadow-xl shadow-purple-500/10'}`}>
+                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
+                <div className="relative z-10 space-y-3 pointer-events-auto">
+                  <div className="flex items-center justify-between ml-1">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Message</label>
+                    <span className={`text-[10px] font-bold ${broadcastMessage.length > 500 ? 'text-rose-500' : darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {broadcastMessage.length} / 500
+                    </span>
+                  </div>
+                  <textarea
+                    value={broadcastMessage}
+                    onChange={(e) => setBroadcastMessage(e.target.value)}
+                    placeholder="Type your announcement here..."
+                    disabled={broadcasting}
+                    className={`w-full h-32 p-5 border rounded-3xl focus:ring-4 focus:ring-purple-500/20 outline-none text-sm transition ${darkMode ? 'bg-purple-950/20 border-purple-500/20 text-white placeholder-white/20' : 'bg-white border-purple-100 text-slate-900 placeholder-slate-400 shadow-inner'} ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  />
+                </div>
+
+                <div className="space-y-3 px-1">
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Target</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => setBroadcastTarget('all')}
+                      disabled={broadcasting}
+                      className={`py-3 px-4 rounded-2xl text-xs font-bold transition border-2 flex items-center justify-center space-x-2 ${
+                        broadcastTarget === 'all'
+                          ? (darkMode ? 'bg-purple-500/20 border-purple-500 text-purple-400' : 'bg-purple-100 border-purple-500 text-purple-700')
+                          : (darkMode ? 'bg-neutral-900/40 border-white/5 text-slate-500 hover:border-white/10' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200')
+                      } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      <LayoutGrid size={14} />
+                      <span>All Topics</span>
+                    </button>
+                    <button
+                      onClick={() => setBroadcastTarget('general')}
+                      disabled={broadcasting}
+                      className={`py-3 px-4 rounded-2xl text-xs font-bold transition border-2 flex items-center justify-center space-x-2 ${
+                        broadcastTarget === 'general'
+                          ? (darkMode ? 'bg-purple-500/20 border-purple-500 text-purple-400' : 'bg-purple-100 border-purple-500 text-purple-700')
+                          : (darkMode ? 'bg-neutral-900/40 border-white/5 text-slate-500 hover:border-white/10' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200')
+                      } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      <MessageSquare size={14} />
+                      <span>General Section</span>
+                    </button>
+                  </div>
+                </div>
+
+                {broadcasting && broadcastProgress.status === 'running' && broadcastTarget === 'all' && (
+                  <div className="space-y-3 px-1">
+                    <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
+                      <span className={darkMode ? 'text-purple-400' : 'text-purple-600'}>Processing Broadcast</span>
+                      <span className={darkMode ? 'text-slate-400' : 'text-slate-500'}>
+                        {broadcastProgress.current} / {broadcastProgress.total} Topics
+                      </span>
+                    </div>
+                    <div className={`h-3 w-full rounded-full overflow-hidden ${darkMode ? 'bg-purple-950/40' : 'bg-purple-100'}`}>
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(broadcastProgress.current / (broadcastProgress.total || 1)) * 100}%` }}
+                        className="h-full bg-gradient-to-r from-purple-500 to-blue-500 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
+                      />
+                    </div>
+                    <div className="flex justify-center">
+                        <button
+                      onClick={handleCancelBroadcast}
+                      className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
+                    >
+                      Cancel Broadcast
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleBroadcast}
+                disabled={broadcasting || !broadcastMessage.trim() || broadcastMessage.length > 500}
+                className={`w-full py-5 rounded-3xl font-black uppercase tracking-widest text-sm transition-colors disabled:opacity-50 flex items-center justify-center space-x-3 shadow-xl ${darkMode ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-500 hover:to-blue-500' : 'bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 shadow-purple-500/20'}`}
+              >
+                <Send size={18} />
+                <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
+              </button>
+            </div>
+
+            <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
+              <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
+              <div className="relative z-10 space-y-4 pointer-events-auto">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Auto-Block Keywords</label>
+                    <ShieldAlert size={16} className="text-rose-500" />
+                  </div>
+                  <button
+                    onClick={() => setAutoBlockKeywordsExpanded(!autoBlockKeywordsExpanded)}
+                    className={`p-2 rounded-xl transition ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-black/5 text-slate-500'}`}
+                  >
+                    {autoBlockKeywordsExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </button>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="flex flex-col space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={addAutoBlockKeyword}
+                        className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500' : 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600 shadow-emerald-500/20'}`}
+                      >
+                        <Plus size={14} />
+                        <span>Add Keyword</span>
+                      </button>
+
+                      <button
+                        onClick={handleUpdateAutoBlockKeywords}
+                        disabled={saving}
+                        className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors disabled:opacity-50 flex items-center justify-center space-x-2 shadow-lg ${saving ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                      >
+                        {saving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                        <span>Save Rules</span>
+                      </button>
+                    </div>
+                  </div>
+
+                    <AnimatePresence>
+                      {autoBlockKeywordsExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="space-y-4 overflow-hidden"
+                        >
+                          <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>If these keywords are found in a topic, the bot will automatically block it.</p>
+                          
+                          <div className="space-y-3">
+                            {autoBlockKeywords.map((item, index) => (
+                              <div key={index} className={`p-4 rounded-2xl border space-y-3 ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                <div className="flex items-center space-x-2 w-full">
+                                  <input
+                                    type="text"
+                                    value={item.keyword}
+                                    onChange={(e) => updateAutoBlockKeyword(index, 'keyword', e.target.value)}
+                                    placeholder="Keyword..."
+                                    className={`flex-1 min-w-0 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                                  />
+                                  <button
+                                    onClick={() => removeAutoBlockKeyword(index)}
+                                    className={`flex-shrink-0 p-2.5 rounded-xl transition ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-600 hover:bg-rose-200'}`}
+                                    title="Delete Keyword"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                                
+                                <div className="flex items-center space-x-2">
+                                  <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Match:</span>
+                                  <div className="flex bg-slate-100 dark:bg-neutral-900 rounded-lg p-1">
+                                    <button
+                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'exact')}
+                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition ${item.matchMode === 'exact' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                    >
+                                      Exact
+                                    </button>
+                                    <button
+                                      onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'partial')}
+                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition ${item.matchMode === 'partial' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                    >
+                                      Partial
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
+              </div>
               <div ref={castBottomRef} />
 
               <div className={`fixed bottom-24 left-4 flex flex-col rounded-full shadow-xl border overflow-hidden z-40 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-slate-200'}`}>
@@ -3635,7 +2840,7 @@ export default function App() {
                   whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastTop}
-                  className={`p-3 transition-all ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
+                  className={`p-3 transition ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
                 >
                   <ArrowUp size={20} />
                 </motion.button>
@@ -3644,12 +2849,12 @@ export default function App() {
                   whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastBottom}
-                  className={`p-3 transition-all ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
+                  className={`p-3 transition ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
                 >
                   <ArrowDown size={20} />
                 </motion.button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {activeTab === 'user' && (
@@ -3667,7 +2872,7 @@ export default function App() {
                 <div className="relative z-10 pointer-events-auto">
                   {stats?.isUserBotConnected ? (
                     <div className="text-center py-8 space-y-6">
-                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition-all ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
+                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
                       <CheckCircle2 size={48} />
                     </div>
                     <div>
@@ -3700,6 +2905,25 @@ export default function App() {
                           </motion.span>
                         </motion.div>
                       </div>
+
+                      {stats?.lastLoginTime && (
+                        <div className="flex flex-col items-center pt-2">
+                          <span className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                            Last Login:
+                          </span>
+                          <span className={`text-[10px] font-mono font-bold mt-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                            {stats?.lastLoginTime ? new Date(stats.lastLoginTime).toLocaleString('en-IN', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              hour12: true
+                            }) : 'Never'}
+                          </span>
+                        </div>
+                      )}
+
                       <button 
                         onClick={fetchStats}
                         className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
@@ -3718,7 +2942,7 @@ export default function App() {
                       <div className={`pt-8 border-t transition-colors duration-500 ${darkMode ? 'border-neutral-800' : 'border-slate-100'}`}>
                         <button
                           onClick={handleInstallApp}
-                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
                         >
                           <Smartphone size={16} />
                           <span>Install Application</span>
@@ -3737,7 +2961,7 @@ export default function App() {
                             value={apiIdInput}
                             onChange={(e) => setApiIdInput(e.target.value)}
                             placeholder="Enter API ID"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <div className="space-y-2">
@@ -3747,14 +2971,14 @@ export default function App() {
                             value={apiHashInput}
                             onChange={(e) => setApiHashInput(e.target.value)}
                             placeholder="Enter API Hash"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
                           whileHover={{ scale: 1.01 }}
                           whileTap={{ scale: 0.99 }}
                           onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
                           Continue
                         </motion.button>
@@ -3770,7 +2994,7 @@ export default function App() {
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
                             placeholder="+1 234 567 8900"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
@@ -3778,7 +3002,7 @@ export default function App() {
                           whileTap={{ scale: 0.99 }}
                           onClick={handleSendCode}
                           disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
                           {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
                           <span>Request Code</span>
@@ -3796,7 +3020,7 @@ export default function App() {
                             value={code}
                             onChange={(e) => setCode(e.target.value)}
                             placeholder="Enter 5-digit code"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <div className="space-y-2">
@@ -3806,7 +3030,7 @@ export default function App() {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="If enabled"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition-all ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
+                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
                           />
                         </div>
                         <motion.button
@@ -3814,7 +3038,7 @@ export default function App() {
                           whileTap={{ scale: 0.99 }}
                           onClick={handleSignIn}
                           disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
+                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
                         >
                           {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
                           <span>Verify & Connect</span>
@@ -3944,14 +3168,14 @@ export default function App() {
                         onChange={(e) => setTestMessage(e.target.value)}
                         placeholder="Type a message a user might send..."
                         rows={3}
-                        className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-orange-500 outline-none text-sm transition-all ${darkMode ? 'bg-orange-500/5 border-orange-500/20 text-white placeholder-white/20' : 'bg-orange-50 border-orange-200 text-slate-900 placeholder-slate-400'}`}
+                        className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-orange-500 outline-none text-sm transition ${darkMode ? 'bg-orange-500/5 border-orange-500/20 text-white placeholder-white/20' : 'bg-orange-50 border-orange-200 text-slate-900 placeholder-slate-400'}`}
                       />
                     </div>
                     
                     <button
                       onClick={handleTestPersona}
                       disabled={isTesting || !testMessage.trim()}
-                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${
+                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${
                         isTesting || !testMessage.trim() 
                           ? (darkMode ? 'bg-neutral-800 text-neutral-500' : 'bg-slate-200 text-slate-400') 
                           : 'bg-orange-500 text-white shadow-orange-500/20 hover:bg-orange-600'
@@ -4015,7 +3239,7 @@ export default function App() {
                         {activityHeatmap.map((item, i) => (
                           <div 
                             key={i}
-                            className={`w-3 h-3 rounded-sm transition-all hover:scale-125 cursor-pointer ${
+                            className={`w-3 h-3 rounded-sm transition hover:scale-125 cursor-pointer ${
                               item.value === 0 ? (darkMode ? 'bg-neutral-800' : 'bg-slate-200') :
                               item.value < 3 ? 'bg-rose-500/20' :
                               item.value < 6 ? 'bg-rose-500/50' :
@@ -4052,7 +3276,7 @@ export default function App() {
                   
                   <div className="space-y-3">
                     {userLeaderboard.map((user, i) => (
-                      <div key={user.username} className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white/60 border-black/5'}`}>
+                      <div key={user.username} className={`flex items-center justify-between p-3 rounded-2xl border transition ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white/60 border-black/5'}`}>
                         <div className="flex items-center space-x-3">
                           <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs ${
                             i === 0 ? 'bg-amber-500 text-white' : 
@@ -4090,7 +3314,7 @@ export default function App() {
 
                   <button
                     onClick={handleExportConfig}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500' : 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600'}`}
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500' : 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600'}`}
                   >
                     <Download size={16} />
                     <span>Export Configuration</span>
@@ -4129,7 +3353,7 @@ export default function App() {
                           value={newMediaName}
                           onChange={(e) => setNewMediaName(e.target.value)}
                           placeholder="e.g. Banner"
-                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition-all ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
+                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
                         />
                       </div>
                       <div className="space-y-1">
@@ -4139,7 +3363,7 @@ export default function App() {
                           value={newMediaUrl}
                           onChange={(e) => setNewMediaUrl(e.target.value)}
                           placeholder="https://..."
-                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition-all ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
+                          className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20 text-white placeholder-white/20' : 'bg-indigo-50 border-indigo-200 text-slate-900 placeholder-slate-400'}`}
                         />
                       </div>
                     </div>
@@ -4147,7 +3371,7 @@ export default function App() {
                     <button
                       onClick={handleAddMedia}
                       disabled={!newMediaUrl.trim() || !newMediaName.trim()}
-                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${
+                      className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${
                         !newMediaUrl.trim() || !newMediaName.trim()
                           ? (darkMode ? 'bg-neutral-800 text-neutral-500' : 'bg-slate-200 text-slate-400') 
                           : 'bg-indigo-500 text-white shadow-indigo-500/20 hover:bg-indigo-600'
@@ -4163,7 +3387,7 @@ export default function App() {
                       <div className="text-center py-12 opacity-40 italic text-sm">No media in library yet.</div>
                     ) : (
                       mediaItems.map(item => (
-                        <div key={item._id} className={`group relative rounded-3xl overflow-hidden border transition-all ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white border-black/5 shadow-sm'}`}>
+                        <div key={item._id} className={`group relative rounded-3xl overflow-hidden border transition ${darkMode ? 'bg-black/40 border-white/5' : 'bg-white border-black/5 shadow-sm'}`}>
                           <div className="aspect-video w-full overflow-hidden">
                             <img src={item.url} alt={item.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" referrerPolicy="no-referrer" />
                           </div>
@@ -4178,14 +3402,14 @@ export default function App() {
                                   navigator.clipboard.writeText(item.url);
                                   showNotification('success', 'URL copied to clipboard');
                                 }}
-                                className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-white/5 text-slate-400 hover:text-white' : 'bg-black/5 text-slate-500 hover:text-black'}`}
+                                className={`p-2 rounded-xl transition ${darkMode ? 'bg-white/5 text-slate-400 hover:text-white' : 'bg-black/5 text-slate-500 hover:text-black'}`}
                                 title="Copy URL"
                               >
                                 <Link size={14} />
                               </button>
                               <button 
                                 onClick={() => handleDeleteMedia(item._id)}
-                                className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
+                                className={`p-2 rounded-xl transition ${darkMode ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
                                 title="Delete"
                               >
                                 <Trash size={14} />
@@ -4201,9 +3425,9 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'logs' && (
+          {activeTab === 'photo_stats' && (
             <motion.div
-              key="logs"
+              key="photo_stats"
               custom={direction}
               variants={slideVariants}
               initial="initial"
@@ -4211,200 +3435,134 @@ export default function App() {
               exit="exit"
               className="space-y-6 w-full"
             >
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-emerald relative overflow-hidden group ${darkMode ? 'bg-emerald-950/40 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200 shadow-xl shadow-emerald-500/10'}`}>
-                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
-                <div className="relative z-10 space-y-6 pointer-events-auto">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="flex items-center space-x-2">
-                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-slate-500/20 text-slate-400' : 'bg-slate-500/10 text-slate-600'}`}>
-                        <FileText size={14} />
-                      </div>
-                      <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>System Logs</h3>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <div className="flex items-center bg-black/5 dark:bg-black/20 rounded-xl p-1">
+              <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}>
+                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-500' : 'text-amber-500'}`} />
+                <div className="relative z-10 flex items-center justify-between">
+                  <div className="flex items-center space-x-4">
+                    <button 
+                      onClick={() => setActiveTab('dashboard')}
+                      className={`w-10 h-10 rounded-2xl flex items-center justify-center transition ${darkMode ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30' : 'bg-amber-100 text-amber-600 hover:bg-amber-200'}`}
+                    >
+                      <ArrowLeft size={20} />
+                    </button>
+                    <div>
+                      <h2 className={`text-2xl font-black tracking-tight flex items-center ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                        Photo Sent Activity
+                      </h2>
+                      <div className="flex space-x-2 mt-1">
                         <button 
-                          onClick={() => handleDownloadLogs('json')}
-                          className={`p-2 rounded-lg transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
-                          title="Download JSON"
+                          onClick={() => setPhotoStatsTab('today')}
+                          className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition ${photoStatsTab === 'today' ? (darkMode ? 'bg-amber-500 text-white' : 'bg-amber-600 text-white') : (darkMode ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'bg-amber-100 text-amber-600 hover:bg-amber-200')}`}
                         >
-                          <Download size={14} />
+                          Today (IST)
                         </button>
                         <button 
-                          onClick={() => handleDownloadLogs('csv')}
-                          className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
-                          title="Download CSV"
+                          onClick={() => setPhotoStatsTab('24h')}
+                          className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition ${photoStatsTab === '24h' ? (darkMode ? 'bg-amber-500 text-white' : 'bg-amber-600 text-white') : (darkMode ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' : 'bg-amber-100 text-amber-600 hover:bg-amber-200')}`}
                         >
-                          CSV
+                          Past 24h
                         </button>
                       </div>
-                      <button 
-                        onClick={fetchLogs}
-                        disabled={refreshingLogs}
-                        className={`p-2 rounded-xl transition-all ${darkMode ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-emerald-600 hover:bg-emerald-600/10'}`}
-                      >
-                        <RefreshCw size={16} className={refreshingLogs ? 'animate-spin' : ''} />
-                      </button>
-                      <button 
-                        onClick={clearLogs}
-                        className={`text-[9px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg transition-all ${
-                          isConfirmingClear 
-                            ? 'bg-rose-600 text-white animate-pulse'
-                            : darkMode 
-                              ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' 
-                              : 'bg-rose-50 text-rose-600 hover:bg-rose-100'
-                        }`}
-                      >
-                        {isConfirmingClear ? 'Confirm Clear?' : 'Clear All'}
-                      </button>
                     </div>
                   </div>
-
-                  {/* Filters & Search */}
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <div className="md:col-span-2 relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
-                      <input 
-                        type="text"
-                        placeholder="Search logs..."
-                        value={logSearch}
-                        onChange={(e) => setLogSearch(e.target.value)}
-                        className={`w-full pl-10 pr-4 py-2.5 rounded-xl text-xs border transition-all outline-none ${
-                          darkMode ? 'bg-neutral-900 border-neutral-800 text-white focus:border-emerald-500/50' : 'bg-white border-slate-200 text-slate-900 focus:border-emerald-500/50'
-                        }`}
-                      />
-                    </div>
-                    <select 
-                      value={logLevelFilter}
-                      onChange={(e) => setLogLevelFilter(e.target.value)}
-                      className={`px-4 py-2.5 rounded-xl text-xs border transition-all outline-none appearance-none ${
-                        darkMode ? 'bg-neutral-900 border-neutral-800 text-white' : 'bg-white border-slate-200 text-slate-900'
-                      }`}
-                    >
-                      <option value="all">All Levels</option>
-                      <option value="info">Info</option>
-                      <option value="warn">Warn</option>
-                      <option value="error">Error</option>
-                    </select>
-                    <select 
-                      value={logCategoryFilter}
-                      onChange={(e) => setLogCategoryFilter(e.target.value)}
-                      className={`px-4 py-2.5 rounded-xl text-xs border transition-all outline-none appearance-none ${
-                        darkMode ? 'bg-neutral-900 border-neutral-800 text-white' : 'bg-white border-slate-200 text-slate-900'
-                      }`}
-                    >
-                      <option value="all">All Categories</option>
-                      {logCategories.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-500'}`}>
+                    <Image size={24} />
                   </div>
                 </div>
 
-                <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-                  {filteredLogs.length === 0 ? (
-                    <div className="text-center py-12 opacity-40 italic text-sm">No logs match your filters.</div>
-                  ) : (
-                    filteredLogs.map(log => (
-                      <div 
-                        key={log._id}
-                        className={`p-4 rounded-[1.5rem] border transition-all relative overflow-hidden group/log ${
-                          darkMode ? 'bg-neutral-950/60 border-emerald-500/10 hover:border-emerald-500/30' : 'bg-white border-emerald-100 shadow-sm hover:border-emerald-200'
-                        }`}
-                      >
-                        <div className={`absolute inset-0 pattern-dots opacity-[0.02] ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
-                        <div className="relative z-10">
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center space-x-2">
-                              <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg ${
-                                log.level === 'error' ? 'bg-rose-500/20 text-rose-400' : 
-                                log.level === 'warn' ? 'bg-amber-500/20 text-amber-400' : 
-                                'bg-emerald-500/20 text-emerald-400'
-                              }`}>
-                                {log.level}
-                              </span>
-                              {log.category && (
-                                <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg ${
-                                  darkMode ? 'bg-slate-500/20 text-slate-400' : 'bg-slate-100 text-slate-600'
-                                }`}>
-                                  {log.category}
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[9px] text-slate-500 font-mono opacity-60">
-                              {new Date(log.timestamp).toLocaleString()}
-                            </span>
-                          </div>
-                          
-                          <div className="flex items-start justify-between gap-4">
-                            <p className={`text-xs font-medium leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-                              {log.message}
-                            </p>
-                            {log.details && (
-                              <button 
-                                onClick={() => setExpandedLogId(expandedLogId === log._id ? null : log._id)}
-                                className={`p-1 rounded-lg transition-all ${darkMode ? 'text-slate-500 hover:text-emerald-400 hover:bg-emerald-400/10' : 'text-slate-400 hover:text-emerald-600 hover:bg-emerald-600/10'}`}
-                              >
-                                {expandedLogId === log._id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                              </button>
-                            )}
-                          </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-slate-800/30 border-slate-700/50' : 'bg-white border-amber-200/50 shadow-sm'}`}>
+                    <span className={`text-[9px] uppercase font-black tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Today Total</span>
+                    <div className={`text-xl font-black mt-1 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
+                      {stats?.todayPhotoSentStats?.count || 0}
+                    </div>
+                  </div>
+                  <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-slate-800/30 border-slate-700/50' : 'bg-white border-amber-200/50 shadow-sm'}`}>
+                    <span className={`text-[9px] uppercase font-black tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Last 24h</span>
+                    <div className={`text-xl font-black mt-1 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                      {stats?.past24hPhotoSentStats?.count || 0}
+                    </div>
+                  </div>
+                </div>
 
-                          {log.route && (
-                            <div className="mt-2 flex items-center space-x-1 opacity-40">
-                              <Link size={10} />
-                              <span className="text-[9px] font-mono">{log.route}</span>
-                            </div>
-                          )}
-
-                          <AnimatePresence>
-                            {log.details && expandedLogId === log._id && (
-                              <motion.div
-                                initial={{ height: 0, opacity: 0 }}
-                                animate={{ height: 'auto', opacity: 1 }}
-                                exit={{ height: 0, opacity: 0 }}
-                                className="overflow-hidden"
-                              >
-                                <div className="relative mt-3">
-                                  <pre className={`text-[9px] p-4 rounded-xl overflow-x-auto font-mono whitespace-pre-wrap break-all ${
-                                    darkMode ? 'bg-black/40 text-neutral-400' : 'bg-slate-50 text-slate-600 border border-slate-100'
-                                  }`}>
-                                    {log.details}
-                                  </pre>
-                                  <button 
-                                    onClick={() => {
-                                      navigator.clipboard.writeText(log.details || '');
-                                      showNotification('success', 'Details copied to clipboard');
-                                    }}
-                                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/20 text-white/50 hover:text-white transition-all opacity-0 group-hover/log:opacity-100"
-                                    title="Copy details"
-                                  >
-                                    <Copy size={12} />
-                                  </button>
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
+                <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
+                  {(photoStatsTab === 'today' ? stats?.todayPhotoSentStats?.topics : stats?.past24hPhotoSentStats?.topics)?.length ? (
+                    (photoStatsTab === 'today' ? stats?.todayPhotoSentStats?.topics : stats?.past24hPhotoSentStats?.topics)?.map((topic, idx) => (
+                      <div key={idx} className={`p-3 rounded-2xl flex items-center justify-between group transition ${darkMode ? 'bg-slate-800/50 hover:bg-slate-800' : 'bg-white hover:bg-slate-50 shadow-sm'}`}>
+                        <div className="flex items-center space-x-3 overflow-hidden">
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-500'}`}>
+                            <Hash size={14} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className={`font-bold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>{topic.name}</p>
+                            <p className={`text-[9px] font-black uppercase tracking-widest mt-0.5 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>{topic.time}</p>
+                          </div>
                         </div>
+                        {topic.link && (
+                          <a 
+                            href={topic.link} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className={`px-3 py-1.5 rounded-xl flex items-center space-x-1.5 transition ${darkMode ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500 hover:text-white' : 'bg-amber-100 text-amber-600 hover:bg-amber-600 hover:text-white'}`}
+                          >
+                            <span className="text-[9px] font-black uppercase tracking-widest">Open</span>
+                            <ExternalLink size={10} />
+                          </a>
+                        )}
                       </div>
                     ))
+                  ) : (
+                    <div className={`text-center py-12 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                      <Image size={32} className="mx-auto mb-4 opacity-20" />
+                      <p className="text-xs font-medium">No activity recorded for this period.</p>
+                    </div>
                   )}
                 </div>
               </div>
             </motion.div>
           )}
 
+          {activeTab === 'logs' && (
+            <ActivityLogs 
+              darkMode={darkMode}
+              handleDownloadLogs={handleDownloadLogs}
+              fetchLogs={fetchLogs}
+              refreshingLogs={refreshingLogs}
+              direction={direction}
+              slideVariants={slideVariants}
+              clearLogs={clearLogs}
+              isConfirmingClear={isConfirmingClear}
+              logSearch={logSearch}
+              setLogSearch={setLogSearch}
+              logLevelFilter={logLevelFilter}
+              setLogLevelFilter={setLogLevelFilter}
+              logCategoryFilter={logCategoryFilter}
+              setLogCategoryFilter={setLogCategoryFilter}
+              logCategories={logCategories}
+              displayedLogs={displayedLogs}
+              handleLogsScroll={handleLogsScroll}
+              expandedLogId={expandedLogId}
+              setExpandedLogId={setExpandedLogId}
+              visibleLogsCount={visibleLogsCount}
+              setVisibleLogsCount={setVisibleLogsCount}
+              filteredLogsCount={filteredLogs.length}
+              showNotification={showNotification}
+              setActiveTab={setActiveTab}
+            />
+          )}
         </AnimatePresence>
-      </main>
+        </main>
 
-      {/* Bottom Navigation */}
-      <nav className={`fixed bottom-0 left-0 right-0 border-t px-2 pb-safe pt-2 flex items-center justify-around z-50 transition-colors duration-500 ${darkMode ? 'bg-slate-950 border-white/10 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]' : 'bg-white border-slate-200 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]'}`}>
-        <TabButton id="dashboard" icon={LayoutDashboard} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-        <TabButton id="keywords" icon={Hash} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-        <TabButton id="broadcast" icon={Send} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-        <TabButton id="settings" icon={Settings} label="Set" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-        <TabButton id="logs" icon={FileText} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-      </nav>
+      {/* Floating Bottom Navigation */}
+      <div className={`fixed bottom-4 left-4 right-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-[90%] sm:max-w-md z-50 transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none translate-y-10' : 'opacity-100 translate-y-0'}`}>
+        <nav className={`rounded-full border px-2 py-1.5 flex items-center justify-between transition duration-500 shadow-2xl backdrop-blur-xl ${darkMode ? 'bg-slate-950/90 border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.8)]' : 'bg-white/90 border-slate-200 shadow-[0_10px_40px_rgba(0,0,0,0.1)]'}`}>
+          <TabButton id="dashboard" icon={LayoutGrid} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="keywords" icon={MessageCircle} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="broadcast" icon={Radio} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="settings" icon={Settings} label="Set" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="logs" icon={Activity} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+        </nav>
+      </div>
 
       {/* Notifications */}
       <Toaster position="top-right" />
@@ -4487,7 +3645,7 @@ export default function App() {
                 <div className="flex flex-col space-y-3">
                   <button
                     onClick={confirmTogglePause}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all shadow-lg ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition shadow-lg ${
                       stats?.isSystemPaused 
                         ? 'bg-emerald-500 text-white shadow-emerald-500/20 hover:bg-emerald-600' 
                         : 'bg-rose-500 text-white shadow-rose-500/20 hover:bg-rose-600'
@@ -4497,7 +3655,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setShowPauseConfirmation(false)}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition ${
                       darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -4555,11 +3713,11 @@ export default function App() {
                     <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>No new missed keywords were found in the recent topics.</p>
                   </div>
                 ) : (
-                  scannedItems.map((item, index) => {
+                  scannedItems.map((item) => {
                     const isSelected = selectedScannedItems.has(item._id);
                     return (
                       <div 
-                        key={index} 
+                        key={item._id} 
                         onClick={() => {
                           const newSet = new Set(selectedScannedItems);
                           if (isSelected) newSet.delete(item._id);
@@ -4594,6 +3752,27 @@ export default function App() {
                           <p className={`text-xs italic line-clamp-2 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
                             "{item.text}"
                           </p>
+                          <div className="mt-4 flex justify-end">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleReplyToSingleMissed(item._id);
+                              }}
+                              disabled={replyingIds.has(item._id)}
+                              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center space-x-2 transition ${
+                                replyingIds.has(item._id)
+                                  ? 'bg-slate-400 text-white cursor-not-allowed'
+                                  : (darkMode ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100')
+                              }`}
+                            >
+                              {replyingIds.has(item._id) ? (
+                                <RefreshCw className="animate-spin" size={12} />
+                              ) : (
+                                <Send size={12} />
+                              )}
+                              <span>{replyingIds.has(item._id) ? 'Replying...' : 'Reply Now'}</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -4685,13 +3864,13 @@ export default function App() {
                       setShowClearDataConfirm(false);
                       window.location.reload();
                     }}
-                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-rose-500 hover:bg-rose-600 shadow-xl shadow-rose-500/20 transition-all"
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-rose-500 hover:bg-rose-600 shadow-xl shadow-rose-500/20 transition"
                   >
                     Confirm Clear
                   </button>
                   <button
                     onClick={() => setShowClearDataConfirm(false)}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition ${
                       darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -4744,13 +3923,13 @@ export default function App() {
                       setShowDeleteLastKeywordConfirm(false);
                       window.location.reload();
                     }}
-                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-orange-500 hover:bg-orange-600 shadow-xl shadow-orange-500/20 transition-all"
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-orange-500 hover:bg-orange-600 shadow-xl shadow-orange-500/20 transition"
                   >
                     Confirm Delete
                   </button>
                   <button
                     onClick={() => setShowDeleteLastKeywordConfirm(false)}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition ${
                       darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -4799,13 +3978,13 @@ export default function App() {
                 <div className="flex flex-col space-y-3">
                   <button
                     onClick={handleLogout}
-                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-rose-500 hover:bg-rose-600 shadow-xl shadow-rose-500/20 transition-all"
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-rose-500 hover:bg-rose-600 shadow-xl shadow-rose-500/20 transition"
                   >
                     Yes, Logout Now
                   </button>
                   <button
                     onClick={() => setShowLogoutConfirm(false)}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition ${
                       darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -4853,33 +4032,14 @@ export default function App() {
                 
                 <div className="flex flex-col space-y-3">
                   <button
-                    onClick={async () => {
-                      try {
-                        const response = await fetch("/api/keywords/reset-all", { method: "POST" });
-                        if (response.ok) {
-                          setShowResetKeywordsConfirm(false);
-                          // Refresh keywords to show updated counts
-                          const kwRes = await fetch("/api/keywords");
-                          const kwText = await kwRes.text();
-                          if (kwText.includes("Rate exceeded")) return;
-                          try {
-                            const kwData = JSON.parse(kwText);
-                            setKeywords(kwData);
-                          } catch (e) {
-                            console.error("Failed to parse keywords after reset", e);
-                          }
-                        }
-                      } catch (error) {
-                        console.error("Failed to reset keywords:", error);
-                      }
-                    }}
-                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-amber-500 hover:bg-amber-600 shadow-xl shadow-amber-500/20 transition-all"
+                    onClick={handleResetKeywords}
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-white bg-amber-500 hover:bg-amber-600 shadow-xl shadow-amber-500/20 transition"
                   >
                     Confirm Reset
                   </button>
                   <button
                     onClick={() => setShowResetKeywordsConfirm(false)}
-                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition-all ${
+                    className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition ${
                       darkMode ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -4891,11 +4051,7 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
-
-      <footer className={`py-8 text-center border-t transition-colors duration-500 ${darkMode ? 'border-slate-800/50 text-slate-500' : 'border-slate-200/50 text-slate-400'}`}>
-        <p className="text-xs font-bold tracking-[0.2em] uppercase">Created by Rohit</p>
-        <p className="text-[10px] mt-2 opacity-50">© 2026 ROHIT'S USERBOT PRO • All Rights Reserved</p>
-      </footer>
     </motion.div>
   );
 }
+

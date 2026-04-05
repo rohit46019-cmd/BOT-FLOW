@@ -23,8 +23,8 @@ let vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
 
 async function setupVapid() {
   try {
-    const pubKeySetting = await Setting.findOne({ key: "vapid_public_key" });
-    const privKeySetting = await Setting.findOne({ key: "vapid_private_key" });
+    const pubKeySetting = await getSetting("vapid_public_key");
+    const privKeySetting = await getSetting("vapid_private_key");
 
     if (pubKeySetting && privKeySetting) {
       vapidPublicKey = pubKeySetting.value;
@@ -34,8 +34,8 @@ async function setupVapid() {
       vapidPublicKey = generated.publicKey;
       vapidPrivateKey = generated.privateKey;
       
-      await Setting.findOneAndUpdate({ key: "vapid_public_key" }, { value: vapidPublicKey }, { upsert: true });
-      await Setting.findOneAndUpdate({ key: "vapid_private_key" }, { value: vapidPrivateKey }, { upsert: true });
+      await setSetting("vapid_public_key", vapidPublicKey);
+      await setSetting("vapid_private_key", vapidPrivateKey);
       
       console.log("Generated and stored new VAPID keys.");
     }
@@ -117,6 +117,14 @@ const PhotoReplyHistorySchema = new mongoose.Schema({
 });
 const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
 
+const PhotoSentLogSchema = new mongoose.Schema({
+  topic_id: { type: Number, required: true },
+  topic_name: { type: String },
+  topic_link: { type: String },
+  sent_at: { type: Date, default: Date.now }
+});
+const PhotoSentLog = mongoose.model("PhotoSentLog", PhotoSentLogSchema);
+
 const BlockedTopicSchema = new mongoose.Schema({
   telegram_topic_id: { type: Number, required: true, unique: true },
   name: { type: String },
@@ -149,8 +157,53 @@ const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSche
 
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const getSetting = async (key: string) => await Setting.findOne({ key });
-const setSetting = async (key: string, value: string) => await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
+
+let settingsCache: Record<string, string> = {};
+let blockedTopicsCache: Set<number> = new Set();
+let topicNamesCache: Record<number, string> = {};
+
+async function refreshSettingsCache() {
+  try {
+    const settings = await Setting.find();
+    settingsCache = {};
+    for (const s of settings) {
+      settingsCache[s.key] = s.value;
+    }
+    
+    const blockedTopics = await BlockedTopic.find();
+    blockedTopicsCache = new Set(blockedTopics.map(t => t.telegram_topic_id));
+    
+    const topics = await Topic.find();
+    topicNamesCache = {};
+    for (const t of topics) {
+      topicNamesCache[t.telegram_topic_id] = t.name;
+    }
+  } catch (err) {
+    console.error("Failed to refresh settings cache:", err);
+  }
+}
+
+const getSetting = async (key: string) => {
+  if (settingsCache[key] !== undefined) {
+    return { value: settingsCache[key] };
+  }
+  const setting = await Setting.findOne({ key });
+  if (setting) {
+    settingsCache[key] = setting.value;
+  }
+  return setting;
+};
+
+const setSetting = async (key: string, value: string) => {
+  settingsCache[key] = value;
+  return await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
+};
+
+const deleteSetting = async (key: string) => {
+  delete settingsCache[key];
+  return await Setting.deleteOne({ key });
+};
+
 const getTopicCount = async () => await Topic.countDocuments();
 const getTodayTopicCount = async () => {
   const now = new Date();
@@ -162,8 +215,44 @@ const getTodayTopicCount = async () => {
   
   return await Topic.countDocuments({ created_at: { $gte: startOfTodayUTC } });
 };
+
+const getTodayPhotoSentStats = async () => {
+  const now = new Date();
+  // Get start of today in IST (Asia/Kolkata)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const nowIST = now.getTime() + istOffset;
+  const startOfTodayIST_ms = Math.floor(nowIST / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+  const startOfTodayUTC = new Date(startOfTodayIST_ms - istOffset);
+  
+  const logs = await PhotoSentLog.find({ sent_at: { $gte: startOfTodayUTC } }).sort({ sent_at: -1 });
+  return {
+    count: logs.length,
+    topics: logs.map(log => ({
+      name: log.topic_name,
+      link: log.topic_link,
+      time: new Date(log.sent_at.getTime() + istOffset).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+    }))
+  };
+};
+
+const getPast24hPhotoSentStats = async () => {
+  const now = new Date();
+  const past24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  
+  const logs = await PhotoSentLog.find({ sent_at: { $gte: past24h } }).sort({ sent_at: -1 });
+  return {
+    count: logs.length,
+    topics: logs.map(log => ({
+      name: log.topic_name,
+      link: log.topic_link,
+      time: new Date(log.sent_at.getTime() + istOffset).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+    }))
+  };
+};
 const logTopic = async (topicId: number, name: string, date?: Date) => {
   try {
+    topicNamesCache[topicId] = name;
     await Topic.findOneAndUpdate(
       { telegram_topic_id: topicId },
       { 
@@ -189,17 +278,131 @@ const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info
   }
 };
 
+const DEFAULT_TOPIC_ICONS: Record<string, bigint> = {
+  "📰": 5434144690511290129n,
+  "💡": 5312536423851630001n,
+  "⚡️": 5312016608254762256n,
+  "🎙": 5377544228505134960n,
+  "🔝": 5418085807791545980n,
+  "🗣": 5370870893004203704n,
+  "🆒": 5420216386448270341n,
+  "❗️": 5379748062124056162n,
+  "📝": 5373251851074415873n,
+  "📆": 5433614043006903194n,
+  "📁": 5357315181649076022n,
+  "🔎": 5309965701241379366n,
+  "📣": 5309984423003823246n,
+  "🔥": 5312241539987020022n,
+  "❤️": 5312138559556164615n,
+  "❓": 5377316857231450742n,
+  "📈": 5350305691942788490n,
+  "📉": 5350713563512052787n,
+  "💎": 5309958691854754293n,
+  "💰": 5350452584119279096n,
+  "💸": 5309929258443874898n,
+  "🪙": 5377690785674175481n,
+  "💱": 5310107765874632305n,
+  "⁉️": 5377438129928020693n,
+  "🎮": 5309950797704865693n,
+  "💻": 5350554349074391003n,
+  "📱": 5409357944619802453n,
+  "🚗": 5312322066328853156n,
+  "🏠": 5312486108309757006n,
+  "💘": 5310029292527164639n,
+  "🎉": 5310228579009699834n,
+  "‼️": 5377498341074542641n,
+  "🏆": 5312315739842026755n,
+  "🏁": 5408906741125490282n,
+  "🎬": 5368653135101310687n,
+  "🎵": 5310045076531978942n,
+  "🔞": 5420331611830886484n,
+  "📚": 5350481781306958339n,
+  "👑": 5357107601584693888n,
+  "⚽️": 5375159220280762629n,
+  "🏀": 5384327463629233871n,
+  "📺": 5350513667144163474n,
+  "👀": 5357121491508928442n,
+  "🫦": 5357185426392096577n,
+  "🍓": 5310157398516703416n,
+  "💄": 5310262535021142850n,
+  "👠": 5368741306484925109n,
+  "✈️": 5348436127038579546n,
+  "🧳": 5357120306097956843n,
+  "🏖": 5310303848311562896n,
+  "⛅️": 5350424168615649565n,
+  "🦄": 5413625003218313783n,
+  "🛍": 5350699789551935589n,
+  "👜": 5377478880577724584n,
+  "🛒": 5431492767249342908n,
+  "🚂": 5350497316203668441n,
+  "🛥": 5350422527938141909n,
+  "🏔": 5418196338774907917n,
+  "🏕": 5350648297189023928n,
+  "🤖": 5309832892262654231n,
+  "🪩": 5350751634102166060n,
+  "🎟": 5377624166436445368n,
+  "🏴‍☠️": 5386395194029515402n,
+  "🗳": 5350387571199319521n,
+  "🎓": 5357419403325481346n,
+  "🔭": 5368585403467048206n,
+  "🔬": 5377580546748588396n,
+  "🎶": 5377317729109811382n,
+  "🎤": 5382003830487523366n,
+  "🕺": 5357298525765902091n,
+  "💃": 5357370526597653193n,
+  "🪖": 5357188789351490453n,
+  "💼": 5348227245599105972n,
+  "🧪": 5411138633765757782n,
+  "👨‍👩‍👧‍👦": 5386435923204382258n,
+  "👶": 5377675010259297233n,
+  "🤰": 5386609083400856174n,
+  "💅": 5368808634392257474n,
+  "🏛": 5350548830041415279n,
+  "🧮": 5355127101970194557n,
+  "🖨": 5386379624773066504n,
+  "👮‍♂️": 5377494501373780436n,
+  "🩺": 5350307998340226571n,
+  "💊": 5310094636159607472n,
+  "💉": 5310139157790596888n,
+  "🧼": 5377468357907849200n,
+  "🪪": 5418115271267197333n,
+  "🛃": 5372819184658949787n,
+  "🍽": 5350344462612570293n,
+  "🐟": 5384574037701696503n,
+  "🎨": 5310039132297242441n,
+  "🎭": 5350658016700013471n,
+  "🎩": 5357504778685392027n,
+  "🔮": 5350367161514732241n,
+  "🍹": 5350520238444126134n,
+  "🎂": 5310132165583840589n,
+  "☕️": 5350392020785437399n,
+  "🍣": 5350406176997646350n,
+  "🍔": 5350403544182694064n,
+  "🍕": 5350444672789519765n,
+  "🦠": 5312424913615723286n,
+  "💬": 5417915203100613993n,
+  "🎄": 5312054580060625569n,
+  "🎃": 5309744892677727325n,
+  "✍️": 5238156910363950406n,
+  "⭐️": 5235579393115438657n,
+  "✅": 5237699328843200968n,
+  "🎖": 5238027455754680851n,
+  "🤡": 5238234236955148254n,
+  "🧠": 5237889595894414384n,
+  "🦮": 5237999392438371490n,
+  "🐈": 5235912661102773458n
+};
+
 // Helper function for topic renaming
-const handleTopicRenaming = async (client: TelegramClient, message: any, topicId: number, topicIcon: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
+const handleTopicRenaming = async (client: TelegramClient, message: any, topicId: number, topicIcon: string, topicRenameEmoji: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
   if (!topicId) return "Unknown Topic";
 
   // Fetch Topic Name
   let topicName = "Unknown Topic";
   
-  // 1. Try DB
-  const topic = await Topic.findOne({ telegram_topic_id: topicId });
-  if (topic && topic.name) {
-    topicName = topic.name;
+  // 1. Try Cache
+  if (topicNamesCache[topicId]) {
+    topicName = topicNamesCache[topicId];
   } 
   
   // 2. Try fetching the topic creation message
@@ -238,11 +441,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
         for (const t of result.topics) {
           if (t instanceof Api.ForumTopic && t.title) {
             // Update DB with found topic
-            await Topic.findOneAndUpdate(
-              { telegram_topic_id: t.id },
-              { name: t.title },
-              { upsert: true }
-            );
+            await logTopic(t.id, t.title);
             
             if (t.id === topicId) {
               topicName = t.title;
@@ -299,40 +498,63 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
     }
 
     topicName = topicName.trim();
-    const suffix = `${topicIcon}${topicIcon}`;
+    const prefix = `${topicRenameEmoji}${topicRenameEmoji}`;
 
-    if (shouldRename && !topicName.endsWith(suffix)) {
-      let newTopicName = `${topicName} ${suffix}`;
-      // Telegram limit is 128 chars
-      if (newTopicName.length > 128) {
-          newTopicName = newTopicName.substring(0, 128);
+    if (shouldRename) {
+      let newTopicName = topicName;
+      let nameChanged = false;
+      
+      if (!topicName.startsWith(prefix)) {
+        newTopicName = `${prefix} ${topicName}`;
+        if (newTopicName.length > 128) {
+            newTopicName = newTopicName.substring(0, 128);
+        }
+        nameChanged = true;
       }
 
-      console.log(`Renaming topic ${topicId} to "${newTopicName}"`);
-      
-      await client.invoke(
-        new Api.channels.EditForumTopic({
-          channel: await client.getInputEntity(message.peerId),
-          topicId: topicId,
-          title: newTopicName
-        })
-      );
-      
-      // Update DB
-      await Topic.findOneAndUpdate(
-        { telegram_topic_id: topicId },
-        { name: newTopicName },
-        { upsert: true }
-      );
-      
-      await saveLog(`Renamed topic ${topicId} to "${newTopicName}"`, 'info', 'USERBOT');
-      return newTopicName; // Return the new name
-    } else if (shouldRename && topicName.endsWith(suffix)) {
-      console.log(`Topic ${topicId} already has suffix "${suffix}". Skipping.`);
+      const editParams: any = {
+        channel: await client.getInputEntity(message.peerId),
+        topicId: topicId,
+      };
+
+      if (nameChanged) {
+        editParams.title = newTopicName;
+      }
+
+      let iconChanged = false;
+      console.log(`DEBUG: topicIcon: '${topicIcon}', DEFAULT_TOPIC_ICONS[topicIcon]: ${DEFAULT_TOPIC_ICONS[topicIcon]}`);
+      if (DEFAULT_TOPIC_ICONS[topicIcon]) {
+        editParams.iconEmojiId = DEFAULT_TOPIC_ICONS[topicIcon];
+        iconChanged = true;
+      } else {
+        console.log(`DEBUG: Icon '${topicIcon}' not found in DEFAULT_TOPIC_ICONS`);
+      }
+
+      if (nameChanged || iconChanged) {
+        console.log(`Updating topic ${topicId}. Name changed: ${nameChanged}, Icon changed: ${iconChanged}`);
+        await client.invoke(
+          new Api.channels.EditForumTopic(editParams)
+        );
+        
+        if (nameChanged) {
+          // Update DB
+          await logTopic(topicId, newTopicName);
+          await saveLog(`Renamed topic ${topicId} to "${newTopicName}"`, 'info', 'USERBOT');
+        } else {
+          await saveLog(`Updated topic icon for ${topicId}`, 'info', 'USERBOT');
+        }
+        return newTopicName;
+      } else {
+        console.log(`Topic ${topicId} already has prefix "${prefix}" and no icon to update. Skipping.`);
+      }
     }
   } catch (renameErr: any) {
-    console.error("Failed to rename topic:", renameErr);
-    await saveLog(`Failed to rename topic ${topicId}: ${renameErr.message}`, 'error', 'USERBOT');
+    if (renameErr.message && (renameErr.message.includes('CHAT_NOT_MODIFIED') || renameErr.message.includes('NOT_MODIFIED'))) {
+      console.log(`Topic ${topicId} already has the correct name and icon. Skipping.`);
+    } else {
+      console.error("Failed to rename topic:", renameErr);
+      await saveLog(`Failed to rename topic ${topicId}: ${renameErr.message}`, 'error', 'USERBOT');
+    }
   }
   
   return topicName;
@@ -340,6 +562,26 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
 
 // SSE Clients
 let sseClients: any[] = [];
+let broadcastCancelled = false;
+let broadcastInProgress = false;
+let broadcastStatus = {
+  total: 0,
+  current: 0,
+  status: 'idle'
+};
+
+function sendSseEvent(type: string, data: any) {
+  const payload = JSON.stringify({ type, data });
+  sseClients.forEach(client => {
+    client.res.write(`event: ${type}\ndata: ${payload}\n\n`);
+    client.res.write(`data: ${payload}\n\n`);
+  });
+
+  // Send push notification for photo_received or other important events
+  if (type === 'photo_received') {
+    sendPushNotification("New Photo Received", data.message || "A new photo has been received.", { url: data.url || '/' });
+  }
+}
 
 // Helper to send push notifications to all subscribers
 async function sendPushNotification(title: string, body: string, data: any = {}) {
@@ -375,16 +617,6 @@ async function sendPushNotification(title: string, body: string, data: any = {})
   }
 }
 
-function sendSseEvent(type: string, data: any) {
-  sseClients.forEach(client => {
-    client.res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
-  });
-
-  // Send push notification for photo_received or other important events
-  if (type === 'photo_received') {
-    sendPushNotification("New Photo Received", data.message || "A new photo has been received.", { url: '/' });
-  }
-}
 
 // Initialize default settings
 async function initSettings() {
@@ -411,6 +643,9 @@ async function initSettings() {
 
   const topicIcon = await getSetting("topic_icon");
   if (!topicIcon) await setSetting("topic_icon", "✅");
+
+  const topicRenameEmoji = await getSetting("topic_rename_emoji");
+  if (!topicRenameEmoji) await setSetting("topic_rename_emoji", "🛑");
 
   const aiModeEnabled = await getSetting("ai_mode_enabled");
   if (!aiModeEnabled) await setSetting("ai_mode_enabled", "false");
@@ -498,12 +733,80 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
 
+  const startApp = () => {
+    app.listen(PORT, "0.0.0.0", async () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+      
+      // Initial keyword cache load
+      await refreshKeywordCache();
+      
+      // Connect UserBot in background
+      (async () => {
+        if (isConnecting) return;
+        try {
+          isConnecting = true;
+          let sessionString = (await getSetting("session_string"))?.value;
+          
+          const apiIdRaw = (await getSetting("api_id"))?.value || "";
+          const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+          const apiId = parseInt(apiIdRaw.trim(), 10);
+
+          if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+            console.log("Attempting to connect UserBot...");
+            userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+              connectionRetries: 5,
+              requestRetries: 5,
+              deviceModel: "Desktop",
+              systemVersion: "Windows 10",
+              appVersion: "1.0.0",
+            });
+            await userClient.connect();
+            
+            const newSessionString = (userClient.session as StringSession).save();
+            if (newSessionString && newSessionString !== sessionString) {
+              await setSetting("session_string", newSessionString);
+            }
+            
+            if (await userClient.isUserAuthorized()) {
+              console.log("UserBot connected successfully.");
+              sessionStartTime = Date.now();
+              setupUserBotHandlers(userClient, groupId);
+              await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+            } else {
+              console.log("UserBot connected but session is invalid/expired.");
+              await userClient.disconnect();
+              userClient = null;
+            }
+          }
+        } catch (err: any) {
+          console.error("Failed to connect UserBot on startup:", err);
+          await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
+          if (err.message?.includes("AUTH_KEY_UNREGISTERED") || 
+              err.message?.includes("AUTH_KEY_DUPLICATED")) {
+            console.log(`Session invalid or duplicated (${err.message}) on startup. Clearing session string.`);
+            await deleteSetting("session_string");
+            if (userClient) {
+              try { await userClient.disconnect(); } catch (e) {}
+            }
+            userClient = null;
+          } else if (err.message?.includes("TIMEOUT")) {
+            console.log(`Connection timed out (${err.message}) on startup. Will retry later.`);
+          }
+        } finally {
+          isConnecting = false;
+        }
+      })();
+    });
+  };
+
   // Connect to MongoDB
   mongoose.connect(MONGODB_URI)
     .then(async () => {
       console.log("Connected to MongoDB");
+      await refreshSettingsCache();
       await initSettings();
       await setupVapid();
+      startApp();
     })
     .catch((err) => {
       console.error("MongoDB connection error:", err);
@@ -593,22 +896,40 @@ async function startServer() {
       const replyToTopId = message.replyTo?.replyToTopId;
       const messageId = message.id;
       
+      await saveLog(`DEBUG: message.replyTo: ${JSON.stringify(message.replyTo)}`, 'info', 'SYSTEM');
+      
       // The forumTopicId is the root of the thread/topic. 
       // In forums, replyToTopId is the topic's starting message ID.
-      const forumTopicId = replyToTopId || replyToId || messageId;
+      let forumTopicId: number;
+      if (message.action instanceof Api.MessageActionTopicCreate) {
+        forumTopicId = Number(messageId);
+      } else if (message.replyTo) {
+        forumTopicId = Number(replyToTopId || replyToId);
+      } else {
+        // General topic or non-forum group
+        forumTopicId = 1;
+      }
+
+      // Check if the entire group is blocked
+      const groupIdNum = Number(normalizedChatId);
+      if (blockedTopicsCache.has(groupIdNum)) {
+        console.log(`Group ${groupIdNum} is blocked. Skipping processing.`);
+        await saveLog(`Group ${groupIdNum} is blocked. Skipping processing.`, 'info', 'SYSTEM');
+        return;
+      }
 
       // Check if the topic ID is blocked
       if (forumTopicId) {
-        const isBlocked = await BlockedTopic.findOne({ telegram_topic_id: forumTopicId });
-        if (isBlocked) {
+        console.log(`DEBUG: Checking if forumTopicId ${forumTopicId} is blocked. Cache size: ${blockedTopicsCache.size}. Has: ${blockedTopicsCache.has(forumTopicId)}`);
+        await saveLog(`DEBUG: Checking if forumTopicId ${forumTopicId} is blocked. Cache size: ${blockedTopicsCache.size}. Has: ${blockedTopicsCache.has(forumTopicId)}`, 'info', 'SYSTEM');
+        if (blockedTopicsCache.has(forumTopicId)) {
           console.log(`Topic ${forumTopicId} is blocked. Skipping processing.`);
           return;
         }
       }
 
       // Also check if the message ID itself is blocked
-      const isMessageBlocked = await BlockedTopic.findOne({ telegram_topic_id: messageId });
-      if (isMessageBlocked) {
+      if (blockedTopicsCache.has(Number(messageId))) {
         console.log(`Message ID ${messageId} is blocked. Skipping processing.`);
         return;
       }
@@ -636,6 +957,7 @@ async function startServer() {
       if (blockKeywords.length > 0 && message.message && !message.out) {
         const msgText = message.message.toLowerCase();
         let shouldBlock = false;
+        let matchedKeyword = "";
 
         for (const item of blockKeywords) {
           const kw = item.keyword.toLowerCase();
@@ -643,23 +965,24 @@ async function startServer() {
             // Exact match (case insensitive)
             if (msgText === kw) {
               shouldBlock = true;
+              matchedKeyword = item.keyword;
               break;
             }
           } else {
             // Partial match
             if (msgText.includes(kw)) {
               shouldBlock = true;
+              matchedKeyword = item.keyword;
               break;
             }
           }
         }
 
         if (shouldBlock) {
-          console.log(`Auto-blocking topic ${topicId} due to keyword match.`);
+          console.log(`Auto-blocking topic ${topicId} due to keyword match: "${matchedKeyword}"`);
           
           // Get topic name
-          const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
-          const name = topicInfo ? topicInfo.name : "Unknown Topic";
+          const name = topicNamesCache[topicId] || "Unknown Topic";
           const link = `https://t.me/c/${targetGroupId.replace("-100", "")}/${topicId}`;
 
           await BlockedTopic.findOneAndUpdate(
@@ -667,13 +990,15 @@ async function startServer() {
             { name, link },
             { upsert: true }
           );
+          blockedTopicsCache.add(topicId);
 
-          await saveLog(`Topic ${topicId} auto-blocked due to keyword match`, 'warn', 'USERBOT', undefined, { topicName: name, link });
+          await saveLog(`Topic ${topicId} auto-blocked due to keyword match: "${matchedKeyword}"`, 'warn', 'USERBOT', undefined, { topicName: name, link, keyword: matchedKeyword });
           
           // Notify frontend
           sendSseEvent('topic_blocked', {
-            message: `Topic "${name}" auto-blocked`,
+            message: `Topic "${name}" auto-blocked (Keyword: ${matchedKeyword})`,
             topicName: name,
+            keyword: matchedKeyword,
             timestamp: new Date()
           });
 
@@ -688,21 +1013,44 @@ async function startServer() {
         // Always handle topic renaming for photos, even if auto-reply is disabled
         try {
           // Fetch Topic Name & Rename if needed
-          const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+          const topicIcon = (await getSetting("topic_icon"))?.value || "✅";
+          const topicRenameEmoji = (await getSetting("topic_rename_emoji"))?.value || "🛑";
           const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
           const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
 
           // Pass true to bypass keyword check for photos
-          const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, renameKeywordsStr, renameMatchMode, true);
+          const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true);
+          
+          const cleanGroupId = targetGroupId.toString().replace("-100", "").replace("-", "");
+          const link = topicId 
+            ? `https://t.me/c/${cleanGroupId}/${topicId}`
+            : `https://t.me/c/${cleanGroupId}`;
+          
+          console.log(`Generated Telegram link for notification: ${link}`);
           
           // Notify frontend
           sendSseEvent('photo_received', {
             message: `${topicName} sent a photo`,
             topicName: topicName,
-            timestamp: new Date()
+            timestamp: new Date(),
+            url: link
           });
 
           await saveLog(`Photo received from ${topicName}`, 'info', 'USERBOT', undefined, { topicId });
+
+          // Log the photo sent event for today's stats (count all photos sent by users)
+          await PhotoSentLog.create({
+            topic_id: topicId,
+            topic_name: topicName,
+            topic_link: link,
+            sent_at: new Date()
+          });
+          
+          // Notify frontend to update stats
+          sendSseEvent('photo_sent', {
+            topicName: topicName,
+            timestamp: new Date()
+          });
 
           if (photoReplyEnabledSetting) {
             const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
@@ -723,11 +1071,34 @@ async function startServer() {
               });
 
               if (photoReplyMessage2Enabled && photoReplyMessage2) {
-                console.log(`Sending second photo auto-reply: "${photoReplyMessage2}"`);
-                await client.sendMessage(message.peerId, {
-                  message: photoReplyMessage2,
-                  replyTo: replyTo,
-                });
+                const startTime = (await getSetting("photo_reply_message_2_start_time"))?.value || "";
+                const endTime = (await getSetting("photo_reply_message_2_end_time"))?.value || "";
+                
+                let shouldSend = true;
+                if (startTime && endTime) {
+                  const now = new Date();
+                  const istOffset = 5.5 * 60 * 60 * 1000;
+                  const istTime = new Date(now.getTime() + istOffset);
+                  const currentHour = istTime.getUTCHours();
+                  const currentMinute = istTime.getUTCMinutes();
+                  const currentTimeStr = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`;
+                  
+                  if (startTime <= endTime) {
+                    shouldSend = currentTimeStr >= startTime && currentTimeStr <= endTime;
+                  } else {
+                    shouldSend = currentTimeStr >= startTime || currentTimeStr <= endTime;
+                  }
+                }
+
+                if (shouldSend) {
+                  console.log(`Sending second photo auto-reply: "${photoReplyMessage2}"`);
+                  await client.sendMessage(message.peerId, {
+                    message: photoReplyMessage2,
+                    replyTo: replyTo,
+                  });
+                } else {
+                  console.log(`Second photo auto-reply skipped due to time window (${startTime} - ${endTime})`);
+                }
               }
 
               // Update history
@@ -755,15 +1126,44 @@ async function startServer() {
         await logTopic(topicId, topicName);
         
         const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
+        console.log(`DEBUG: autoReply value: '${autoReply}'`);
+        const autoReply2Enabled = (await getSetting("auto_reply_2_enabled"))?.value === "true";
+        const autoReply2 = (await getSetting("auto_reply_2"))?.value || "";
+        console.log(`DEBUG: autoReply2Enabled: ${autoReply2Enabled}, autoReply2: '${autoReply2}'`);
+        const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay"))?.value || "1", 10);
         const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
         
         setTimeout(async () => {
           try {
+            if (blockedTopicsCache.has(topicId)) {
+              console.log(`Topic ${topicId} was blocked during auto-reply delay. Skipping.`);
+              return;
+            }
             const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+            console.log(`DEBUG: Sending autoReply: '${autoReply}'`);
             await client.sendMessage(message.peerId, {
               message: autoReply,
               replyTo: replyInGeneral ? undefined : topicId,
             });
+
+            if (autoReply2Enabled && autoReply2) {
+              // Configurable delay between messages
+              setTimeout(async () => {
+                try {
+                  if (blockedTopicsCache.has(topicId)) {
+                    console.log(`Topic ${topicId} was blocked during auto-reply-2 delay. Skipping.`);
+                    return;
+                  }
+                  console.log(`DEBUG: Sending autoReply2: '${autoReply2}'`);
+                  await client.sendMessage(message.peerId, {
+                    message: autoReply2,
+                    replyTo: replyInGeneral ? undefined : topicId,
+                  });
+                } catch (err) {
+                  console.error("UserBot failed to send second auto-reply:", err);
+                }
+              }, autoReply2Delay * 1000);
+            }
           } catch (err) {
             console.error("UserBot failed to send auto-reply:", err);
           }
@@ -977,10 +1377,10 @@ async function startServer() {
                 replySent = true;
               }
 
-              if (linksToProcess.length > 0) {
-                console.log(`Handling ${linksToProcess.length} message links for keyword: ${match.matchedWord}`);
+              if (normalizedLinks.length > 0) {
+                console.log(`Handling ${normalizedLinks.length} message links for keyword: ${match.matchedWord}`);
 
-                for (const link of linksToProcess) {
+                for (const link of normalizedLinks) {
                   const parts = link.split("/").filter(p => p.length > 0);
                   const messageId = parseInt(parts[parts.length - 1], 10);
                   
@@ -1201,7 +1601,7 @@ async function startServer() {
         console.error("Global error in UserBot event handler:", globalErr);
         if (globalErr.message?.includes("AUTH_KEY_UNREGISTERED")) {
           console.log("Session invalid in event handler. Clearing session string.");
-          await Setting.deleteOne({ key: "session_string" });
+          await deleteSetting("session_string");
           if (userClient) {
             try { await userClient.disconnect(); } catch (e) {}
           }
@@ -1244,6 +1644,15 @@ async function startServer() {
     });
   });
 
+  app.delete("/api/missed-triggers", async (req, res) => {
+    try {
+      await MissedTrigger.deleteMany({});
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // API Routes
   app.delete("/api/data/clear", async (req, res) => {
     try {
@@ -1253,6 +1662,7 @@ async function startServer() {
       await PhotoReplyHistory.deleteMany({});
       await ReplyHistory.deleteMany({});
       await MissedTrigger.deleteMany({});
+      blockedTopicsCache.clear();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1317,23 +1727,32 @@ async function startServer() {
 
   let lastAuthCheck = 0;
   let cachedAuthStatus = false;
+  let sessionStartTime: number | null = null;
 
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
       const todayTopicCount = await getTodayTopicCount();
+      const todayPhotoSentStats = await getTodayPhotoSentStats();
+      const past24hPhotoSentStats = await getPast24hPhotoSentStats();
       const keywordCount = await Keyword.countDocuments();
       const autoReply = (await getSetting("auto_reply"))?.value || "";
+      const autoReply2Enabled = (await getSetting("auto_reply_2_enabled"))?.value === "true";
+      const autoReply2 = (await getSetting("auto_reply_2"))?.value || "";
+      const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay"))?.value || "1", 10);
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
       const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
       const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
       const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
       const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
+      const photoReplyMessage2StartTime = (await getSetting("photo_reply_message_2_start_time"))?.value || "";
+      const photoReplyMessage2EndTime = (await getSetting("photo_reply_message_2_end_time"))?.value || "";
       const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
       const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
       const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
-      const topicIcon = (await getSetting("topic_icon"))?.value || "🛑";
+      const topicIcon = (await getSetting("topic_icon"))?.value || "✅";
+      const topicRenameEmoji = (await getSetting("topic_rename_emoji"))?.value || "🛑";
       const topicRenameKeywords = (await getSetting("topic_rename_keywords"))?.value || "";
       const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
       const autoResetKeywords = (await getSetting("auto_reset_keywords"))?.value === "true";
@@ -1342,6 +1761,7 @@ async function startServer() {
       const aiPersona = (await getSetting("ai_persona"))?.value || "";
       const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
       const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+      const lastLoginTime = (await getSetting("last_login_time"))?.value || "";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -1413,7 +1833,7 @@ async function startServer() {
             if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || 
                 connErr.message?.includes("AUTH_KEY_DUPLICATED")) {
               console.log(`Session invalid or duplicated (${connErr.message}). Clearing session string.`);
-              await Setting.deleteOne({ key: "session_string" });
+              await deleteSetting("session_string");
               if (userClient) {
                 try { await userClient.disconnect(); } catch (e) {}
               }
@@ -1450,18 +1870,26 @@ async function startServer() {
       res.json({
         topicCount,
         todayTopicCount,
+        todayPhotoSentStats,
+        past24hPhotoSentStats,
         keywordCount,
         autoReply,
+        autoReply2Enabled,
+        autoReply2,
+        autoReply2Delay,
         delaySeconds,
         isSystemPaused,
         photoReplyEnabled,
         photoReplyMessage,
         photoReplyMessage2Enabled,
         photoReplyMessage2,
+        photoReplyMessage2StartTime,
+        photoReplyMessage2EndTime,
         photoReplyMax,
         notificationSoundEnabled,
         notificationSoundType,
         topicIcon,
+        topicRenameEmoji,
         topicRenameKeywords,
         topicRenameMatchMode,
         autoResetKeywords,
@@ -1471,6 +1899,8 @@ async function startServer() {
         geminiApiKeys,
         replyInGeneral,
         isUserBotConnected,
+        sessionStartTime,
+        lastLoginTime,
         apiId,
         apiHash,
         defaultPhone,
@@ -1485,8 +1915,39 @@ async function startServer() {
 
   app.post("/api/settings", async (req, res) => {
     try {
-      const { autoReply, delaySeconds, apiId, apiHash, systemPaused, photoReplyEnabled, photoReplyMessage, photoReplyMessage2Enabled, photoReplyMessage2, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, aiPersona, geminiApiKeys, replyInGeneral } = req.body;
+      const { 
+        autoReply, 
+        autoReply2Enabled,
+        autoReply2,
+        autoReply2Delay,
+        delaySeconds, 
+        apiId, 
+        apiHash, 
+        systemPaused, 
+        photoReplyEnabled, 
+        photoReplyMessage, 
+        photoReplyMessage2Enabled, 
+        photoReplyMessage2, 
+        photoReplyMax, 
+        notificationSoundEnabled, 
+        notificationSoundType, 
+        topicIcon, 
+        topicRenameEmoji,
+        topicRenameKeywords, 
+        topicRenameMatchMode, 
+        autoResetKeywords, 
+        autoBlockKeywords, 
+        aiModeEnabled, 
+        aiPersona, 
+        geminiApiKeys, 
+        replyInGeneral,
+        photoReplyMessage2StartTime,
+        photoReplyMessage2EndTime
+      } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
+      if (typeof autoReply2Enabled !== "undefined") await setSetting("auto_reply_2_enabled", String(autoReply2Enabled));
+      if (typeof autoReply2 === "string") await setSetting("auto_reply_2", autoReply2);
+      if (typeof autoReply2Delay !== "undefined") await setSetting("auto_reply_2_delay", String(autoReply2Delay));
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
       if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
@@ -1499,6 +1960,7 @@ async function startServer() {
       if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
       if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
       if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon));
+      if (typeof topicRenameEmoji !== "undefined") await setSetting("topic_rename_emoji", String(topicRenameEmoji));
       if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords));
       if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
       if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords));
@@ -1507,8 +1969,10 @@ async function startServer() {
       if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
       if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
       if (typeof replyInGeneral !== "undefined") await setSetting("reply_in_general", String(replyInGeneral));
+      if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime);
+      if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime);
       
-      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral });
+      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -1565,8 +2029,8 @@ async function startServer() {
         keyword, // Keep legacy
         keywords: keywordsArray, 
         reply, 
-        photo, 
-        message_link, 
+        photo: photo || "", 
+        message_link: message_link || "", 
         message_links,
         max_replies: typeof max_replies === 'number' ? max_replies : 0,
         match_mode: match_mode || 'exact',
@@ -1582,8 +2046,8 @@ async function startServer() {
         await Keyword.create(updateData);
       }
       
-      // Refresh cache in background to speed up response
-      refreshKeywordCache().catch(err => console.error("Background cache refresh failed:", err));
+      // Refresh cache before responding to ensure next message uses updated rules
+      await refreshKeywordCache();
       
       res.json({ success: true });
     } catch (err: any) {
@@ -1594,7 +2058,7 @@ async function startServer() {
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
       await Keyword.findByIdAndDelete(req.params.id);
-      refreshKeywordCache().catch(err => console.error("Background cache refresh failed:", err));
+      await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[DELETE /api/keywords] ${err.message}` });
@@ -1637,11 +2101,7 @@ async function startServer() {
       if (settings && Array.isArray(settings)) {
         for (const s of settings) {
           if (s.key !== "session_string") {
-            await Setting.findOneAndUpdate(
-              { key: s.key },
-              { value: s.value },
-              { upsert: true }
-            );
+            await setSetting(s.key, s.value);
           }
         }
       }
@@ -1733,6 +2193,9 @@ async function startServer() {
 
       const sessionString = (userClient.session as StringSession).save();
       await setSetting("session_string", sessionString);
+      const now = new Date().toISOString();
+      await setSetting("last_login_time", now);
+      sessionStartTime = Date.now();
       setupUserBotHandlers(userClient, groupId);
       await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', 'API', '/api/auth/signin');
       res.json({ success: true });
@@ -1748,7 +2211,8 @@ async function startServer() {
         await userClient.disconnect();
         userClient = null;
       }
-      await Setting.deleteOne({ key: "session_string" });
+      sessionStartTime = null;
+      await deleteSetting("session_string");
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/auth/logout] ${err.message}` });
@@ -1797,7 +2261,7 @@ async function startServer() {
     } catch (err: any) {
       console.error("Error fetching messages:", err);
       if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await Setting.deleteOne({ key: "session_string" });
+        await deleteSetting("session_string");
         if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
         userClient = null;
       } else if (err.message?.includes("TIMEOUT")) {
@@ -1807,28 +2271,155 @@ async function startServer() {
     }
   });
 
+  app.get("/api/broadcast/status", (req, res) => {
+    res.json(broadcastStatus);
+  });
+
+  app.post("/api/broadcast/cancel", (req, res) => {
+    if (broadcastInProgress) {
+      broadcastCancelled = true;
+      res.json({ success: true, message: "Broadcast cancellation requested" });
+    } else {
+      res.status(400).json({ error: "No broadcast in progress" });
+    }
+  });
+
   app.post("/api/broadcast", async (req, res) => {
-    const { message } = req.body;
+    const { message, target } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
+
+    if (broadcastInProgress) {
+      return res.status(400).json({ error: "A broadcast is already in progress" });
+    }
 
     try {
       if (userClient && userClient.connected) {
-        await userClient.sendMessage(groupId, { message });
-        await saveLog("Broadcast sent", 'info', 'API', '/api/broadcast', { messageLength: message.length });
-        res.json({ success: true });
+        if (target === 'general') {
+          // Send only to general section (no topic ID)
+          await userClient.sendMessage(groupId, { message });
+          await saveLog("Broadcast sent to general section", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          return res.json({ success: true, message: "Broadcast sent to general section" });
+        }
+
+        const topics = await Topic.find({});
+        console.log(`Broadcast: Found ${topics.length} total topics.`);
+        const filteredTopics = topics.filter(topic => !blockedTopicsCache.has(topic.telegram_topic_id));
+        console.log(`Broadcast: Found ${filteredTopics.length} topics after filtering blocked topics.`);
+
+        if (filteredTopics.length === 0) {
+          // If no topics, just send to the main group
+          await userClient.sendMessage(groupId, { message });
+          await saveLog("Broadcast sent to main group (no topics found)", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          return res.json({ success: true, message: "Sent to main group (no topics found)" });
+        }
+
+        broadcastInProgress = true;
+        broadcastCancelled = false;
+        broadcastStatus = {
+          total: filteredTopics.length,
+          current: 0,
+          status: 'running'
+        };
+
+        // Start broadcast in background
+        (async () => {
+          try {
+            for (let i = 0; i < filteredTopics.length; i++) {
+              if (broadcastCancelled) {
+                broadcastStatus.status = 'cancelled';
+                sendSseEvent('broadcast_update', broadcastStatus);
+                await saveLog("Broadcast cancelled", 'warn', 'API', '/api/broadcast', { processed: i, total: filteredTopics.length });
+                break;
+              }
+
+              const topic = filteredTopics[i];
+              try {
+                await userClient.sendMessage(groupId, {
+                  message,
+                  replyTo: topic.telegram_topic_id
+                });
+                broadcastStatus.current = i + 1;
+                sendSseEvent('broadcast_update', broadcastStatus);
+              } catch (err: any) {
+                const waitMatch = err.message.match(/A wait of (\d+) seconds is required/);
+                if (waitMatch) {
+                  const waitTime = parseInt(waitMatch[1], 10);
+                  console.warn(`Flood wait: Waiting for ${waitTime} seconds for topic ${topic.telegram_topic_id}...`);
+                  await saveLog(`Flood wait: Waiting for ${waitTime} seconds for topic ${topic.telegram_topic_id}`, 'warn', 'API', '/api/broadcast');
+                  await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                  
+                  // Retry once after waiting
+                  try {
+                    await userClient.sendMessage(groupId, {
+                      message,
+                      replyTo: topic.telegram_topic_id
+                    });
+                    broadcastStatus.current = i + 1;
+                    sendSseEvent('broadcast_update', broadcastStatus);
+                  } catch (retryErr: any) {
+                    console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} after retry:`, retryErr.message);
+                    await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} after retry: ${retryErr.message}`, 'error', 'API', '/api/broadcast');
+                  }
+                } else {
+                  console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id}:`, err.message);
+                  await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id}: ${err.message}`, 'error', 'API', '/api/broadcast');
+                }
+              }
+
+              // Rate limiting delay (reduced to 50ms for faster broadcast)
+              await new Promise(resolve => setTimeout(resolve, 50));
+            }
+
+            if (!broadcastCancelled) {
+              broadcastStatus.status = 'completed';
+              sendSseEvent('broadcast_update', broadcastStatus);
+              await saveLog("Broadcast completed", 'info', 'API', '/api/broadcast', { total: filteredTopics.length });
+            }
+          } catch (err: any) {
+            console.error("Broadcast error:", err.message);
+            broadcastStatus.status = 'error';
+            sendSseEvent('broadcast_update', broadcastStatus);
+          } finally {
+            broadcastInProgress = false;
+          }
+        })();
+
+        res.json({ success: true, message: "Broadcast started" });
       } else {
         res.status(400).json({ error: "Telegram ID not logged in. Please login first." });
       }
     } catch (err: any) {
       await saveLog(err.message, 'error', 'API', '/api/broadcast');
-      if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await Setting.deleteOne({ key: "session_string" });
-        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
-        userClient = null;
-      } else if (err.message?.includes("TIMEOUT")) {
-        console.log("Connection timed out. Will retry later.");
-      }
       res.status(500).json({ error: `[POST /api/broadcast] ${err.message}` });
+    }
+  });
+
+  app.get("/api/missed-list", async (req, res) => {
+    try {
+      const missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: -1 });
+      res.json({ missed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/missed-skip", async (req, res) => {
+    try {
+      const { id } = req.body;
+      if (!id) return res.status(400).json({ error: "ID is required" });
+      await MissedTrigger.findByIdAndUpdate(id, { processed: true });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/missed-skip-all", async (req, res) => {
+    try {
+      await MissedTrigger.updateMany({ processed: false }, { processed: true });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -1848,6 +2439,11 @@ async function startServer() {
 
   app.post("/api/scan-missed", async (req, res) => {
     try {
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      if (isSystemPaused) {
+        return res.status(400).json({ error: "System is paused. Cannot scan for missed items." });
+      }
+
       if (!userClient || !userClient.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
@@ -1868,14 +2464,13 @@ async function startServer() {
       const missedItems = [];
       let newMissedCount = 0;
 
-      // Get Blocked Topics
-      const blockedTopics = await BlockedTopic.find();
-      const blockedTopicIds = new Set(blockedTopics.map(b => {
-        try {
-          const parts = b.link.split("/").filter(p => p.length > 0);
-          return parseInt(parts[parts.length - 1], 10);
-        } catch (e) { return null; }
-      }).filter(id => id !== null));
+      // Use cached blocked topics
+      const blockedTopicIds = blockedTopicsCache;
+
+      const normalizedGroupId = groupId.replace("-100", "");
+      if (blockedTopicIds.has(Number(normalizedGroupId))) {
+        return res.json({ success: true, count: 0, message: "Group is blocked" });
+      }
 
       for (const topic of topics) {
         const topicId = topic.id;
@@ -1991,12 +2586,111 @@ async function startServer() {
     } catch (err: any) {
       console.error("Scan missed error:", err);
       if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await Setting.deleteOne({ key: "session_string" });
+        await deleteSetting("session_string");
         if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
         userClient = null;
       } else if (err.message?.includes("TIMEOUT")) {
         console.log("Connection timed out. Will retry later.");
       }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/reply-single-missed", async (req, res) => {
+    try {
+      if (!userClient || !userClient.connected) {
+        return res.status(400).json({ error: "Telegram client not connected" });
+      }
+
+      const { triggerId } = req.body;
+      if (!triggerId) {
+        return res.status(400).json({ error: "Trigger ID is required" });
+      }
+
+      const trigger = await MissedTrigger.findById(triggerId);
+      if (!trigger || trigger.processed) {
+        return res.status(404).json({ error: "Trigger not found or already processed" });
+      }
+
+      const kw = await Keyword.findById(trigger.rule_id);
+      if (!kw) {
+        trigger.processed = true;
+        await trigger.save();
+        return res.status(404).json({ error: "Keyword rule not found" });
+      }
+
+      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      if (isSystemPaused) {
+        return res.status(400).json({ error: "Bot is paused. Unpause first to reply." });
+      }
+
+      const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+      const topMsgId = trigger.topic_id;
+      const replyToMsgId = trigger.message_id;
+      const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
+
+      if (topMsgId && blockedTopicsCache.has(topMsgId)) {
+        return res.status(400).json({ error: "Cannot reply to a blocked topic." });
+      }
+
+      // Send reply
+      const linksToProcess = [...(kw.message_links || [])];
+      if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
+        linksToProcess.push(kw.message_link);
+      }
+      const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
+
+      let replySent = false;
+      if (normalizedLinks.length > 0) {
+        for (const link of normalizedLinks) {
+          try {
+            const peer = await userClient.getInputEntity(trigger.chat_id);
+            await userClient.invoke(new Api.messages.ForwardMessages({
+              fromPeer: peer,
+              id: [trigger.message_id],
+              toPeer: peer,
+              randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+            }));
+            replySent = true;
+          } catch (err) {
+            console.error("Failed to forward message:", err);
+          }
+        }
+      } else if (kw.reply) {
+        try {
+          await userClient.sendMessage(trigger.chat_id, {
+            message: kw.reply,
+            replyTo: replyTo,
+          });
+          replySent = true;
+        } catch (err) {
+          console.error("Failed to send text reply:", err);
+        }
+      }
+
+      if (replySent) {
+        trigger.processed = true;
+        await trigger.save();
+        
+        // Update ReplyHistory
+        if (topMsgId) {
+          let history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+          if (!history) {
+            await ReplyHistory.create({ topic_id: topMsgId, keyword_id: kw._id, count: 1 });
+          } else {
+            history.count += 1;
+            history.last_updated = new Date();
+            await history.save();
+          }
+        }
+        
+        await saveLog(`Manual catchup reply sent to topic ${topMsgId} for keyword "${trigger.matched_keyword}"`, 'info', 'USERBOT');
+        return res.json({ success: true });
+      } else {
+        return res.status(500).json({ error: "Failed to send reply" });
+      }
+    } catch (err: any) {
+      console.error("Error in /api/reply-single-missed:", err);
       res.status(500).json({ error: err.message });
     }
   });
@@ -2049,6 +2743,21 @@ async function startServer() {
           const topMsgId = trigger.topic_id;
           const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
           
+          const normalizedPeerId = peerId.replace("-100", "");
+          if (blockedTopicsCache.has(Number(normalizedPeerId))) {
+            console.log(`Skipping missed trigger for blocked group ${normalizedPeerId}`);
+            trigger.processed = true;
+            await trigger.save();
+            continue;
+          }
+
+          if (topMsgId && blockedTopicsCache.has(topMsgId)) {
+            console.log(`Skipping missed trigger for blocked topic ${topMsgId}`);
+            trigger.processed = true;
+            await trigger.save();
+            continue;
+          }
+
           // Rate limiting check: Max replies per keyword rule per topic
           if (topMsgId) {
             const history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
@@ -2084,6 +2793,7 @@ async function startServer() {
           if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
             linksToProcess.push(kw.message_link);
           }
+          const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
 
           let replySent = false;
 
@@ -2108,9 +2818,9 @@ async function startServer() {
             replySent = true;
           }
 
-          if (linksToProcess.length > 0) {
-            console.log(`Catchup: Handling ${linksToProcess.length} message links for keyword: ${kw.keyword}`);
-            for (const link of linksToProcess) {
+          if (normalizedLinks.length > 0) {
+            console.log(`Catchup: Handling ${normalizedLinks.length} message links for keyword: ${kw.keyword}`);
+            for (const link of normalizedLinks) {
               const parts = link.split("/").filter(p => p.length > 0);
               const messageId = parseInt(parts[parts.length - 1], 10);
               if (!isNaN(messageId)) {
@@ -2204,7 +2914,7 @@ async function startServer() {
       res.json({ success: true, count: processedCount, cancelled: cancelCatchupFlag });
     } catch (err: any) {
       if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await Setting.deleteOne({ key: "session_string" });
+        await deleteSetting("session_string");
         if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
         userClient = null;
       } else if (err.message?.includes("TIMEOUT")) {
@@ -2239,7 +2949,22 @@ async function startServer() {
 
     try {
       const parts = link.split("/").filter((p: string) => p.length > 0);
-      const topicId = parseInt(parts[parts.length - 1], 10);
+      let topicId = NaN;
+      
+      const cIndex = parts.indexOf('c');
+      if (cIndex !== -1 && parts.length > cIndex + 2) {
+        // Format: https://t.me/c/groupId/topicId[/messageId]
+        topicId = parseInt(parts[cIndex + 2], 10);
+      } else {
+        const tmeIndex = parts.findIndex(p => p === 't.me' || p === 'telegram.me');
+        if (tmeIndex !== -1 && parts.length > tmeIndex + 2) {
+          // Format: https://t.me/groupname/topicId[/messageId]
+          topicId = parseInt(parts[tmeIndex + 2], 10);
+        } else {
+          // Fallback
+          topicId = parseInt(parts[parts.length - 1], 10);
+        }
+      }
 
       if (isNaN(topicId)) {
         return res.status(400).json({ error: "Invalid topic link" });
@@ -2249,19 +2974,20 @@ async function startServer() {
       const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
       if (existing) {
         await BlockedTopic.findByIdAndDelete(existing._id);
+        blockedTopicsCache.delete(topicId);
         await saveLog(`Topic ${topicId} unblocked via link`, 'info', 'API', '/api/blocked-topics', { link });
         return res.json({ success: true, action: 'unblocked' });
       }
 
       // Try to find topic name from our Topic collection
-      const topicInfo = await Topic.findOne({ telegram_topic_id: topicId });
-      const name = topicInfo ? topicInfo.name : "Unknown Topic";
+      const name = topicNamesCache[topicId] || "Unknown Topic";
 
       await BlockedTopic.create({
         telegram_topic_id: topicId,
         name,
         link
       });
+      blockedTopicsCache.add(topicId);
       
       await saveLog(`Topic ${topicId} blocked`, 'info', 'API', '/api/blocked-topics', { link, name });
       res.json({ success: true, action: 'blocked', name });
@@ -2272,7 +2998,10 @@ async function startServer() {
 
   app.delete("/api/blocked-topics/:id", async (req, res) => {
     try {
-      await BlockedTopic.findByIdAndDelete(req.params.id);
+      const deleted = await BlockedTopic.findByIdAndDelete(req.params.id);
+      if (deleted) {
+        blockedTopicsCache.delete(deleted.telegram_topic_id);
+      }
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2340,15 +3069,8 @@ async function startServer() {
         { $limit: 5 }
       ]);
 
-      const topicIds = topTopics.map(t => t._id);
-      const topics = await Topic.find({ telegram_topic_id: { $in: topicIds } });
-      const topicMap = topics.reduce((acc, t) => {
-        acc[t.telegram_topic_id] = t.name;
-        return acc;
-      }, {} as any);
-
       const topicData = topTopics.map(t => ({
-        name: topicMap[t._id] || `Topic ${t._id}`,
+        name: topicNamesCache[t._id] || `Topic ${t._id}`,
         value: t.total
       }));
 
@@ -2406,70 +3128,6 @@ async function startServer() {
       res.sendFile(path.join(__dirname, "dist", "index.html"));
     });
   }
-
-  // Start Server immediately
-  app.listen(PORT, "0.0.0.0", async () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    
-    // Initial keyword cache load
-    await refreshKeywordCache();
-    
-    // Connect UserBot in background
-    (async () => {
-      if (isConnecting) return;
-      try {
-        isConnecting = true;
-        let sessionString = (await getSetting("session_string"))?.value;
-        
-        const apiIdRaw = (await getSetting("api_id"))?.value || "";
-        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-        const apiId = parseInt(apiIdRaw.trim(), 10);
-
-        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-          console.log("Attempting to connect UserBot...");
-          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-            connectionRetries: 5,
-            requestRetries: 5,
-            deviceModel: "Desktop",
-            systemVersion: "Windows 10",
-            appVersion: "1.0.0",
-          });
-          await userClient.connect();
-          
-          const newSessionString = (userClient.session as StringSession).save();
-          if (newSessionString && newSessionString !== sessionString) {
-            await setSetting("session_string", newSessionString);
-          }
-          
-          if (await userClient.isUserAuthorized()) {
-            console.log("UserBot connected successfully.");
-            setupUserBotHandlers(userClient, groupId);
-            await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
-          } else {
-            console.log("UserBot connected but session is invalid/expired.");
-            await userClient.disconnect();
-            userClient = null;
-          }
-        }
-      } catch (err: any) {
-        console.error("Failed to connect UserBot on startup:", err);
-        await saveLog(`Startup connection failed: ${err.message}`, "error", "SYSTEM");
-        if (err.message?.includes("AUTH_KEY_UNREGISTERED") || 
-            err.message?.includes("AUTH_KEY_DUPLICATED")) {
-          console.log(`Session invalid or duplicated (${err.message}) on startup. Clearing session string.`);
-          await Setting.deleteOne({ key: "session_string" });
-          if (userClient) {
-            try { await userClient.disconnect(); } catch (e) {}
-          }
-          userClient = null;
-        } else if (err.message?.includes("TIMEOUT")) {
-          console.log(`Connection timed out (${err.message}) on startup. Will retry later.`);
-        }
-      } finally {
-        isConnecting = false;
-      }
-    })();
-  });
 
   // Graceful shutdown
   const shutdown = async () => {

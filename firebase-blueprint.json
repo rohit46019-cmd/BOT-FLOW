@@ -1,0 +1,35 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User notification settings and push subscriptions",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The Firebase Auth UID"
+        },
+        "telegramChatId": {
+          "type": "string",
+          "description": "The Telegram chat ID to monitor"
+        },
+        "pushSubscription": {
+          "type": "object",
+          "description": "The web-push subscription object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the user record was created"
+        }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User settings collection"
+    }
+  }
+}
