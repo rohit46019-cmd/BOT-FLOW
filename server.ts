@@ -87,7 +87,8 @@ const KeywordSchema = new mongoose.Schema({
   message_links: { type: [String], default: [] }, // Multiple Telegram message links
   max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
   match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
-  ai_reply_enabled: { type: Boolean, default: false }
+  ai_reply_enabled: { type: Boolean, default: false },
+  enabled: { type: Boolean, default: true }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -1179,6 +1180,7 @@ async function startServer() {
         console.log(`Checking keywords for: "${text}"`);
         
         for (const kw of cachedKeywords) {
+          if (kw.enabled === false) continue;
           // Collect all trigger words for this rule (legacy + new array)
           const triggerWords = [...(kw.keywords || [])];
           if (kw.keyword && !triggerWords.includes(kw.keyword)) {
@@ -2065,6 +2067,17 @@ async function startServer() {
     }
   });
 
+  app.put("/api/keywords/:id", async (req, res) => {
+    try {
+      const { enabled } = req.body;
+      await Keyword.findByIdAndUpdate(req.params.id, { enabled });
+      await refreshKeywordCache();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: `[PUT /api/keywords] ${err.message}` });
+    }
+  });
+
   // Export/Import Routes
   app.get("/api/data/export", async (req, res) => {
     try {
@@ -2514,6 +2527,7 @@ async function startServer() {
             const matches: { kw: any, index: number, matchedWord: string }[] = [];
 
             for (const kw of cachedKeywords) {
+              if (kw.enabled === false) continue;
               const triggerWords = [...(kw.keywords || [])];
               if (kw.keyword && !triggerWords.includes(kw.keyword)) {
                 triggerWords.push(kw.keyword);

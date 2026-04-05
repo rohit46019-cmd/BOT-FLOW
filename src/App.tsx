@@ -1837,6 +1837,24 @@ export default function App() {
     setDeleteConfirmationId(id);
   };
 
+  const handleToggleKeyword = async (id: string, enabled: boolean) => {
+    try {
+      const res = await fetch(`/api/keywords/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (res.ok) {
+        showNotification('success', `Keyword ${enabled ? 'enabled' : 'disabled'}`);
+        fetchKeywords();
+      } else {
+        showNotification('error', 'Failed to update keyword');
+      }
+    } catch (err) {
+      showNotification('error', 'Update failed');
+    }
+  };
+
   const confirmDeleteKeyword = async () => {
     if (!deleteConfirmationId) return;
     try {
@@ -2390,6 +2408,25 @@ export default function App() {
 
                 <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
 
+                <div className="p-4">
+                  <label className="text-[10px] font-black uppercase tracking-widest opacity-50 mb-2 block">Target Group ID</label>
+                  <input
+                    type="text"
+                    value={targetGroupId || ''}
+                    onChange={(e) => setTargetGroupId(e.target.value)}
+                    placeholder="Enter Group ID"
+                    className={`w-full p-3 rounded-xl text-sm ${darkMode ? 'bg-white/5 text-white' : 'bg-slate-100 text-slate-900'}`}
+                  />
+                  <button
+                    onClick={saveTargetGroupId}
+                    className={`w-full mt-2 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
+                  >
+                    Save Target Group
+                  </button>
+                </div>
+
+                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
+
                 <button
                   onClick={() => {
                     setShowClearDataConfirm(true);
@@ -2553,6 +2590,7 @@ export default function App() {
               keywords={keywords}
               handleAddKeyword={handleAddKeyword}
               handleDeleteKeyword={handleDeleteKeyword}
+              handleToggleKeyword={handleToggleKeyword}
               cancelEdit={cancelEdit}
               visibleKeywordsCount={visibleKeywordsCount}
               handleKeywordsScroll={handleKeywordsScroll}
@@ -3554,8 +3592,8 @@ export default function App() {
         </main>
 
       {/* Floating Bottom Navigation */}
-      <div className={`fixed bottom-4 left-4 right-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-[90%] sm:max-w-md z-50 transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none translate-y-10' : 'opacity-100 translate-y-0'}`}>
-        <nav className={`rounded-full border px-2 py-1.5 flex items-center justify-between transition duration-500 shadow-2xl backdrop-blur-xl ${darkMode ? 'bg-slate-950/90 border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.8)]' : 'bg-white/90 border-slate-200 shadow-[0_10px_40px_rgba(0,0,0,0.1)]'}`}>
+      <div className={`fixed bottom-4 left-4 right-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-[90%] sm:max-w-xs z-50 transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none translate-y-10' : 'opacity-100 translate-y-0'}`}>
+        <nav className={`rounded-2xl border px-2 py-1 flex items-center justify-between transition duration-500 shadow-2xl backdrop-blur-xl ${darkMode ? 'bg-slate-950/90 border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.8)]' : 'bg-white/90 border-slate-200 shadow-[0_10px_40px_rgba(0,0,0,0.1)]'}`}>
           <TabButton id="dashboard" icon={LayoutGrid} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="keywords" icon={MessageCircle} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="broadcast" icon={Radio} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
