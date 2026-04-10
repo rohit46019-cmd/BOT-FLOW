@@ -178,6 +178,7 @@ async function refreshSettingsCache() {
     
     const blockedTopics = await BlockedTopic.find();
     blockedTopicsCache = new Set(blockedTopics.map(t => t.telegram_topic_id));
+    console.log(`Blocked topics cache refreshed: ${blockedTopicsCache.size} topics. IDs: ${Array.from(blockedTopicsCache).join(", ")}`);
     
     const topics = await Topic.find();
     topicNamesCache = {};
@@ -201,6 +202,7 @@ const getSetting = async (key: string) => {
 };
 
 const setSetting = async (key: string, value: string) => {
+  console.log(`Updating setting cache: ${key} = ${value}`);
   settingsCache[key] = value;
   return await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
 };
@@ -909,42 +911,28 @@ async function startServer() {
       const replyToTopId = message.replyTo?.replyToTopId;
       const messageId = message.id;
       
-      await saveLog(`DEBUG: message.replyTo: ${JSON.stringify(message.replyTo)}`, 'info', 'SYSTEM');
-      
       // The forumTopicId is the root of the thread/topic. 
       // In forums, replyToTopId is the topic's starting message ID.
       let forumTopicId: number;
       if (message.action instanceof Api.MessageActionTopicCreate) {
         forumTopicId = Number(messageId);
       } else if (message.replyTo) {
-        forumTopicId = Number(replyToTopId || replyToId);
+        // In a forum, replyToTopId is the topic ID. 
+        // If it's missing but replyToMsgId is present, it might be a direct reply to the topic head.
+        forumTopicId = Number(replyToTopId || replyToId || 1);
       } else {
         // General topic or non-forum group
         forumTopicId = 1;
       }
 
-      // Check if the entire group is blocked
-      const groupIdNum = Number(normalizedChatId);
-      if (blockedTopicsCache.has(groupIdNum)) {
-        console.log(`Group ${groupIdNum} is blocked. Skipping processing.`);
-        await saveLog(`Group ${groupIdNum} is blocked. Skipping processing.`, 'info', 'SYSTEM');
-        return;
-      }
-
       // Check if the topic ID is blocked
       if (forumTopicId) {
-        console.log(`DEBUG: Checking if forumTopicId ${forumTopicId} is blocked. Cache size: ${blockedTopicsCache.size}. Has: ${blockedTopicsCache.has(forumTopicId)}`);
-        await saveLog(`DEBUG: Checking if forumTopicId ${forumTopicId} is blocked. Cache size: ${blockedTopicsCache.size}. Has: ${blockedTopicsCache.has(forumTopicId)}`, 'info', 'SYSTEM');
-        if (blockedTopicsCache.has(forumTopicId)) {
+        const isBlocked = blockedTopicsCache.has(forumTopicId);
+        if (isBlocked) {
           console.log(`Topic ${forumTopicId} is blocked. Skipping processing.`);
+          await saveLog(`Message ignored: Topic ${forumTopicId} is blocked.`, 'info', 'SYSTEM', undefined, { topicId: forumTopicId });
           return;
         }
-      }
-
-      // Also check if the message ID itself is blocked
-      if (blockedTopicsCache.has(Number(messageId))) {
-        console.log(`Message ID ${messageId} is blocked. Skipping processing.`);
-        return;
       }
 
       // Use forumTopicId for grouping/logic, but replyTo should be the message itself to stay in context
@@ -1093,7 +1081,7 @@ async function startServer() {
               const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
               const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
               
-              console.log(`Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId}`);
+              console.log(`[PHOTO REPLY] Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId}`);
               
               await client.sendMessage(message.peerId, {
                 message: photoReplyMessage,
@@ -1121,7 +1109,7 @@ async function startServer() {
                 }
 
                 if (shouldSend) {
-                  console.log(`Sending second photo auto-reply: "${photoReplyMessage2}"`);
+                  console.log(`[PHOTO REPLY] Sending second global photo auto-reply: "${photoReplyMessage2}"`);
                   await client.sendMessage(message.peerId, {
                     message: photoReplyMessage2,
                     replyTo: replyTo,
@@ -1381,7 +1369,7 @@ async function startServer() {
               }
 
               if (kw.photo) {
-                console.log(`Sending photo reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
+                console.log(`[KEYWORD REPLY] Sending photo reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
                 const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
                 const buffer = Buffer.from(base64Data, "base64");
                 
@@ -1399,7 +1387,7 @@ async function startServer() {
                 });
                 replySent = true;
               } else if (kw.reply) {
-                console.log(`Sending text reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
+                console.log(`[KEYWORD REPLY] Sending text reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
                 await client.sendMessage(message.peerId, {
                   message: kw.reply,
                   replyTo: replyTo,
