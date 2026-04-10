@@ -8,6 +8,8 @@ interface KeywordsManagerProps {
   keywords: any[];
   keywordSearch: string;
   setKeywordSearch: (val: string) => void;
+  keywordFilter: 'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest';
+  setKeywordFilter: (val: 'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest') => void;
   isSearchFocused: boolean;
   setIsSearchFocused: (val: boolean) => void;
   isAddingNewRule: boolean;
@@ -32,6 +34,8 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
   keywords,
   keywordSearch,
   setKeywordSearch,
+  keywordFilter,
+  setKeywordFilter,
   isSearchFocused,
   setIsSearchFocused,
   isAddingNewRule,
@@ -50,22 +54,7 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
   direction,
   slideVariants,
 }) => {
-  const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest'>('all');
   const [showFilters, setShowFilters] = useState(false);
-
-  const applyFilter = (kws: any[]) => {
-    switch (filter) {
-      case 'active': return kws.filter(kw => kw.enabled !== false);
-      case 'inactive': return kws.filter(kw => kw.enabled === false);
-      case 'forward': return kws.filter(kw => kw.forward_link);
-      case 'message': return kws.filter(kw => kw.reply_message);
-      case 'highest': return [...kws].sort((a, b) => (b.keywords?.length || 0) - (a.keywords?.length || 0));
-      case 'lowest': return [...kws].sort((a, b) => (a.keywords?.length || 0) - (b.keywords?.length || 0));
-      default: return kws;
-    }
-  };
-
-  const displayList = applyFilter(displayedKeywords);
 
   return (
     <motion.div
@@ -128,8 +117,8 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
                 {(['all', 'active', 'inactive', 'forward', 'message', 'highest', 'lowest'] as const).map(f => (
                   <button
                     key={f}
-                    onClick={() => setFilter(f)}
-                    className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${filter === f ? (darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white') : (darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-600')}`}
+                    onClick={() => setKeywordFilter(f)}
+                    className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${keywordFilter === f ? (darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white') : (darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-600')}`}
                   >
                     {f}
                   </button>
@@ -168,7 +157,7 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
       {keywords.length > 0 && (
         <div className="space-y-4">
           <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar" onScroll={handleKeywordsScroll}>
-            {displayList.map((kw, index) => {
+            {displayedKeywords.map((kw, index) => {
               const colorName = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'][index % 6];
               
               const editButtonClasses = [

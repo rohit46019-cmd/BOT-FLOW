@@ -51,6 +51,8 @@ interface SettingsPanelProps {
   fileInputRef: React.RefObject<HTMLInputElement>;
   handleImportData: (e: React.ChangeEvent<HTMLInputElement>) => void;
   importing: boolean;
+  targetGroupId: string;
+  setTargetGroupId: (val: string) => void;
   handleUpdateSettings: () => void;
   saving: boolean;
   direction: number;
@@ -106,6 +108,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   fileInputRef,
   handleImportData,
   importing,
+  targetGroupId,
+  setTargetGroupId,
   handleUpdateSettings,
   saving,
   direction,
@@ -131,6 +135,16 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
         
         <div className="space-y-6">
+          <div className="space-y-2">
+            <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Target Group ID</label>
+            <input
+              type="text"
+              value={targetGroupId}
+              onChange={(e) => setTargetGroupId(e.target.value)}
+              placeholder="e.g. -100123456789"
+              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
+            />
+          </div>
           <div className="space-y-2">
             <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Welcome Message</label>
             <textarea

@@ -299,6 +299,7 @@ export default function App() {
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isAddingNewRule, setIsAddingNewRule] = useState(false);
   const [keywordSearch, setKeywordSearch] = useState("");
+  const [keywordFilter, setKeywordFilter] = useState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest'>('all');
   const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
   const [expandedKeywordId, setExpandedKeywordId] = useState<string | null>(null);
   const deferredKeywordSearch = useDeferredValue(keywordSearch);
@@ -1014,13 +1015,24 @@ export default function App() {
 
   const filteredKeywords = useMemo(() => {
     const searchLower = deferredKeywordSearch.toLowerCase();
-    return keywords.filter(kw => {
+    let result = keywords.filter(kw => {
       const kws = (kw.keywords && kw.keywords.length > 0 ? kw.keywords : [kw.keyword]);
       const matchesKeyword = kws.some(k => k?.toLowerCase().includes(searchLower));
       const matchesReply = kw.reply?.toLowerCase().includes(searchLower);
       return matchesKeyword || matchesReply;
     });
-  }, [keywords, deferredKeywordSearch]);
+
+    switch (keywordFilter) {
+      case 'active': result = result.filter(kw => kw.enabled !== false); break;
+      case 'inactive': result = result.filter(kw => kw.enabled === false); break;
+      case 'forward': result = result.filter(kw => kw.message_link || (kw.message_links && kw.message_links.length > 0)); break;
+      case 'message': result = result.filter(kw => kw.reply); break;
+      case 'highest': result = [...result].sort((a, b) => (b.keywords?.length || 0) - (a.keywords?.length || 0)); break;
+      case 'lowest': result = [...result].sort((a, b) => (a.keywords?.length || 0) - (b.keywords?.length || 0)); break;
+    }
+
+    return result;
+  }, [keywords, deferredKeywordSearch, keywordFilter]);
 
   const displayedKeywords = useMemo(() => {
     return filteredKeywords.slice(0, visibleKeywordsCount);
@@ -2408,25 +2420,6 @@ export default function App() {
 
                 <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
 
-                <div className="p-4">
-                  <label className="text-[10px] font-black uppercase tracking-widest opacity-50 mb-2 block">Target Group ID</label>
-                  <input
-                    type="text"
-                    value={targetGroupId || ''}
-                    onChange={(e) => setTargetGroupId(e.target.value)}
-                    placeholder="Enter Group ID"
-                    className={`w-full p-3 rounded-xl text-sm ${darkMode ? 'bg-white/5 text-white' : 'bg-slate-100 text-slate-900'}`}
-                  />
-                  <button
-                    onClick={saveTargetGroupId}
-                    className={`w-full mt-2 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
-                  >
-                    Save Target Group
-                  </button>
-                </div>
-
-                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
-
                 <button
                   onClick={() => {
                     setShowClearDataConfirm(true);
@@ -2601,6 +2594,8 @@ export default function App() {
               setIsSearchFocused={setIsSearchFocused}
               displayedKeywords={displayedKeywords}
               filteredKeywords={filteredKeywords}
+              keywordFilter={keywordFilter}
+              setKeywordFilter={setKeywordFilter}
               handleEditKeyword={handleEditKeyword}
             />
           )}

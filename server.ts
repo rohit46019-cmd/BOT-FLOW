@@ -43,7 +43,7 @@ async function setupVapid() {
     if (vapidPublicKey && vapidPrivateKey) {
       console.log("Setting up VAPID details with public key length:", vapidPublicKey.length, "and private key length:", vapidPrivateKey.length);
       webpush.setVapidDetails(
-        "mailto:example@yourdomain.com",
+        "mailto:rohit37816@gmail.com",
         vapidPublicKey,
         vapidPrivateKey
       );
@@ -62,7 +62,12 @@ const DEFAULT_AI_PERSONA = `You are a smart assistant for a Telegram store selli
 - Constraint: If the message is generic (e.g., 'ok', 'hmm') or doesn't need a reply, strictly output 'NO_REPLY'.`;
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://rohit37819_db_user:P7E2iD0dqVhCwrI0@cluster0.1e9ikck.mongodb.net/?appName=Cluster0";
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error("MONGODB_URI is not defined in environment variables.");
+  process.exit(1);
+}
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
@@ -734,6 +739,14 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
 
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const groupId = process.env.TELEGRAM_GROUP_ID;
+
+  if (!token || !groupId) {
+    console.error("TELEGRAM_BOT_TOKEN or TELEGRAM_GROUP_ID is not defined in environment variables.");
+    // We don't exit here to allow the server to start for other features, but bot won't work
+  }
+
   const startApp = () => {
     app.listen(PORT, "0.0.0.0", async () => {
       console.log(`Server running on http://localhost:${PORT}`);
@@ -816,19 +829,18 @@ async function startServer() {
   // Health check endpoint
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-  const token = process.env.TELEGRAM_BOT_TOKEN || "8561216489:AAH4QgiM9kKXbGMYudLASGU46_mAiklDgIM";
-  const groupId = "-1003672030592"; // Strictly enforced Group ID
-
-  const bot = new TelegramBot(token, { polling: true });
+  const bot = token ? new TelegramBot(token, { polling: true }) : null;
 
   // Handle polling errors to prevent crash and clean up logs
-  bot.on("polling_error", (error: any) => {
-    if (error.message && error.message.includes("409 Conflict")) {
-      // This is expected during rapid restarts in this environment
-      return;
-    }
-    console.error("Telegram Bot Polling Error:", error);
-  });
+  if (bot) {
+    bot.on("polling_error", (error: any) => {
+      if (error.message && error.message.includes("409 Conflict")) {
+        // This is expected during rapid restarts in this environment
+        return;
+      }
+      console.error("Telegram Bot Polling Error:", error);
+    });
+  }
 
   async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
     if (!topicId) return "";
@@ -1008,7 +1020,7 @@ async function startServer() {
       }
 
       // 0. Photo Handler
-      if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType.startsWith('image/')))) {
+      if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType && message.media.document.mimeType.startsWith('image/')))) {
         const photoReplyEnabledSetting = (await getSetting("photo_reply_enabled"))?.value === "true";
         
         // Always handle topic renaming for photos, even if auto-reply is disabled
@@ -1027,7 +1039,7 @@ async function startServer() {
             ? `https://t.me/c/${cleanGroupId}/${topicId}`
             : `https://t.me/c/${cleanGroupId}`;
           
-          console.log(`Generated Telegram link for notification: ${link}`);
+          console.log(`Photo detected in topic: ${topicName} (${topicId})`);
           
           // Notify frontend
           sendSseEvent('photo_received', {
@@ -1058,13 +1070,30 @@ async function startServer() {
 
             // Check photo reply history for this topic
             let history = await PhotoReplyHistory.findOne({ topic_id: topicId });
+            
+            // Daily reset logic for photo replies
+            if (history && autoResetEnabled) {
+              const lastUpdated = new Date(history.last_updated);
+              const today = new Date();
+              const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+              
+              if (lastUpdatedIST !== todayIST) {
+                console.log(`Resetting photo reply count for topic ${topicId} (New Day)`);
+                history.count = 0;
+                history.last_updated = today;
+                await history.save();
+              }
+            }
+
             if (history && history.count >= photoReplyMax) {
               console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
             } else {
               const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
               const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
               const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
-              console.log(`Photo detected. Sending auto-reply: "${photoReplyMessage}"`);
+              
+              console.log(`Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId}`);
               
               await client.sendMessage(message.peerId, {
                 message: photoReplyMessage,
@@ -1097,14 +1126,12 @@ async function startServer() {
                     message: photoReplyMessage2,
                     replyTo: replyTo,
                   });
-                } else {
-                  console.log(`Second photo auto-reply skipped due to time window (${startTime} - ${endTime})`);
                 }
               }
 
               // Update history
               if (!history) {
-                await PhotoReplyHistory.create({ topic_id: topicId, count: 1 });
+                await PhotoReplyHistory.create({ topic_id: topicId, count: 1, last_updated: new Date() });
               } else {
                 history.count += 1;
                 history.last_updated = new Date();
@@ -1199,7 +1226,8 @@ async function startServer() {
               regex = new RegExp(escapedWord, 'gi');
             } else {
               // Unicode-friendly boundary check: matches if surrounded by non-letters/numbers or at start/end
-              regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+              // Improved regex to handle non-word characters better
+              regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedWord}($|[^\\p{L}\\p{N}])`, 'gui');
             }
             
             let match;
@@ -1353,7 +1381,7 @@ async function startServer() {
               }
 
               if (kw.photo) {
-                console.log(`Sending photo reply for keyword: ${kw.keyword}`);
+                console.log(`Sending photo reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
                 const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
                 const buffer = Buffer.from(base64Data, "base64");
                 
@@ -1371,7 +1399,7 @@ async function startServer() {
                 });
                 replySent = true;
               } else if (kw.reply) {
-                console.log(`Sending text reply for keyword: ${kw.keyword}`);
+                console.log(`Sending text reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
                 await client.sendMessage(message.peerId, {
                   message: kw.reply,
                   replyTo: replyTo,
