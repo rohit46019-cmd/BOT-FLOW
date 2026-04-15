@@ -1,17 +1,28 @@
 {
-  "name": "ROHIT'S USERBOT PRO",
-  "short_name": "ROHIT'S USERBOT",
-  "description": "Professional Telegram Topic & Userbot Manager",
+  "name": "BotFlow Premium",
+  "short_name": "BotFlow",
+  "description": "Professional Telegram Topic & Userbot Manager with AI",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#10b981",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "icons": [
     {
       "src": "/logo.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
     }
-  ]
+  ],
+  "prefer_related_applications": false,
+  "categories": ["productivity", "utilities"]
 }

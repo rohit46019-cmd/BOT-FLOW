@@ -8,6 +8,9 @@ export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkM
 
   return (
     <div className="flex items-center space-x-2 group">
+      <div className={`flex-shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black ${darkMode ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
+        {(index || 0) + 1}
+      </div>
       <div className="relative flex-1">
         <div className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-${color}-500`}>
           <Hash size={16} />
@@ -247,6 +250,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                       const color = colors[index % 6];
                       return (
                         <div key={index} className="flex items-center space-x-2">
+                          <div className={`flex-shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black ${darkMode ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                            {index + 1}
+                          </div>
                           <div className="relative flex-1">
                             <Link className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-${color}-500`} />
                             <input

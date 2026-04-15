@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Key, LayoutDashboard, Image, RefreshCw, RotateCcw, Search, Play, Pause, MessageSquare } from 'lucide-react';
+import { Key, LayoutDashboard, Image, RefreshCw, RotateCcw, Search, Play, Pause, MessageSquare, Download } from 'lucide-react';
 import { Skeleton } from './Skeleton';
 
 interface DashboardProps {
@@ -13,6 +13,8 @@ interface DashboardProps {
   handleScanMissed: () => void;
   isScanningMissed: boolean;
   handleTogglePause: () => void;
+  deferredPrompt?: any;
+  handleInstallApp?: () => void;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({
@@ -26,9 +28,31 @@ const Dashboard: React.FC<DashboardProps> = ({
   handleScanMissed,
   isScanningMissed,
   handleTogglePause,
+  deferredPrompt,
+  handleInstallApp,
 }) => {
   return (
     <div className="space-y-6 w-full">
+      {deferredPrompt && (
+        <div 
+          onClick={handleInstallApp}
+          className={`p-4 rounded-3xl border-2 border-dashed flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98] ${darkMode ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-50 border-blue-200 text-blue-600'}`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className={`p-2 rounded-xl ${darkMode ? 'bg-blue-500/20' : 'bg-blue-100'}`}>
+              <Download size={20} />
+            </div>
+            <div>
+              <p className="text-sm font-black uppercase tracking-tight">Install BotFlow App</p>
+              <p className="text-[10px] opacity-70 font-bold">Add to home screen for a better experience</p>
+            </div>
+          </div>
+          <div className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${darkMode ? 'bg-blue-500 text-white' : 'bg-blue-600 text-white'}`}>
+            Install
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4">
         {/* Active Keywords */}
         <div 

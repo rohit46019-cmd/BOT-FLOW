@@ -355,6 +355,8 @@ export default function App() {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastSeenLogCount, setLastSeenLogCount] = useState(0);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const keywordsTopRef = useRef<HTMLDivElement>(null);
   const keywordsBottomRef = useRef<HTMLDivElement>(null);
   const castTopRef = useRef<HTMLDivElement>(null);
@@ -406,6 +408,31 @@ export default function App() {
       setLastSeenLogCount(logs.length);
     }
   }, [logs, isNotificationOpen, lastSeenLogCount]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsInitialLoading(false);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+    }
+  };
 
   const formatTime = (seconds: number) => {
     const d = Math.floor(seconds / 86400);
@@ -925,7 +952,6 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [authStep, setAuthStep] = useState<'credentials' | 'phone' | 'code'>('credentials');
   const [authLoading, setAuthLoading] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   const fetchStats = async () => {
     try {
@@ -1433,22 +1459,8 @@ export default function App() {
       fetchMissedCount();
     }, 30000);
 
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    });
-
     return () => clearInterval(interval);
   }, []);
-
-  const handleInstallApp = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setDeferredPrompt(null);
-    }
-  };
 
   useEffect(() => {
     if (activeTab === 'logs') {
@@ -2172,12 +2184,87 @@ export default function App() {
 
 
   return (
-    <motion.div 
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.5 }}
-      className={`min-h-screen transition-colors duration-500 ${activeTab === 'logs' || darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans ${activeTab === 'logs' ? 'pb-0' : 'pb-24'} relative overflow-x-hidden`}
-    >
+    <AnimatePresence mode="wait">
+      {isInitialLoading ? (
+        <motion.div
+          key="loading"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, scale: 1.1, filter: "blur(10px)" }}
+          className="fixed inset-0 z-[1000] bg-black flex flex-col items-center justify-center overflow-hidden"
+        >
+          {/* Background Glow */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] rounded-full blur-[120px] opacity-20 bg-blue-500" />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[40%] h-[40%] rounded-full blur-[100px] opacity-10 bg-emerald-500" />
+          </div>
+
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: "spring", damping: 20, stiffness: 100 }}
+            className="relative z-10 flex flex-col items-center"
+          >
+            <div className="relative w-24 h-24 mb-8">
+              <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl rotate-6 opacity-40 animate-pulse"></div>
+              <div className="relative w-full h-full rounded-2xl overflow-hidden flex items-center justify-center border border-white/20 bg-neutral-900 shadow-2xl">
+                <img src="/logo.svg" alt="Logo" className="w-14 h-14 object-contain" />
+              </div>
+              {/* Spinning Ring */}
+              <div className="absolute -inset-4 border-2 border-white/5 border-t-emerald-500 rounded-full animate-spin"></div>
+            </div>
+
+            <div className="flex flex-col items-center space-y-2">
+              <div className="flex items-center space-x-2">
+                <h1 className="text-3xl font-black tracking-tighter text-white bg-clip-text text-transparent bg-gradient-to-r from-white via-blue-100 to-emerald-100">
+                  BotFlow
+                </h1>
+                <Sparkles className="w-5 h-5 text-emerald-400 animate-pulse" />
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] font-black text-emerald-500 tracking-[0.4em] uppercase">Premium AI</span>
+                <div className="flex space-x-1">
+                  <motion.div 
+                    animate={{ opacity: [0, 1, 0] }}
+                    transition={{ repeat: Infinity, duration: 1, delay: 0 }}
+                    className="w-1 h-1 rounded-full bg-emerald-500" 
+                  />
+                  <motion.div 
+                    animate={{ opacity: [0, 1, 0] }}
+                    transition={{ repeat: Infinity, duration: 1, delay: 0.2 }}
+                    className="w-1 h-1 rounded-full bg-emerald-500" 
+                  />
+                  <motion.div 
+                    animate={{ opacity: [0, 1, 0] }}
+                    transition={{ repeat: Infinity, duration: 1, delay: 0.4 }}
+                    className="w-1 h-1 rounded-full bg-emerald-500" 
+                  />
+                </div>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Bottom Text */}
+          <div className="absolute bottom-12 left-0 right-0 flex flex-col items-center space-y-1">
+            <p className="text-[10px] font-bold text-white/30 tracking-widest uppercase">Initializing Secure Connection</p>
+            <div className="w-32 h-0.5 bg-white/5 rounded-full overflow-hidden">
+              <motion.div 
+                initial={{ x: "-100%" }}
+                animate={{ x: "100%" }}
+                transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                className="w-1/2 h-full bg-gradient-to-r from-transparent via-blue-500 to-transparent"
+              />
+            </div>
+          </div>
+        </motion.div>
+      ) : (
+        <motion.div 
+          key="content"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5 }}
+          className={`min-h-screen transition-colors duration-500 ${activeTab === 'logs' || darkMode ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'} font-sans ${activeTab === 'logs' ? 'pb-0' : 'pb-24'} relative overflow-x-hidden`}
+        >
       {/* Background Decorative Elements */}
       <div className={`fixed inset-0 pointer-events-none overflow-hidden z-0 transition-opacity duration-500 ${activeTab === 'logs' ? 'opacity-0' : 'opacity-100'}`}>
         <div className={`absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-emerald-500' : 'bg-emerald-300'}`} />
@@ -2234,8 +2321,16 @@ export default function App() {
               </div>
             </div>
             <div className="flex flex-col">
-              <h1 className="font-black text-base sm:text-lg tracking-tight leading-none transition-colors duration-500 text-white">USERBOT</h1>
-              <span className="text-[8px] font-black text-emerald-400 tracking-widest uppercase block">PRO</span>
+              <div className="flex items-center space-x-1">
+                <h1 className="font-black text-base sm:text-xl tracking-tighter leading-none transition-colors duration-500 text-white bg-clip-text text-transparent bg-gradient-to-r from-white via-blue-100 to-emerald-100">
+                  BotFlow
+                </h1>
+                <Sparkles className="w-3 h-3 text-emerald-400 animate-pulse" />
+              </div>
+              <div className="flex items-center space-x-1">
+                <span className="text-[7px] font-black text-emerald-400 tracking-[0.3em] uppercase block">Premium AI</span>
+                <div className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
+              </div>
             </div>
           </div>
         </div>
@@ -2300,8 +2395,11 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex flex-col">
-                      <h1 className={`font-black text-sm tracking-tight leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>USERBOT</h1>
-                      <span className="text-[7px] font-black text-emerald-500 tracking-widest uppercase block">PRO</span>
+                      <div className="flex items-center space-x-1">
+                        <h1 className={`font-black text-base tracking-tighter leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>BotFlow</h1>
+                        <Sparkles className="w-2.5 h-2.5 text-emerald-500" />
+                      </div>
+                      <span className="text-[7px] font-black text-emerald-500 tracking-[0.2em] uppercase block">Premium Edition</span>
                       {stats?.loginUser && (
                         <span className={`text-[9px] font-medium mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                           {stats?.loginUser?.firstName || ''} {stats?.loginUser?.lastName || ''} {stats?.loginUser?.phone ? `(${stats?.loginUser?.phone})` : ''}
@@ -2499,6 +2597,8 @@ export default function App() {
               handleCancelCatchUp={handleCancelCatchUp}
               handleTogglePause={handleTogglePause}
               loading={loading}
+              deferredPrompt={deferredPrompt}
+              handleInstallApp={handleInstallApp}
             />
           )}
 
@@ -4085,6 +4185,8 @@ export default function App() {
         )}
       </AnimatePresence>
     </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
