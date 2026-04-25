@@ -164,7 +164,7 @@ const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSche
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-let settingsCache: Record<string, string> = {};
+let settingsCache: Record<string, string | null> = {};
 let blockedTopicsCache: Set<number> = new Set();
 let topicNamesCache: Record<number, string> = {};
 
@@ -191,12 +191,14 @@ async function refreshSettingsCache() {
 }
 
 const getSetting = async (key: string) => {
-  if (settingsCache[key] !== undefined) {
-    return { value: settingsCache[key] };
+  if (settingsCache.hasOwnProperty(key)) {
+    return settingsCache[key] === null ? null : { value: settingsCache[key] };
   }
   const setting = await Setting.findOne({ key });
   if (setting) {
     settingsCache[key] = setting.value;
+  } else {
+    settingsCache[key] = null;
   }
   return setting;
 };
@@ -633,6 +635,9 @@ async function initSettings() {
   
   const delay = await getSetting("delay_seconds");
   if (!delay) await setSetting("delay_seconds", "0");
+
+  const keywordDelay = await getSetting("keyword_delay_seconds");
+  if (!keywordDelay) await setSetting("keyword_delay_seconds", "0");
   
   const photoReplyEnabled = await getSetting("photo_reply_enabled");
   if (!photoReplyEnabled) await setSetting("photo_reply_enabled", "false");
@@ -880,6 +885,9 @@ async function startServer() {
       try {
         const message = event.message;
         if (!message) return;
+        
+        // Ignore edited messages to prevent duplicate processing
+        if (message.editDate) return;
 
       // Fast ID extraction
       let chatId: string = "";
@@ -916,7 +924,7 @@ async function startServer() {
       let forumTopicId: number;
       if (message.action instanceof Api.MessageActionTopicCreate) {
         forumTopicId = Number(messageId);
-      } else if (message.replyTo) {
+      } else if (message.replyTo && message.replyTo.forumTopic) {
         // In a forum, replyToTopId is the topic ID. 
         // If it's missing but replyToMsgId is present, it might be a direct reply to the topic head.
         forumTopicId = Number(replyToTopId || replyToId || 1);
@@ -1237,7 +1245,15 @@ async function startServer() {
         if (matches.length > 0) {
           keywordMatched = true;
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
+          
+          const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds"))?.value || "0", 10);
+          if (keywordDelaySeconds > 0) {
+            console.log(`Delaying keyword processing by ${keywordDelaySeconds} seconds...`);
+            await new Promise(resolve => setTimeout(resolve, keywordDelaySeconds * 1000));
+          }
+
           const processedRuleIds = new Set<string>();
+          let isFirstMatch = true;
 
           for (const match of matches) {
             const kw = match.kw;
@@ -1246,6 +1262,12 @@ async function startServer() {
               console.log(`Skipping duplicate match for rule ${kw._id} (word: ${match.matchedWord})`);
               continue;
             }
+            
+            if (!isFirstMatch) {
+              await new Promise(resolve => setTimeout(resolve, 500)); // only delay for subsequent keywords
+            }
+            isFirstMatch = false;
+            
             processedRuleIds.add(kw._id.toString());
             
             console.log(`DEBUG: Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
@@ -1304,9 +1326,6 @@ async function startServer() {
                   continue;
                 }
               }
-
-              // Add a small delay between replies
-              await new Promise(resolve => setTimeout(resolve, 1000));
 
               // 1. AI Reply (if enabled)
               if (kw.ai_reply_enabled) {
@@ -1419,7 +1438,7 @@ async function startServer() {
                       }
                     }
 
-                    const topMsgId = topicId;
+                    const topMsgId = topicId === 1 ? undefined : topicId;
                     
                     try {
                       let inputPeer;
@@ -1430,12 +1449,14 @@ async function startServer() {
                         throw e;
                       }
 
+                      const toPeerInput = await client.getInputEntity(message.peerId);
+
                       await client.invoke(
                         new Api.messages.ForwardMessages({
                           fromPeer: inputPeer,
                           id: [messageId],
                           randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                          toPeer: message.peerId,
+                          toPeer: toPeerInput,
                           topMsgId: replyInGeneral ? undefined : topMsgId,
                         }) as any
                       );
@@ -1497,11 +1518,6 @@ async function startServer() {
               // If a reply was sent, we continue to the next keyword match
               if (replySent) {
                 console.log("Reply sent for keyword. Continuing to next match.");
-              }
-
-              // Add a small delay between replies to avoid spamming/rate limits
-              if (matches.length > 1) {
-                await new Promise(resolve => setTimeout(resolve, 500));
               }
             } catch (err: any) {
               console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
@@ -1759,6 +1775,7 @@ async function startServer() {
       const autoReply2 = (await getSetting("auto_reply_2"))?.value || "";
       const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay"))?.value || "1", 10);
       const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+      const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds"))?.value || "0", 10);
       const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
       const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
       const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
@@ -1896,6 +1913,7 @@ async function startServer() {
         autoReply2,
         autoReply2Delay,
         delaySeconds,
+        keywordDelaySeconds,
         isSystemPaused,
         photoReplyEnabled,
         photoReplyMessage,
@@ -1939,6 +1957,7 @@ async function startServer() {
         autoReply2,
         autoReply2Delay,
         delaySeconds, 
+        keywordDelaySeconds,
         apiId, 
         apiHash, 
         systemPaused, 
@@ -1967,6 +1986,7 @@ async function startServer() {
       if (typeof autoReply2 === "string") await setSetting("auto_reply_2", autoReply2);
       if (typeof autoReply2Delay !== "undefined") await setSetting("auto_reply_2_delay", String(autoReply2Delay));
       if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
+      if (typeof keywordDelaySeconds !== "undefined") await setSetting("keyword_delay_seconds", String(keywordDelaySeconds));
       if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
       if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
       if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
@@ -1990,7 +2010,7 @@ async function startServer() {
       if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime);
       if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime);
       
-      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
+      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, keywordDelaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -2655,7 +2675,7 @@ async function startServer() {
       }
 
       const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
-      const topMsgId = trigger.topic_id;
+      const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
       const replyToMsgId = trigger.message_id;
       const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
 
@@ -2674,16 +2694,61 @@ async function startServer() {
       if (normalizedLinks.length > 0) {
         for (const link of normalizedLinks) {
           try {
-            const peer = await userClient.getInputEntity(trigger.chat_id);
-            await userClient.invoke(new Api.messages.ForwardMessages({
-              fromPeer: peer,
-              id: [trigger.message_id],
-              toPeer: peer,
-              randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-            }));
-            replySent = true;
+            const parts = link.split("/").filter(p => p.length > 0);
+            const messageId = parseInt(parts[parts.length - 1], 10);
+            if (!isNaN(messageId)) {
+              let fromPeer: any = trigger.chat_id;
+              if (link.includes("/c/")) {
+                const cIndex = parts.indexOf("c");
+                if (cIndex !== -1 && parts[cIndex + 1]) {
+                  fromPeer = `-100${parts[cIndex + 1]}`;
+                }
+              } else {
+                const tmeIndex = parts.indexOf("t.me");
+                if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                  fromPeer = parts[tmeIndex + 1];
+                } else if (parts.length >= 3) {
+                  fromPeer = parts[2];
+                }
+              }
+
+              let inputPeer = await userClient.getInputEntity(fromPeer);
+              const toPeer = await userClient.getInputEntity(trigger.chat_id);
+              await userClient.invoke(new Api.messages.ForwardMessages({
+                fromPeer: inputPeer,
+                id: [messageId],
+                toPeer: toPeer,
+                randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                topMsgId: replyInGeneral ? undefined : topMsgId,
+              }) as any);
+              replySent = true;
+            }
           } catch (err) {
             console.error("Failed to forward message:", err);
+            try {
+              const parts = link.split("/").filter(p => p.length > 0);
+              const messageId = parseInt(parts[parts.length - 1], 10);
+              let fromPeer: any = trigger.chat_id;
+              if (link.includes("/c/")) {
+                const cIndex = parts.indexOf("c");
+                if (cIndex !== -1 && parts[cIndex + 1]) {
+                   fromPeer = `-100${parts[cIndex + 1]}`;
+                }
+              } else {
+                const tmeIndex = parts.indexOf("t.me");
+                if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                  fromPeer = parts[tmeIndex + 1];
+                }
+              }
+              await userClient.forwardMessages(trigger.chat_id, {
+                messages: [messageId],
+                fromPeer: fromPeer,
+                topMsgId: replyInGeneral ? undefined : topMsgId,
+              } as any);
+              replySent = true;
+            } catch (fallbackErr) {
+              console.error("Fallback forward failed:", fallbackErr);
+            }
           }
         }
       } else if (kw.reply) {
@@ -2770,7 +2835,7 @@ async function startServer() {
 
           const peerId = trigger.chat_id;
           const replyToMsgId = trigger.message_id;
-          const topMsgId = trigger.topic_id;
+          const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
           const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
           
           const normalizedPeerId = peerId.replace("-100", "");
@@ -2878,12 +2943,14 @@ async function startServer() {
                     throw e;
                   }
 
+                  const toPeerInput = await userClient.getInputEntity(peerId);
+
                   await userClient.invoke(
                     new Api.messages.ForwardMessages({
                       fromPeer: inputPeer,
                       id: [messageId],
                       randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                      toPeer: peerId,
+                      toPeer: toPeerInput,
                       topMsgId: replyInGeneral ? undefined : topMsgId,
                     }) as any
                   );

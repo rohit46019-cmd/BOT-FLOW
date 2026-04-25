@@ -14,6 +14,8 @@ interface SettingsPanelProps {
   setAutoReply2DelayInput: (val: number) => void;
   delaySecondsInput: number;
   setDelaySecondsInput: (val: number) => void;
+  keywordDelaySecondsInput: number;
+  setKeywordDelaySecondsInput: (val: number) => void;
   handleToggleAutoReset: () => void;
   autoResetKeywords: boolean;
   aiModeEnabled: boolean;
@@ -71,6 +73,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   setAutoReply2DelayInput,
   delaySecondsInput,
   setDelaySecondsInput,
+  keywordDelaySecondsInput,
+  setKeywordDelaySecondsInput,
   handleToggleAutoReset,
   autoResetKeywords,
   aiModeEnabled,
@@ -188,14 +192,25 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
             )}
           </div>
           
-          <div className="space-y-1">
-            <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Reply Delay (Seconds)</label>
-            <input
-              type="number"
-              value={delaySecondsInput}
-              onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
-              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
-            />
+          <div className="flex gap-4">
+            <div className="flex-1 space-y-1">
+              <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Topic Reply Delay (Sec)</label>
+              <input
+                type="number"
+                value={delaySecondsInput}
+                onChange={(e) => setDelaySecondsInput(parseInt(e.target.value) || 0)}
+                className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
+              />
+            </div>
+            <div className="flex-1 space-y-1">
+              <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Keyword Reply Delay (Sec)</label>
+              <input
+                type="number"
+                value={keywordDelaySecondsInput}
+                onChange={(e) => setKeywordDelaySecondsInput(parseInt(e.target.value) || 0)}
+                className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
+              />
+            </div>
           </div>
 
           <div className="pt-4 border-t border-white/5">

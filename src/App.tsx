@@ -98,6 +98,7 @@ interface Stats {
   keywordCount: number;
   autoReply: string;
   delaySeconds: number;
+  keywordDelaySeconds: number;
   isSystemPaused: boolean;
   photoReplyEnabled: boolean;
   photoReplyMessage: string;
@@ -267,6 +268,7 @@ export default function App() {
   const [autoReply2Input, setAutoReply2Input] = useState("");
   const [autoReply2DelayInput, setAutoReply2DelayInput] = useState(1);
   const [delaySecondsInput, setDelaySecondsInput] = useState(0);
+  const [keywordDelaySecondsInput, setKeywordDelaySecondsInput] = useState(0);
   const [apiIdInput, setApiIdInput] = useState("");
   const [apiHashInput, setApiHashInput] = useState("");
   const [photoReplyEnabled, setPhotoReplyEnabled] = useState(false);
@@ -969,6 +971,7 @@ export default function App() {
         setAutoReply2Input(data.autoReply2);
         setAutoReply2DelayInput(data.autoReply2Delay || 1);
         setDelaySecondsInput(data.delaySeconds);
+        setKeywordDelaySecondsInput(data.keywordDelaySeconds || 0);
         setApiIdInput(data.apiId);
         setApiHashInput(data.apiHash);
         setPhotoReplyEnabled(data.photoReplyEnabled);
@@ -1719,6 +1722,7 @@ export default function App() {
           autoReply2: autoReply2Input,
           autoReply2Delay: autoReply2DelayInput,
           delaySeconds: delaySecondsInput,
+          keywordDelaySeconds: keywordDelaySecondsInput,
           apiId: apiIdInput,
           apiHash: apiHashInput,
           photoReplyEnabled,
@@ -2628,6 +2632,8 @@ export default function App() {
               setAutoReply2DelayInput={setAutoReply2DelayInput}
               delaySecondsInput={delaySecondsInput}
               setDelaySecondsInput={setDelaySecondsInput}
+              keywordDelaySecondsInput={keywordDelaySecondsInput}
+              setKeywordDelaySecondsInput={setKeywordDelaySecondsInput}
               handleToggleAutoReset={handleToggleAutoReset}
               autoResetKeywords={autoResetKeywords}
               handleToggleAiMode={handleToggleAiMode}
