@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { Key, LayoutDashboard, Image, RefreshCw, RotateCcw, Search, Play, Pause, MessageSquare, Download } from 'lucide-react';
 import { Skeleton } from './Skeleton';
+import LiveLogBox from './LiveLogBox';
 
 interface DashboardProps {
   darkMode: boolean;
@@ -15,6 +16,7 @@ interface DashboardProps {
   handleTogglePause: () => void;
   deferredPrompt?: any;
   handleInstallApp?: () => void;
+  logs: any[];
 }
 
 const Dashboard: React.FC<DashboardProps> = ({
@@ -30,6 +32,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   handleTogglePause,
   deferredPrompt,
   handleInstallApp,
+  logs,
 }) => {
   return (
     <div className="space-y-6 w-full">
@@ -199,24 +202,8 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Current Auto Reply */}
-        <div 
-          className={`card-3d aspect-square p-4 rounded-3xl border-t-2 border-l-2 border-b-[8px] border-r-[6px] transition-colors duration-200 relative overflow-hidden group flex flex-col items-center justify-center text-center ${darkMode ? 'bg-amber-700 border-amber-900 shadow-[0_0_20px_rgba(180,83,9,0.6)]' : 'bg-amber-500 border-amber-700 shadow-[0_0_20px_rgba(245,158,11,0.6)]'}`}
-        >
-          <div className="card-3d-glow" style={{ '--x': '50%', '--y': '50%' } as any} />
-          <div className={`absolute inset-0 pattern-dots opacity-[0.15] pointer-events-none ${darkMode ? 'text-amber-100' : 'text-amber-100'}`} />
-          <div className="relative z-10 pointer-events-auto flex flex-col items-center w-full card-3d-inner">
-            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-2 ${darkMode ? 'bg-amber-800 text-amber-100' : 'bg-amber-400 text-amber-50'}`}>
-              <MessageSquare size={24} />
-            </div>
-            <p className={`text-[10px] font-bold uppercase tracking-widest mb-2 ${darkMode ? 'text-amber-100/80' : 'text-amber-50/80'}`}>Auto Reply</p>
-            <div className={`w-full px-2 py-2 rounded-xl border ${darkMode ? 'bg-amber-800/50 border-amber-600/50' : 'bg-amber-600/50 border-amber-400/50'} overflow-hidden`}>
-              <p className={`text-xs font-medium leading-tight italic truncate ${darkMode ? 'text-white' : 'text-white'}`}>
-                "{stats?.autoReply || 'No message set'}"
-              </p>
-            </div>
-          </div>
-        </div>
+        {/* Live Logs */}
+        <LiveLogBox logs={logs} darkMode={darkMode} />
       </div>
     </div>
   );

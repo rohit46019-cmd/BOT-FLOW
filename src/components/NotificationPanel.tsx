@@ -61,7 +61,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                 <Bell className="text-blue-500" size={18} />
                 <h2 className={`font-black text-sm uppercase tracking-widest ${darkMode ? 'text-white' : 'text-slate-900'}`}>Notifications</h2>
               </div>
-              <button onClick={onClose} className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+              <button onClick={onClose} className={`p-2 rounded-full transition-all duration-300 hover:scale-105 hover:shadow-md ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
                 <X size={20} />
               </button>
             </div>
@@ -69,14 +69,14 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
             <div className={`flex border-b ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
               <button 
                 onClick={() => setActiveSubTab('senders')}
-                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition relative ${activeSubTab === 'senders' ? (darkMode ? 'text-blue-400' : 'text-blue-600') : (darkMode ? 'text-slate-500' : 'text-slate-400')}`}
+                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all duration-300 relative rounded-full mx-1 ${activeSubTab === 'senders' ? (darkMode ? 'text-blue-400 bg-blue-500/10' : 'text-blue-600 bg-blue-50') : (darkMode ? 'text-slate-500 hover:bg-white/5' : 'text-slate-400 hover:bg-slate-50')}`}
               >
                 Recent Senders
                 {activeSubTab === 'senders' && <motion.div layoutId="subtab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
               </button>
               <button 
                 onClick={() => setActiveSubTab('alerts')}
-                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition relative ${activeSubTab === 'alerts' ? (darkMode ? 'text-blue-400' : 'text-blue-600') : (darkMode ? 'text-slate-500' : 'text-slate-400')}`}
+                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all duration-300 relative rounded-full mx-1 ${activeSubTab === 'alerts' ? (darkMode ? 'text-blue-400 bg-blue-500/10' : 'text-blue-600 bg-blue-50') : (darkMode ? 'text-slate-500 hover:bg-white/5' : 'text-slate-400 hover:bg-slate-50')}`}
               >
                 All Alerts
                 {activeSubTab === 'alerts' && <motion.div layoutId="subtab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
@@ -110,7 +110,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                           toast.error("Error opening topic");
                         }
                       }}
-                      className={`p-4 rounded-2xl border transition flex items-center justify-between cursor-pointer group ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-slate-50 border-slate-100 hover:bg-slate-100'}`}
+                      className={`p-4 rounded-3xl border transition-all duration-300 flex items-center justify-between cursor-pointer group hover:scale-[1.02] hover:shadow-lg ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-slate-50 border-slate-100 hover:bg-slate-100'}`}
                     >
                       <div className="flex items-center space-x-3">
                         <div className="w-10 h-10 rounded-full overflow-hidden bg-blue-500/20 flex items-center justify-center border border-blue-500/30 group-hover:scale-105 transition-transform">
@@ -126,7 +126,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                           <span className={`text-[9px] font-mono opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Topic ID: {sender.id || 'Unknown'}</span>
                         </div>
                       </div>
-                      <div className={`p-2 rounded-lg transition ${darkMode ? 'text-blue-400 group-hover:bg-blue-500/20' : 'text-blue-600 group-hover:bg-blue-500/10'}`}>
+                      <div className={`p-2 rounded-full transition-all duration-300 ${darkMode ? 'text-blue-400 group-hover:bg-blue-500/20' : 'text-blue-600 group-hover:bg-blue-500/10'}`}>
                         <ExternalLink size={16} />
                       </div>
                     </div>
@@ -155,7 +155,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                     return (
                       <div 
                         key={log._id || log.timestamp} 
-                        className={`p-4 rounded-2xl border transition ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} ${topicLink ? 'cursor-pointer hover:opacity-80' : ''}`}
+                        className={`p-4 rounded-3xl border transition-all duration-300 hover:scale-[1.02] hover:shadow-lg ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} ${topicLink ? 'cursor-pointer' : ''}`}
                         onClick={() => {
                           if (topicLink) {
                             window.location.href = topicLink;
@@ -193,13 +193,14 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                         {topicId && !isBlockLog && (
                           <div className="mt-2 pt-2 border-t border-white/5 flex justify-end">
                             <button 
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 navigator.clipboard.writeText(topicId);
                                 toast.success(`Copied ID: ${topicId}`);
                               }}
-                              className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:underline"
+                              className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:bg-blue-500/10 px-3 py-1.5 rounded-full transition-all duration-300"
                             >
-                              Copy Topic ID: {topicId}
+                              Copy ID
                             </button>
                           </div>
                         )}
@@ -213,7 +214,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
             <div className={`p-4 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
               <button 
                 onClick={onClose}
-                className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                className={`w-full py-3 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-300 hover:scale-[1.02] ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
               >
                 Close Panel
               </button>

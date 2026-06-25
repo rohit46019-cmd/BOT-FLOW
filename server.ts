@@ -1166,7 +1166,12 @@ async function startServer() {
 
               // Update history
               if (!history) {
-                await PhotoReplyHistory.create({ topic_id: topicId, chat_id: chatId, count: 1, last_updated: new Date() });
+                try {
+                  await PhotoReplyHistory.create({ topic_id: topicId, chat_id: chatId, count: 1, last_updated: new Date() });
+                } catch (e: any) {
+                  if (e.code !== 11000) throw e;
+                  console.warn("Duplicate key error for PhotoReplyHistory, ignoring.");
+                }
               } else {
                 history.count += 1;
                 history.last_updated = new Date();

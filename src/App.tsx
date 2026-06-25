@@ -224,31 +224,31 @@ const TabButton = ({
   const theme = colors[id] || colors.dashboard;
 
   return (
-    <button
-      onClick={() => {
-        const currentIndex = TABS.indexOf(activeTab);
-        const newIndex = TABS.indexOf(id);
-        if (currentIndex !== newIndex) {
-          setDirection(newIndex > currentIndex ? 1 : -1);
-          setActiveTab(id);
-        }
-      }}
-      className={`flex flex-col items-center justify-center py-2 px-1 sm:px-4 rounded-2xl transition duration-300 relative group ${
-        isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? `${theme.text} hover:text-white` : `${theme.text} hover:text-slate-900`)
-      }`}
-    >
-      <div className={`p-2 rounded-xl transition duration-300 ${isActive ? `bg-gradient-to-tr ${theme.bg} shadow-lg ${theme.glow}` : `group-hover:bg-gradient-to-tr group-hover:${theme.bg} group-hover:shadow-lg group-hover:${theme.glow} bg-transparent`}`}>
-        <Icon strokeWidth={2.5} className={`w-7 h-7 sm:w-8 sm:h-8 transition duration-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] ${isActive ? "scale-110 text-white" : `group-hover:scale-110 group-hover:text-white ${darkMode ? 'drop-shadow-[0_0_8px_currentColor]' : ''}`}`} />
-      </div>
-      <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition ${isActive ? "opacity-100" : "opacity-70"}`}>{label}</span>
-      {isActive && (
-        <motion.div 
-          layoutId="activeTab"
-          className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${theme.bg} rounded-full`}
-          transition={{ type: "spring", stiffness: 500, damping: 30 }}
-        />
-      )}
-    </button>
+      <button
+        onClick={() => {
+          const currentIndex = TABS.indexOf(activeTab);
+          const newIndex = TABS.indexOf(id);
+          if (currentIndex !== newIndex) {
+            setDirection(newIndex > currentIndex ? 1 : -1);
+            setActiveTab(id);
+          }
+        }}
+        className={`flex flex-col items-center justify-center py-2 px-3 sm:px-6 rounded-full transition-all duration-300 relative group hover:scale-105 ${
+          isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? `${theme.text} hover:text-white` : `${theme.text} hover:text-slate-900`)
+        }`}
+      >
+        <div className={`p-2.5 rounded-full transition-all duration-300 ${isActive ? `bg-gradient-to-tr ${theme.bg} shadow-lg ${theme.glow}` : `group-hover:bg-gradient-to-tr group-hover:${theme.bg} group-hover:shadow-lg group-hover:${theme.glow} bg-transparent`}`}>
+          <Icon strokeWidth={2.5} className={`w-6 h-6 sm:w-7 sm:h-7 transition duration-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] ${isActive ? "scale-110 text-white" : `group-hover:scale-110 group-hover:text-white ${darkMode ? 'drop-shadow-[0_0_8px_currentColor]' : ''}`}`} />
+        </div>
+        <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition ${isActive ? "opacity-100" : "opacity-70"}`}>{label}</span>
+        {isActive && (
+          <motion.div 
+            layoutId="activeTab"
+            className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${theme.bg} rounded-full`}
+            transition={{ type: "spring", stiffness: 500, damping: 30 }}
+          />
+        )}
+      </button>
   );
 };
 
@@ -2606,6 +2606,7 @@ export default function App() {
               loading={loading}
               deferredPrompt={deferredPrompt}
               handleInstallApp={handleInstallApp}
+              logs={logs}
             />
           )}
 
