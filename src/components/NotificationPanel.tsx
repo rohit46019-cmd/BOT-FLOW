@@ -19,10 +19,18 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
   // Extract unique senders (only for photo logs)
   const recentSenders = Array.from(new Set(notificationLogs.filter((l: any) => l.message.toLowerCase().includes('photo')).map((l: any) => {
     try {
-      const details = l.details ? JSON.parse(l.details) : {};
+      let details = l.details;
+      if (typeof details === 'string') {
+        try {
+          details = JSON.parse(details);
+        } catch (e) {
+          details = {};
+        }
+      }
+      details = details || {};
       const topicId = details.topicId || l.message.match(/topic (\d+)/)?.[1];
       const topicName = l.message.replace('Photo received from ', '').replace('Photo auto-reply sent to ', '').split(':')[0];
-      return JSON.stringify({ name: topicName, id: topicId });
+      return JSON.stringify({ name: topicName, id: topicId, details: details });
     } catch (e) {
       return null;
     }
@@ -87,10 +95,19 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                     <div 
                       key={sender.id || sender.name} 
                       onClick={() => {
-                        if (sender.id) {
-                          window.open(`https://t.me/c/3672030592/${sender.id}`, '_blank', 'noopener,noreferrer');
-                        } else {
-                          toast.error("Topic ID not found");
+                        try {
+                          const details = sender.details || {};
+                          // Ensure ID is stripped of -100 prefix for t.me/c/ link
+                          const topicId = sender.id;
+                          const cleanGroupId = '3672030592'.replace("-100", ""); 
+                          const url = details.url || (topicId ? `https://t.me/c/${cleanGroupId}/${topicId}` : null);
+                          if (url) {
+                            window.location.href = url; // Directly navigate to the URL
+                          } else {
+                            toast.error("Topic link not found");
+                          }
+                        } catch (e) {
+                          toast.error("Error opening topic");
                         }
                       }}
                       className={`p-4 rounded-2xl border transition flex items-center justify-between cursor-pointer group ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-slate-50 border-slate-100 hover:bg-slate-100'}`}
@@ -127,21 +144,31 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                     let topicName = null;
                     let topicLink = null;
                     try {
-                      const details = log.details ? JSON.parse(log.details) : {};
+                      const details = log.details ? (typeof log.details === 'string' ? JSON.parse(log.details) : log.details) : {};
                       topicId = details.topicId;
                       topicName = details.topicName || details.name;
-                      topicLink = details.link;
+                      topicLink = details.url || details.link;
                     } catch(e) {}
 
                     const isBlockLog = log.message.toLowerCase().includes('block');
 
                     return (
-                      <div key={log._id || log.timestamp} className={`p-4 rounded-2xl border transition ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
+                      <div 
+                        key={log._id || log.timestamp} 
+                        className={`p-4 rounded-2xl border transition ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} ${topicLink ? 'cursor-pointer hover:opacity-80' : ''}`}
+                        onClick={() => {
+                          if (topicLink) {
+                            window.location.href = topicLink;
+                          }
+                        }}
+                      >
                         <div className="flex items-center justify-between mb-1">
                           <span className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? (isBlockLog ? 'text-rose-400' : 'text-blue-400') : (isBlockLog ? 'text-rose-600' : 'text-blue-600')}`}>{log.type || (isBlockLog ? 'BLOCK' : 'PHOTO')}</span>
                           <span className="text-[8px] opacity-40 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
                         </div>
-                        <p className={`text-xs leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>{log.message}</p>
+                        <p className={`text-[13px] font-sans font-medium tracking-tight ${darkMode ? 'text-cyan-100' : 'text-slate-800'}`}>
+                          {log.message.includes('from ') ? log.message.split('from ')[1].split(' - ')[0] : log.message}
+                        </p>
                         
                         {(topicName || topicLink) && isBlockLog && (
                           <div className="mt-2 pt-2 border-t border-white/5 flex flex-col gap-1">

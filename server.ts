@@ -77,10 +77,12 @@ const SettingSchema = new mongoose.Schema({
 const Setting = mongoose.model("Setting", SettingSchema);
 
 const TopicSchema = new mongoose.Schema({
-  telegram_topic_id: { type: Number, required: true, unique: true },
+  telegram_topic_id: { type: Number, required: true },
+  chat_id: { type: String, required: true, default: "" },
   name: { type: String },
   created_at: { type: Date, default: Date.now }
 });
+TopicSchema.index({ telegram_topic_id: 1, chat_id: 1 }, { unique: true });
 const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
@@ -109,18 +111,21 @@ const Log = mongoose.model("Log", LogSchema);
 
 const ReplyHistorySchema = new mongoose.Schema({
   topic_id: { type: Number, required: true },
+  chat_id: { type: String, required: true, default: "" },
   keyword_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword', required: true },
   count: { type: Number, default: 0 },
   last_updated: { type: Date, default: Date.now }
 });
-ReplyHistorySchema.index({ topic_id: 1, keyword_id: 1 }, { unique: true });
+ReplyHistorySchema.index({ topic_id: 1, chat_id: 1, keyword_id: 1 }, { unique: true });
 const ReplyHistory = mongoose.model("ReplyHistory", ReplyHistorySchema);
 
 const PhotoReplyHistorySchema = new mongoose.Schema({
-  topic_id: { type: Number, required: true, unique: true },
+  topic_id: { type: Number, required: true },
+  chat_id: { type: String, required: true, default: "" },
   count: { type: Number, default: 0 },
   last_updated: { type: Date, default: Date.now }
 });
+PhotoReplyHistorySchema.index({ topic_id: 1, chat_id: 1 }, { unique: true });
 const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
 
 const PhotoSentLogSchema = new mongoose.Schema({
@@ -260,14 +265,25 @@ const getPast24hPhotoSentStats = async () => {
     }))
   };
 };
-const logTopic = async (topicId: number, name: string, date?: Date) => {
+const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | Date, date?: Date) => {
   try {
+    let finalChatId = process.env.TELEGRAM_GROUP_ID || "";
+    let finalDate = date || new Date();
+
+    if (chatIdOrDate) {
+      if (typeof chatIdOrDate === "string") {
+        finalChatId = chatIdOrDate;
+      } else if (chatIdOrDate instanceof Date) {
+        finalDate = chatIdOrDate;
+      }
+    }
+
     topicNamesCache[topicId] = name;
     await Topic.findOneAndUpdate(
-      { telegram_topic_id: topicId },
+      { telegram_topic_id: topicId, chat_id: finalChatId },
       { 
         $set: { name },
-        $setOnInsert: { created_at: date || new Date() }
+        $setOnInsert: { created_at: finalDate }
       },
       { upsert: true }
     );
@@ -722,6 +738,12 @@ async function initSettings() {
     await setSetting("auto_block_match_mode", "partial");
     console.log("Auto Block Match Mode setting initialized.");
   }
+
+  const telegramGroupIds = await getSetting("telegram_group_ids");
+  if (!telegramGroupIds) {
+    await setSetting("telegram_group_ids", process.env.TELEGRAM_GROUP_ID || "");
+    console.log("Telegram Group IDs setting initialized.");
+  }
 }
 
 let userClient: TelegramClient | null = null;
@@ -824,6 +846,15 @@ async function startServer() {
   mongoose.connect(MONGODB_URI)
     .then(async () => {
       console.log("Connected to MongoDB");
+      // Safely drop old non-group indexing constraints to migrate to multi-group setups
+      try {
+        await mongoose.connection.collection("topics").dropIndex("telegram_topic_id_1").catch(() => {});
+        await mongoose.connection.collection("replyhistories").dropIndex("topic_id_1_keyword_id_1").catch(() => {});
+        await mongoose.connection.collection("photoreplyhistories").dropIndex("topic_id_1").catch(() => {});
+        console.log("Old indexes checked and dropped if existed.");
+      } catch (idxErr) {
+        console.error("Index cleanup error:", idxErr);
+      }
       await refreshSettingsCache();
       await initSettings();
       await setupVapid();
@@ -897,10 +928,13 @@ async function startServer() {
         else if (message.peerId.userId) chatId = message.peerId.userId.toString();
       }
 
+      // Check multiple target group IDs
+      const groupIdsSetting = settingsCache["telegram_group_ids"] || targetGroupId || "";
+      const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
+
       const normalizedChatId = chatId.replace("-100", "");
-      const normalizedTargetId = targetGroupId.replace("-100", "");
       
-      if (normalizedChatId !== normalizedTargetId) {
+      if (!allowedGroupIds.includes(normalizedChatId)) {
         return;
       }
 
@@ -1030,22 +1064,27 @@ async function startServer() {
           // Pass true to bypass keyword check for photos
           const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true);
           
-          const cleanGroupId = targetGroupId.toString().replace("-100", "").replace("-", "");
+          const chat = await client.getEntity(message.peerId) as any;
+          const chatTitle = chat.title || "Unknown Group";
+          
+          const cleanGroupId = targetGroupId.toString().replace("-100", "");
+          // Telegram deep link for topic
           const link = topicId 
             ? `https://t.me/c/${cleanGroupId}/${topicId}`
             : `https://t.me/c/${cleanGroupId}`;
           
-          console.log(`Photo detected in topic: ${topicName} (${topicId})`);
+          console.log(`Photo detected in group: ${chatTitle}, topic: ${topicName} (${topicId}), link: ${link}`);
           
           // Notify frontend
           sendSseEvent('photo_received', {
-            message: `${topicName} sent a photo`,
+            message: `${chatTitle} - ${topicName} sent a photo`,
             topicName: topicName,
+            groupName: chatTitle,
             timestamp: new Date(),
             url: link
           });
 
-          await saveLog(`Photo received from ${topicName}`, 'info', 'USERBOT', undefined, { topicId });
+          await saveLog(`Photo received from ${chatTitle} - ${topicName}`, 'info', 'USERBOT', undefined, { topicId, url: link });
 
           // Log the photo sent event for today's stats (count all photos sent by users)
           await PhotoSentLog.create({
@@ -1065,7 +1104,7 @@ async function startServer() {
             const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
 
             // Check photo reply history for this topic
-            let history = await PhotoReplyHistory.findOne({ topic_id: topicId });
+            let history = await PhotoReplyHistory.findOne({ topic_id: topicId, chat_id: chatId });
             
             // Daily reset logic for photo replies
             if (history && autoResetEnabled) {
@@ -1075,7 +1114,7 @@ async function startServer() {
               const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
               
               if (lastUpdatedIST !== todayIST) {
-                console.log(`Resetting photo reply count for topic ${topicId} (New Day)`);
+                console.log(`Resetting photo reply count for topic ${topicId} in chat ${chatId} (New Day)`);
                 history.count = 0;
                 history.last_updated = today;
                 await history.save();
@@ -1083,13 +1122,13 @@ async function startServer() {
             }
 
             if (history && history.count >= photoReplyMax) {
-              console.log(`Photo reply limit reached for topic ${topicId} (${history.count}/${photoReplyMax}). Skipping.`);
+              console.log(`Photo reply limit reached for topic ${topicId} in chat ${chatId} (${history.count}/${photoReplyMax}). Skipping.`);
             } else {
               const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
               const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
               const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
               
-              console.log(`[PHOTO REPLY] Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId}`);
+              console.log(`[PHOTO REPLY] Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId} inside chat ${chatId}`);
               
               await client.sendMessage(message.peerId, {
                 message: photoReplyMessage,
@@ -1127,7 +1166,7 @@ async function startServer() {
 
               // Update history
               if (!history) {
-                await PhotoReplyHistory.create({ topic_id: topicId, count: 1, last_updated: new Date() });
+                await PhotoReplyHistory.create({ topic_id: topicId, chat_id: chatId, count: 1, last_updated: new Date() });
               } else {
                 history.count += 1;
                 history.last_updated = new Date();
@@ -1301,7 +1340,7 @@ async function startServer() {
 
               // Rate limiting check: Max replies per keyword rule per topic
               if (topicId) {
-                const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
+                const history = await ReplyHistory.findOne({ topic_id: topicId, chat_id: chatId, keyword_id: kw._id });
                 const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
                 
                 let currentCount = 0;
@@ -1485,7 +1524,7 @@ async function startServer() {
                 try {
                   if (topicId) {
                     const today = new Date();
-                    const history = await ReplyHistory.findOne({ topic_id: topicId, keyword_id: kw._id });
+                    const history = await ReplyHistory.findOne({ topic_id: topicId, chat_id: chatId, keyword_id: kw._id });
                     let isSameDay = false;
                     
                     if (history) {
@@ -1502,7 +1541,7 @@ async function startServer() {
                        await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
                     } else {
                        await ReplyHistory.findOneAndUpdate(
-                          { topic_id: topicId, keyword_id: kw._id },
+                          { topic_id: topicId, chat_id: chatId, keyword_id: kw._id },
                           { count: 1, last_updated: today },
                           { upsert: true }
                        );
@@ -1649,15 +1688,19 @@ async function startServer() {
 
   // Bot Logic (Logging only, no auto-replies)
   bot.on("message", async (msg) => {
-    // Only process messages from the target group
-    if (msg.chat.id.toString() !== groupId) return;
+    // Only process messages from target groups
+    const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
+    const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
+    const currentChatId = msg.chat.id.toString().replace("-100", "");
+
+    if (!allowedGroupIds.includes(currentChatId)) return;
 
     if (msg.forum_topic_created) {
       const topicName = msg.forum_topic_created.name;
       const topicId = msg.message_thread_id;
 
       if (topicId) {
-        await logTopic(topicId, topicName);
+        await logTopic(topicId, topicName, msg.chat.id.toString());
       }
     }
   });
@@ -1797,6 +1840,7 @@ async function startServer() {
       const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
       const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
       const lastLoginTime = (await getSetting("last_login_time"))?.value || "";
+      const targetGroupId = (await getSetting("telegram_group_ids"))?.value || process.env.TELEGRAM_GROUP_ID || "";
       
       let isUserBotConnected = !!userClient && userClient.connected;
       
@@ -1940,6 +1984,7 @@ async function startServer() {
         apiId,
         apiHash,
         defaultPhone,
+        targetGroupId,
         loginUser,
       });
     } catch (err: any) {
@@ -1979,7 +2024,8 @@ async function startServer() {
         geminiApiKeys, 
         replyInGeneral,
         photoReplyMessage2StartTime,
-        photoReplyMessage2EndTime
+        photoReplyMessage2EndTime,
+        targetGroupId
       } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof autoReply2Enabled !== "undefined") await setSetting("auto_reply_2_enabled", String(autoReply2Enabled));
@@ -2009,6 +2055,9 @@ async function startServer() {
       if (typeof replyInGeneral !== "undefined") await setSetting("reply_in_general", String(replyInGeneral));
       if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime);
       if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime);
+      if (typeof targetGroupId !== "undefined") await setSetting("telegram_group_ids", String(targetGroupId));
+      
+      await refreshSettingsCache();
       
       await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, keywordDelaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
       res.json({ success: true });
@@ -2343,10 +2392,20 @@ async function startServer() {
 
     try {
       if (userClient && userClient.connected) {
+        const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
+        const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(id => id);
+
         if (target === 'general') {
-          // Send only to general section (no topic ID)
-          await userClient.sendMessage(groupId, { message });
-          await saveLog("Broadcast sent to general section", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          // Send only to general section (no topic ID) across all permitted groups
+          for (const gId of allowedGroupIds) {
+            try {
+              await userClient.sendMessage(gId, { message });
+            } catch (err: any) {
+              console.error(`Broadcast failed for general section in group ${gId}:`, err.message);
+              await saveLog(`General broadcast failed for group ${gId}: ${err.message}`, 'error', 'API', '/api/broadcast');
+            }
+          }
+          await saveLog("Broadcast sent to general section of allowed groups", 'info', 'API', '/api/broadcast', { messageLength: message.length });
           return res.json({ success: true, message: "Broadcast sent to general section" });
         }
 
@@ -2356,10 +2415,16 @@ async function startServer() {
         console.log(`Broadcast: Found ${filteredTopics.length} topics after filtering blocked topics.`);
 
         if (filteredTopics.length === 0) {
-          // If no topics, just send to the main group
-          await userClient.sendMessage(groupId, { message });
-          await saveLog("Broadcast sent to main group (no topics found)", 'info', 'API', '/api/broadcast', { messageLength: message.length });
-          return res.json({ success: true, message: "Sent to main group (no topics found)" });
+          // If no topics, just send to all main groups
+          for (const gId of allowedGroupIds) {
+            try {
+              await userClient.sendMessage(gId, { message });
+            } catch (err: any) {
+              console.error(`Broadcast failed for main group ${gId}:`, err.message);
+            }
+          }
+          await saveLog("Broadcast sent to main groups (no topics found)", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          return res.json({ success: true, message: "Sent to main groups (no topics found)" });
         }
 
         broadcastInProgress = true;
@@ -2382,8 +2447,9 @@ async function startServer() {
               }
 
               const topic = filteredTopics[i];
+              const destChatId = topic.chat_id || groupId;
               try {
-                await userClient.sendMessage(groupId, {
+                await userClient.sendMessage(destChatId, {
                   message,
                   replyTo: topic.telegram_topic_id
                 });
@@ -2399,19 +2465,19 @@ async function startServer() {
                   
                   // Retry once after waiting
                   try {
-                    await userClient.sendMessage(groupId, {
+                    await userClient.sendMessage(destChatId, {
                       message,
                       replyTo: topic.telegram_topic_id
                     });
                     broadcastStatus.current = i + 1;
                     sendSseEvent('broadcast_update', broadcastStatus);
                   } catch (retryErr: any) {
-                    console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} after retry:`, retryErr.message);
-                    await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} after retry: ${retryErr.message}`, 'error', 'API', '/api/broadcast');
+                    console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} in ${destChatId} after retry:`, retryErr.message);
+                    await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId} after retry: ${retryErr.message}`, 'error', 'API', '/api/broadcast');
                   }
                 } else {
-                  console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id}:`, err.message);
-                  await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id}: ${err.message}`, 'error', 'API', '/api/broadcast');
+                  console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} in ${destChatId}:`, err.message);
+                  await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId}: ${err.message}`, 'error', 'API', '/api/broadcast');
                 }
               }
 
@@ -2497,139 +2563,148 @@ async function startServer() {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
 
-      console.log("Scanning first 50 topics for missed keywords...");
-      const result = await userClient.invoke(
-        new Api.channels.GetForumTopics({
-          channel: await userClient.getInputEntity(groupId),
-          q: "",
-          offsetDate: 0,
-          offsetId: 0,
-          offsetTopic: 0,
-          limit: 50,
-        })
-      );
+      const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
+      const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(id => id);
 
-      const topics = (result as any).topics || [];
       const missedItems = [];
       let newMissedCount = 0;
 
-      // Use cached blocked topics
-      const blockedTopicIds = blockedTopicsCache;
+      for (const currentGroupId of allowedGroupIds) {
+        console.log(`Scanning first 50 topics for missed keywords in group ${currentGroupId}...`);
+        try {
+          const result = await userClient.invoke(
+            new Api.channels.GetForumTopics({
+              channel: await userClient.getInputEntity(currentGroupId),
+              q: "",
+              offsetDate: 0,
+              offsetId: 0,
+              offsetTopic: 0,
+              limit: 50,
+            })
+          );
 
-      const normalizedGroupId = groupId.replace("-100", "");
-      if (blockedTopicIds.has(Number(normalizedGroupId))) {
-        return res.json({ success: true, count: 0, message: "Group is blocked" });
-      }
+          const topics = (result as any).topics || [];
+          const blockedTopicIds = blockedTopicsCache;
 
-      for (const topic of topics) {
-        const topicId = topic.id;
-        const topicName = topic.title;
-        const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
-
-        // Log topic to database to ensure it's counted in today's topics if created today
-        await logTopic(topicId, topicName, topicDate);
-
-        if (blockedTopicIds.has(topicId)) {
-          console.log(`Skipping blocked topic: ${topicId}`);
-          continue;
-        }
-
-        // Fetch last 30 messages for this topic
-        const messages = await userClient.getMessages(groupId, {
-          replyTo: topicId,
-          limit: 30,
-        });
-
-        if (!messages || messages.length === 0) continue;
-
-        const botReplyMessageIds = new Set(
-          messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
-        );
-        const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
-
-        for (const msg of messages) {
-          if (msg.out) continue;
-
-          // Check if bot replied directly to this message, or replied generally after this message
-          const isRepliedDirectly = botReplyMessageIds.has(msg.id);
-          const isRepliedGenerally = latestBotReplyDate > msg.date;
-
-          if (isRepliedDirectly || isRepliedGenerally) {
-            continue; // Skip, already replied
+          const normalizedGroupId = currentGroupId.replace("-100", "");
+          if (blockedTopicIds.has(Number(normalizedGroupId))) {
+            console.log(`Skipping scan for blocked group: ${normalizedGroupId}`);
+            continue;
           }
 
-          if (msg.message) {
-            const text = msg.message.toLowerCase().trim();
-            const matches: { kw: any, index: number, matchedWord: string }[] = [];
+          for (const topic of topics) {
+            const topicId = topic.id;
+            const topicName = topic.title;
+            const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
 
-            for (const kw of cachedKeywords) {
-              if (kw.enabled === false) continue;
-              const triggerWords = [...(kw.keywords || [])];
-              if (kw.keyword && !triggerWords.includes(kw.keyword)) {
-                triggerWords.push(kw.keyword);
+            // Log topic with the correct group chat ID!
+            await logTopic(topicId, topicName, currentGroupId, topicDate);
+
+            if (blockedTopicIds.has(topicId)) {
+              console.log(`Skipping blocked topic: ${topicId}`);
+              continue;
+            }
+
+            // Fetch last 30 messages for this topic in this group
+            const messages = await userClient.getMessages(currentGroupId, {
+              replyTo: topicId,
+              limit: 30,
+            });
+
+            if (!messages || messages.length === 0) continue;
+
+            const botReplyMessageIds = new Set(
+              messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
+            );
+            const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
+
+            for (const msg of messages) {
+              if (msg.out) continue;
+
+              const isRepliedDirectly = botReplyMessageIds.has(msg.id);
+              const isRepliedGenerally = latestBotReplyDate > msg.date;
+
+              if (isRepliedDirectly || isRepliedGenerally) {
+                continue; // Skip, already replied
               }
 
-              for (const word of triggerWords) {
-                const wordLower = word.toLowerCase().trim();
-                if (!wordLower) continue;
+              if (msg.message) {
+                const text = msg.message.toLowerCase().trim();
+                const matches: { kw: any, index: number, matchedWord: string }[] = [];
 
-                const escapedWord = escapeRegExp(wordLower);
-                let regex: RegExp;
-                
-                if (kw.match_mode === 'partial') {
-                  regex = new RegExp(escapedWord, 'gi');
-                } else {
-                  regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+                for (const kw of cachedKeywords) {
+                  if (kw.enabled === false) continue;
+                  const triggerWords = [...(kw.keywords || [])];
+                  if (kw.keyword && !triggerWords.includes(kw.keyword)) {
+                    triggerWords.push(kw.keyword);
+                  }
+
+                  for (const word of triggerWords) {
+                    const wordLower = word.toLowerCase().trim();
+                    if (!wordLower) continue;
+
+                    const escapedWord = escapeRegExp(wordLower);
+                    let regex: RegExp;
+                    
+                    if (kw.match_mode === 'partial') {
+                      regex = new RegExp(escapedWord, 'gi');
+                    } else {
+                      regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+                    }
+                    
+                    let match;
+                    while ((match = regex.exec(text)) !== null) {
+                      matches.push({ kw, index: match.index, matchedWord: wordLower });
+                      break; // Match once per keyword rule per message
+                    }
+                  }
                 }
-                
-                let match;
-                while ((match = regex.exec(text)) !== null) {
-                  matches.push({ kw, index: match.index, matchedWord: wordLower });
-                  break; // Only match this specific word once per message
+
+                matches.sort((a, b) => a.index - b.index);
+
+                if (matches.length > 0) {
+                  const processedRuleIds = new Set<string>();
+
+                  for (const match of matches) {
+                    const kw = match.kw;
+                    if (processedRuleIds.has(kw._id.toString())) continue;
+                    processedRuleIds.add(kw._id.toString());
+
+                    // Check if already in MissedTrigger for this rule and chat_id!
+                    const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: currentGroupId, rule_id: kw._id });
+                    if (!existing) {
+                      const newTrigger = await MissedTrigger.create({
+                        message_id: msg.id,
+                        chat_id: currentGroupId,
+                        topic_id: topicId,
+                        text: msg.message,
+                        matched_keyword: match.matchedWord,
+                        rule_id: kw._id,
+                        timestamp: new Date(msg.date * 1000),
+                        processed: false
+                      });
+                      newMissedCount++;
+                      missedItems.push({
+                        _id: newTrigger._id,
+                        topicName,
+                        topicId,
+                        keyword: match.matchedWord,
+                        text: msg.message,
+                        date: new Date(msg.date * 1000)
+                      });
+                    }
+                  }
                 }
               }
             }
 
-            matches.sort((a, b) => a.index - b.index);
-
-            if (matches.length > 0) {
-              const processedRuleIds = new Set<string>();
-
-              for (const match of matches) {
-                const kw = match.kw;
-                if (processedRuleIds.has(kw._id.toString())) continue;
-                processedRuleIds.add(kw._id.toString());
-
-                // Check if already in MissedTrigger for this specific rule
-                const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: groupId, rule_id: kw._id });
-                if (!existing) {
-                  const newTrigger = await MissedTrigger.create({
-                    message_id: msg.id,
-                    chat_id: groupId,
-                    topic_id: topicId,
-                    text: msg.message,
-                    matched_keyword: match.matchedWord,
-                    rule_id: kw._id,
-                    timestamp: new Date(msg.date * 1000),
-                    processed: false
-                  });
-                  newMissedCount++;
-                  missedItems.push({
-                    _id: newTrigger._id,
-                    topicName,
-                    topicId,
-                    keyword: match.matchedWord,
-                    text: msg.message,
-                    date: new Date(msg.date * 1000)
-                  });
-                }
-              }
-            }
+            // Small delay per topic to safeguard against flood/rate limits
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
+        } catch (groupScanErr: any) {
+          console.error(`Error scanning group ${currentGroupId}:`, groupScanErr.message);
+          await saveLog(`Scan failed for group ${currentGroupId}: ${groupScanErr.message}`, 'error', 'API', '/api/scan-missed');
         }
-        
-        // Add a small delay to avoid rate limits
-        await new Promise(resolve => setTimeout(resolve, 200));
       }
 
       res.json({ success: true, count: newMissedCount, items: missedItems });
@@ -2769,9 +2844,9 @@ async function startServer() {
         
         // Update ReplyHistory
         if (topMsgId) {
-          let history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+          let history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
           if (!history) {
-            await ReplyHistory.create({ topic_id: topMsgId, keyword_id: kw._id, count: 1 });
+            await ReplyHistory.create({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, count: 1 });
           } else {
             history.count += 1;
             history.last_updated = new Date();
@@ -2855,7 +2930,7 @@ async function startServer() {
 
           // Rate limiting check: Max replies per keyword rule per topic
           if (topMsgId) {
-            const history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+            const history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
             const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
             
             let currentCount = 0;
@@ -2977,7 +3052,7 @@ async function startServer() {
           // Update ReplyHistory
           if (replySent && topMsgId) {
             const today = new Date();
-            const history = await ReplyHistory.findOne({ topic_id: topMsgId, keyword_id: kw._id });
+            const history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
             let isSameDay = false;
             
             if (history) {
@@ -2991,7 +3066,7 @@ async function startServer() {
                await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
             } else {
                await ReplyHistory.findOneAndUpdate(
-                  { topic_id: topMsgId, keyword_id: kw._id },
+                  { topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id },
                   { count: 1, last_updated: today },
                   { upsert: true }
                );
@@ -3140,8 +3215,54 @@ async function startServer() {
 
   app.get("/api/analytics", async (req, res) => {
     try {
-      // Get top 5 keywords triggered
+      const { startDate, endDate, timezone = "Asia/Kolkata" } = req.query;
+
+      let replyHistoryMatchStage: any = { $match: {} };
+      let topicMatchStage: any = { $match: {} };
+
+      let start: Date;
+      let end: Date;
+
+      if (startDate && endDate) {
+        const startParts = (startDate as string).split('-');
+        if (startParts.length === 3) {
+          start = new Date(Date.UTC(parseInt(startParts[0], 10), parseInt(startParts[1], 10) - 1, parseInt(startParts[2], 10), 0, 0, 0, 0));
+        } else {
+          start = new Date(startDate as string);
+        }
+
+        const endParts = (endDate as string).split('-');
+        if (endParts.length === 3) {
+          end = new Date(Date.UTC(parseInt(endParts[0], 10), parseInt(endParts[1], 10) - 1, parseInt(endParts[2], 10), 23, 59, 59, 999));
+        } else {
+          end = new Date(endDate as string);
+          end.setHours(23, 59, 59, 999);
+        }
+      } else {
+        // Default to last 7 days
+        end = new Date();
+        start = new Date();
+        start.setDate(start.getDate() - 6); // 7 days including today
+        start.setHours(0, 0, 0, 0);
+      }
+
+      // Filter ReplyHistory by last_updated date range and ensure valid date
+      replyHistoryMatchStage = {
+        $match: {
+          last_updated: { $gte: start, $lte: end }
+        }
+      };
+
+      // Filter Topic creation by created_at date range and ensure valid date type
+      topicMatchStage = {
+        $match: {
+          created_at: { $gte: start, $lte: end }
+        }
+      };
+
+      // Get top 5 keywords triggered inside date range
       const topKeywords = await ReplyHistory.aggregate([
+        replyHistoryMatchStage,
         { $group: { _id: "$keyword_id", total: { $sum: "$count" } } },
         { $sort: { total: -1 } },
         { $limit: 5 }
@@ -3159,8 +3280,9 @@ async function startServer() {
         value: k.total
       }));
 
-      // Get top 5 active topics
+      // Get top 5 active topics inside date range
       const topTopics = await ReplyHistory.aggregate([
+        replyHistoryMatchStage,
         { $group: { _id: "$topic_id", total: { $sum: "$count" } } },
         { $sort: { total: -1 } },
         { $limit: 5 }
@@ -3171,7 +3293,58 @@ async function startServer() {
         value: t.total
       }));
 
-      res.json({ keywordData, topicData });
+      // Get daily topic creation counts within the selected range
+      const topicsCreatedByDay = await Topic.aggregate([
+        topicMatchStage,
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at", timezone: timezone as string } },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      // Create lookup dictionary for aggregated data
+      const creationMap = new Map<string, number>();
+      topicsCreatedByDay.forEach((item: any) => {
+        if (item._id) {
+          creationMap.set(item._id, item.count);
+        }
+      });
+
+      // Format date helper in specific timezone
+      const formatDateInTimezone = (date: Date, tz: string) => {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        });
+        const parts = formatter.formatToParts(date);
+        const year = parts.find(p => p.type === 'year')?.value;
+        const month = parts.find(p => p.type === 'month')?.value;
+        const day = parts.find(p => p.type === 'day')?.value;
+        return `${year}-${month}-${day}`;
+      };
+
+      // Fill in all missing days inside the selected range with 0 counts
+      const topicCreationData = [];
+      const currentDate = new Date(start);
+      // We limit to max 366 days safety guard to avoid any infinite loop
+      let guardCount = 0;
+      while (currentDate <= end && guardCount < 366) {
+        guardCount++;
+        const dateString = formatDateInTimezone(currentDate, timezone as string);
+        const count = creationMap.get(dateString) || 0;
+        topicCreationData.push({
+          date: dateString,
+          count: count
+        });
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      res.json({ keywordData, topicData, topicCreationData });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

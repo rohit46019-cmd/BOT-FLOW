@@ -140,14 +140,17 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
         
         <div className="space-y-6">
           <div className="space-y-2">
-            <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Target Group ID</label>
+            <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Target Group IDs (Comma Separated)</label>
             <input
               type="text"
               value={targetGroupId}
               onChange={(e) => setTargetGroupId(e.target.value)}
-              placeholder="e.g. -100123456789"
+              placeholder="e.g. -100123456789, -100987654321"
               className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
             />
+            <p className={`text-[10px] mt-1 leading-relaxed ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+              Separate multiple groups with commas. The bot will automatically start, reply to messages, and broadcast across all configured groups simultaneously.
+            </p>
           </div>
           <div className="space-y-2">
             <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Welcome Message</label>
