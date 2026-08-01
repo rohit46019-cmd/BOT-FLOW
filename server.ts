@@ -75,6 +75,329 @@ const SettingSchema = new mongoose.Schema({
   value: { type: String, required: true }
 });
 const Setting = mongoose.model("Setting", SettingSchema);
+let bot: TelegramBot | null = null;
+
+const escapeHtml = (text: string) => {
+  if (!text) return "";
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+};
+
+async function executeApprovedReply(approvalDoc: any) {
+  if (!userClient) {
+    throw new Error("Telegram User Client is not connected or logged in.");
+  }
+
+  let kw: any = approvalDoc.rule_id;
+  if (!kw || typeof kw !== 'object' || !kw._id) {
+    const ruleId = approvalDoc.rule_id || approvalDoc._id;
+    kw = await Keyword.findById(ruleId);
+  }
+
+  const matchedWord = approvalDoc.matched_keyword || (kw?.keywords?.[0] || kw?.keyword || "keyword");
+
+  if (!kw) {
+    kw = {
+      _id: approvalDoc.rule_id || approvalDoc._id,
+      keyword: matchedWord,
+      reply: approvalDoc.original_text ? `Reply for ${matchedWord}` : '',
+      enabled: true
+    };
+  }
+
+  const chatId = approvalDoc.chat_id;
+  const topicId = approvalDoc.topic_id;
+  const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+
+  let toPeerInput: any = chatId;
+  try {
+    toPeerInput = await userClient.getInputEntity(chatId);
+  } catch (e) {
+    try {
+      const numId = parseInt(chatId, 10);
+      if (!isNaN(numId)) {
+        toPeerInput = await userClient.getInputEntity(numId);
+      }
+    } catch (e2) {
+      toPeerInput = chatId;
+    }
+  }
+
+  let replyTo = replyInGeneral ? undefined : approvalDoc.message_id;
+  if (!replyTo && topicId && topicId !== 1) {
+    replyTo = topicId;
+  }
+
+  let replySent = false;
+
+  // 1. AI Reply if enabled on rule
+  if (kw.ai_reply_enabled) {
+    const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+    if (aiModeEnabled) {
+      const geminiApiKeysSetting = await getSetting("gemini_api_keys");
+      let apiKeys: string[] = [];
+      try { apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]"); } catch (e) {}
+      const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+      if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
+
+      if (apiKeys.length > 0) {
+        const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+        const conversationContext = await getRecentConversationContext(userClient, toPeerInput, topicId);
+        
+        for (const apiKey of apiKeys) {
+          try {
+            const genAI = new GoogleGenAI({ apiKey });
+            const response = await genAI.models.generateContent({
+              model: "gemini-3-flash-preview",
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    { text: `System Instruction: ${aiPersona}` },
+                    { text: conversationContext },
+                    { text: `User Message: "${approvalDoc.original_text || ''}"` },
+                    { text: `Context: The user triggered keyword "${matchedWord}". Reply naturally.` }
+                  ]
+                }
+              ]
+            });
+            const aiReply = response.text.trim();
+            if (aiReply && aiReply !== "NO_REPLY") {
+              try {
+                await userClient.sendMessage(toPeerInput, { message: aiReply, replyTo });
+              } catch (err: any) {
+                const fallbackReplyTo = (topicId && topicId !== 1) ? topicId : undefined;
+                await userClient.sendMessage(toPeerInput, { message: aiReply, replyTo: fallbackReplyTo });
+              }
+              await saveLog(`AI Auto-Reply (Approved Keyword: ${matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
+              replySent = true;
+              break;
+            }
+          } catch (e) {
+            console.error("AI Approved Keyword Reply failed:", e);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Photo reply
+  if (kw.photo) {
+    try {
+      const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
+      const buffer = Buffer.from(base64Data, "base64");
+      const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
+      const toUpload = await userClient.uploadFile({ file: fileToUpload, workers: 1 });
+      await userClient.sendFile(toPeerInput, {
+        file: toUpload,
+        caption: kw.reply || "",
+        replyTo: replyTo,
+        forceDocument: false
+      });
+      replySent = true;
+    } catch (e: any) {
+      console.error("Photo reply send error:", e.message);
+      if (kw.reply && !replySent) {
+        await userClient.sendMessage(toPeerInput, { message: kw.reply, replyTo }).catch(() => {});
+        replySent = true;
+      }
+    }
+  } else if (kw.reply && !replySent) {
+    // 3. Text reply
+    try {
+      await userClient.sendMessage(toPeerInput, {
+        message: kw.reply,
+        replyTo: replyTo
+      });
+      replySent = true;
+    } catch (err: any) {
+      console.warn("Text reply with msgId replyTo failed, falling back to topicId or plain:", err.message);
+      const fallbackReplyTo = (topicId && topicId !== 1) ? topicId : undefined;
+      await userClient.sendMessage(toPeerInput, {
+        message: kw.reply,
+        replyTo: fallbackReplyTo
+      }).catch(e2 => {
+        return userClient.sendMessage(toPeerInput, { message: kw.reply });
+      });
+      replySent = true;
+    }
+  }
+
+  // 4. Message links forwarding
+  const linksToProcess = [...(kw.message_links || [])];
+  if (kw.message_link && !linksToProcess.includes(kw.message_link)) linksToProcess.push(kw.message_link);
+  const normalizedLinks = linksToProcess.map((l: string) => l.trim()).filter((l: string) => l);
+
+  if (normalizedLinks.length > 0) {
+    for (const link of normalizedLinks) {
+      const parts = link.split("/").filter(p => p.length > 0);
+      const messageId = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(messageId)) {
+        let fromPeer: any = chatId;
+        if (link.includes("/c/")) {
+          const cIndex = parts.indexOf("c");
+          if (cIndex !== -1 && parts[cIndex + 1]) {
+            fromPeer = `-100${parts[cIndex + 1]}`;
+          }
+        } else {
+          const tmeIndex = parts.indexOf("t.me");
+          if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+            fromPeer = parts[tmeIndex + 1];
+          } else if (parts.length >= 3) {
+            fromPeer = parts[2];
+          }
+        }
+        const topMsgId = (topicId === 1 || !topicId) ? undefined : topicId;
+
+        try {
+          let inputPeer = await userClient.getInputEntity(fromPeer);
+          await userClient.invoke(
+            new Api.messages.ForwardMessages({
+              fromPeer: inputPeer,
+              id: [messageId],
+              randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+              toPeer: toPeerInput,
+              topMsgId: replyInGeneral ? undefined : topMsgId,
+            }) as any
+          );
+          replySent = true;
+        } catch (fErr: any) {
+          try {
+            await userClient.forwardMessages(toPeerInput, {
+              messages: [messageId],
+              fromPeer: fromPeer,
+              topMsgId: replyInGeneral ? undefined : topMsgId,
+            } as any);
+            replySent = true;
+          } catch (fErr2: any) {
+            console.error("Approved link forward failed:", fErr2.message);
+          }
+        }
+      }
+    }
+  }
+
+  if (topicId && kw._id) {
+    await ReplyHistory.findOneAndUpdate(
+      { topic_id: topicId, chat_id: chatId, keyword_id: kw._id },
+      { $inc: { count: 1 }, $set: { last_updated: new Date() } },
+      { upsert: true }
+    ).catch(() => {});
+  }
+
+  const successLog = `✅ Approved Keyword Reply Sent: "${matchedWord}" in ${approvalDoc.chat_title || chatId} > ${approvalDoc.topic_name || topicId}`;
+  console.log(successLog);
+  await saveLog(successLog, 'info', 'USERBOT', undefined, { topicId, keyword: matchedWord });
+
+  return { success: true };
+}
+
+async function initBot(token: string) {
+  if (bot) {
+    try {
+      await bot.stopPolling();
+      console.log("Stopped existing Telegram Bot polling.");
+    } catch (e) {
+      console.error("Error stopping bot polling:", e);
+    }
+  }
+
+  console.log("Initializing Telegram Bot...");
+  bot = new TelegramBot(token, { polling: true });
+  saveLog("Telegram Bot initialized and polling started.", "info", "SYSTEM");
+  
+  bot.on("polling_error", (error: any) => {
+    if (error.message && error.message.includes("409 Conflict")) return;
+    if (error.message && error.message.includes("401 Unauthorized")) {
+      console.error("Telegram Bot Polling Error: 401 Unauthorized. Stopping polling. Please check your TELEGRAM_BOT_TOKEN.");
+      bot?.stopPolling();
+      saveLog("Telegram Bot Token is unauthorized (401). Please update it in settings.", "error", "SYSTEM");
+      return;
+    }
+    console.error("Telegram Bot Polling Error:", error.message || "Unknown error");
+  });
+
+  bot.on("message", async (msg) => {
+    // Only process messages from target groups
+    const groupIdsSetting = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
+    const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
+    const currentChatId = msg.chat.id.toString().replace("-100", "");
+
+    if (!allowedGroupIds.includes(currentChatId)) return;
+
+    if (msg.forum_topic_created) {
+      const topicName = msg.forum_topic_created.name;
+      const topicId = msg.message_thread_id;
+
+      if (topicId) {
+        await logTopic(topicId, topicName, msg.chat.id.toString());
+        console.log(`Topic tracked: ${topicName} (${topicId}) in chat ${msg.chat.id}`);
+      }
+    }
+  });
+
+  bot.on("callback_query", async (query) => {
+    const data = query.data;
+    if (!data) return;
+    
+    if (data.startsWith("approve_") || data.startsWith("reject_")) {
+      const parts = data.split("_");
+      const action = parts[0];
+      const approvalId = parts[1];
+      
+      try {
+        const approval = await PendingApproval.findById(approvalId).populate('rule_id');
+        if (!approval || approval.status !== 'pending') {
+          await bot?.answerCallbackQuery(query.id, { text: "Approval already processed or not found." });
+          return;
+        }
+        
+        if (action === "approve") {
+          await executeApprovedReply(approval);
+
+          approval.status = 'approved';
+          approval.processed_at = new Date();
+          await approval.save();
+
+          await bot?.answerCallbackQuery(query.id, { text: "✅ Approved & Reply sent immediately!" });
+          if (query.message) {
+            await bot?.editMessageText(
+              `✅ <b>Approved & Reply Sent!</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML'
+              }
+            ).catch(() => {});
+          }
+          sendSseEvent('approval_processed', { id: approvalId, status: 'approved' });
+        } else {
+          approval.status = 'rejected';
+          approval.processed_at = new Date();
+          await approval.save();
+
+          await bot?.answerCallbackQuery(query.id, { text: "❌ Keyword reply rejected." });
+          if (query.message) {
+            await bot?.editMessageText(
+              `❌ <b>Not Approved / Rejected</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML'
+              }
+            ).catch(() => {});
+          }
+          saveLog(`Keyword "${approval.matched_keyword}" rejected for ${approval.chat_title}`, 'info', 'USERBOT');
+          sendSseEvent('approval_processed', { id: approvalId, status: 'rejected' });
+        }
+      } catch (err: any) {
+        console.error("Approval callback error:", err);
+        await bot?.answerCallbackQuery(query.id, { text: `❌ Failed: ${err.message || 'Error executing reply'}` });
+      }
+    }
+  });
+
+  return bot;
+}
 
 const TopicSchema = new mongoose.Schema({
   telegram_topic_id: { type: Number, required: true },
@@ -95,9 +418,26 @@ const KeywordSchema = new mongoose.Schema({
   max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
   match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
   ai_reply_enabled: { type: Boolean, default: false },
+  approval_mode: { type: Boolean, default: false },
+  target_groups: { type: [String], default: [] }, // Target group IDs or titles
   enabled: { type: Boolean, default: true }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
+
+const PendingApprovalSchema = new mongoose.Schema({
+  matched_keyword: { type: String, required: true },
+  rule_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword', required: true },
+  message_id: { type: Number, required: true },
+  chat_id: { type: String, required: true },
+  chat_title: { type: String },
+  topic_id: { type: Number },
+  topic_name: { type: String },
+  original_text: { type: String },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  created_at: { type: Date, default: Date.now },
+  processed_at: { type: Date }
+});
+const PendingApproval = mongoose.model("PendingApproval", PendingApprovalSchema);
 
 const LogSchema = new mongoose.Schema({
   level: { type: String, enum: ['info', 'error', 'warn'], default: 'info' },
@@ -588,6 +928,18 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
 
 // SSE Clients
 let sseClients: any[] = [];
+
+// Heartbeat to keep SSE connections alive (15s interval to prevent proxy timeouts)
+setInterval(() => {
+  sseClients = sseClients.filter(client => {
+    try {
+      client.res.write(': heartbeat\n\n');
+      return true;
+    } catch (e) {
+      return false;
+    }
+  });
+}, 15000);
 let broadcastCancelled = false;
 let broadcastInProgress = false;
 let broadcastStatus = {
@@ -598,9 +950,13 @@ let broadcastStatus = {
 
 function sendSseEvent(type: string, data: any) {
   const payload = JSON.stringify({ type, data });
-  sseClients.forEach(client => {
-    client.res.write(`event: ${type}\ndata: ${payload}\n\n`);
-    client.res.write(`data: ${payload}\n\n`);
+  sseClients = sseClients.filter(client => {
+    try {
+      client.res.write(`data: ${payload}\n\n`);
+      return true;
+    } catch (e) {
+      return false;
+    }
   });
 
   // Send push notification for photo_received or other important events
@@ -744,6 +1100,18 @@ async function initSettings() {
     await setSetting("telegram_group_ids", process.env.TELEGRAM_GROUP_ID || "");
     console.log("Telegram Group IDs setting initialized.");
   }
+
+  const telegramBotToken = await getSetting("telegram_bot_token");
+  if (!telegramBotToken && process.env.TELEGRAM_BOT_TOKEN) {
+    await setSetting("telegram_bot_token", process.env.TELEGRAM_BOT_TOKEN);
+    console.log("Telegram Bot Token setting initialized from ENV.");
+  }
+
+  const globalApprovalMode = await getSetting("global_approval_mode");
+  if (!globalApprovalMode) {
+    await setSetting("global_approval_mode", "false");
+    console.log("Global Approval Mode initialized.");
+  }
 }
 
 let userClient: TelegramClient | null = null;
@@ -768,6 +1136,10 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
 
+  // Health check endpoint - MUST be early
+  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  app.get("/health", (req, res) => res.json({ status: "ok" }));
+
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const groupId = process.env.TELEGRAM_GROUP_ID;
 
@@ -782,6 +1154,12 @@ async function startServer() {
       
       // Initial keyword cache load
       await refreshKeywordCache();
+      
+      // Initialize Telegram Bot after server is up
+      let botToken = (await getSetting("telegram_bot_token"))?.value || process.env.TELEGRAM_BOT_TOKEN;
+      if (botToken) {
+        await initBot(botToken);
+      }
       
       // Connect UserBot in background
       (async () => {
@@ -842,8 +1220,13 @@ async function startServer() {
     });
   };
 
-  // Connect to MongoDB
-  mongoose.connect(MONGODB_URI)
+  // Initialize bot variable
+  let bot: TelegramBot | null = null;
+
+  // Connect to MongoDB with timeout
+  mongoose.connect(MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000,
+  })
     .then(async () => {
       console.log("Connected to MongoDB");
       // Safely drop old non-group indexing constraints to migrate to multi-group setups
@@ -862,23 +1245,11 @@ async function startServer() {
     })
     .catch((err) => {
       console.error("MongoDB connection error:", err);
+      // Start app anyway to allow health check
+      startApp();
     });
 
-  // Health check endpoint
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
-
-  const bot = token ? new TelegramBot(token, { polling: true }) : null;
-
-  // Handle polling errors to prevent crash and clean up logs
-  if (bot) {
-    bot.on("polling_error", (error: any) => {
-      if (error.message && error.message.includes("409 Conflict")) {
-        // This is expected during rapid restarts in this environment
-        return;
-      }
-      console.error("Telegram Bot Polling Error:", error);
-    });
-  }
+  //sseClients.length;
 
   async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
     if (!topicId) return "";
@@ -930,11 +1301,23 @@ async function startServer() {
 
       // Check multiple target group IDs
       const groupIdsSetting = settingsCache["telegram_group_ids"] || targetGroupId || "";
-      const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
-
-      const normalizedChatId = chatId.replace("-100", "");
+      const normalizeId = (id: string) => id.toString().trim().replace(/^-100|^ -100|^-/, "");
+      
+      const allowedGroupIds = groupIdsSetting.split(",").map(normalizeId).filter(id => id);
+      const normalizedChatId = normalizeId(chatId);
       
       if (!allowedGroupIds.includes(normalizedChatId)) {
+        if (!message.out) {
+          console.log(`UserBot ignoring message from unauthorized chat ${chatId} (Normalized: ${normalizedChatId}). Allowed: ${allowedGroupIds.join(", ")}`);
+          // Save a log once to help the user identify the group ID
+          if (message.message) {
+             const cacheKey = `ignored_${normalizedChatId}`;
+             if (!settingsCache[cacheKey]) {
+                saveLog(`Message ignored from unauthorized chat: ${chatId}. If you want the bot to reply here, add ${normalizedChatId} to Target Group IDs in settings.`, "warn", "USERBOT");
+                settingsCache[cacheKey] = "true";
+             }
+          }
+        }
         return;
       }
 
@@ -1244,10 +1627,25 @@ async function startServer() {
         const text = message.message.toLowerCase().trim();
         const matches: { kw: any, index: number, matchedWord: string }[] = [];
         
-        console.log(`Checking keywords for: "${text}"`);
+        console.log(`Checking ${cachedKeywords.length} keywords for message: "${text}" from ${chatId}`);
         
         for (const kw of cachedKeywords) {
           if (kw.enabled === false) continue;
+
+          // Check target_groups restriction if defined
+          if (kw.target_groups && kw.target_groups.length > 0) {
+            const normalizeId = (id: string) => id.toString().trim().replace(/^-100|^ -100|^-/, "");
+            const currentNormChat = normalizeId(chatId);
+            const isTargetedGroup = kw.target_groups.some((tg: string) => {
+              const normTg = normalizeId(tg);
+              return normTg === currentNormChat || chatId.includes(tg) || tg.trim() === chatId.trim();
+            });
+            if (!isTargetedGroup) {
+              console.log(`Skipping keyword rule ${kw._id} because chat ${chatId} is not in target_groups:`, kw.target_groups);
+              continue;
+            }
+          }
+
           // Collect all trigger words for this rule (legacy + new array)
           const triggerWords = [...(kw.keywords || [])];
           if (kw.keyword && !triggerWords.includes(kw.keyword)) {
@@ -1291,6 +1689,15 @@ async function startServer() {
           console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
           
           const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds"))?.value || "0", 10);
+          
+          // Log detection immediately for UI/Monitoring
+          const matchedWordsList = matches.map(m => m.matchedWord).join(", ");
+          await saveLog(`Keyword(s) detected: ${matchedWordsList}`, 'info', 'USERBOT', undefined, { 
+            message: message.message,
+            topicId,
+            matchedWords: matches.map(m => m.matchedWord)
+          });
+
           if (keywordDelaySeconds > 0) {
             console.log(`Delaying keyword processing by ${keywordDelaySeconds} seconds...`);
             await new Promise(resolve => setTimeout(resolve, keywordDelaySeconds * 1000));
@@ -1328,6 +1735,95 @@ async function startServer() {
               let replySent = false;
               
               console.log(`DEBUG: Attempting to send reply for keyword: ${match.matchedWord}. replyInGeneral: ${replyInGeneral}, topicId: ${topicId}, replyTo: ${replyTo}`);
+              
+              // Check Approval Mode (Global setting or Rule-specific)
+              const isGlobalApproval = settingsCache["global_approval_mode"] === "true";
+              let requiresApproval = isGlobalApproval || kw.approval_mode;
+
+              if (requiresApproval) {
+                const alreadyApproved = await PendingApproval.exists({
+                  rule_id: kw._id,
+                  chat_id: chatId,
+                  topic_id: topicId,
+                  status: 'approved'
+                });
+                
+                if (alreadyApproved) {
+                  console.log(`Keyword ${match.matchedWord} was already approved in ${chatId} > ${topicId}. Auto-approving.`);
+                  requiresApproval = false;
+                }
+              }
+
+              if (requiresApproval) {
+                const chat = await client.getEntity(message.peerId) as any;
+                const chatTitle = chat.title || "Unknown Group";
+                const topicName = topicNamesCache[topicId] || "General";
+                
+                const approval = await PendingApproval.create({
+                  matched_keyword: match.matchedWord,
+                  rule_id: kw._id,
+                  message_id: message.id,
+                  chat_id: chatId,
+                  chat_title: chatTitle,
+                  topic_id: topicId,
+                  topic_name: topicName,
+                  original_text: message.message,
+                  status: 'pending'
+                });
+
+                const logMsg = `Approval Required: Keyword "${match.matchedWord}" matched in ${chatTitle} > ${topicName}`;
+                console.log(logMsg);
+                await saveLog(logMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, approvalId: approval._id });
+                
+                // Notify via Telegram Bot with inline keyboard (Approve / Not Approved)
+                if (bot) {
+                  const notificationText = `🔔 <b>Approval Required</b>\n\n<b>Keyword:</b> <code>${escapeHtml(match.matchedWord)}</code>\n<b>Group:</b> ${escapeHtml(chatTitle)}\n<b>Topic:</b> ${escapeHtml(topicName)}\n<b>User Message:</b> "${escapeHtml(message.message)}"`;
+                  const replyMarkup = {
+                    inline_keyboard: [
+                      [
+                        { text: "✅ Approve", callback_data: `approve_${approval._id}` },
+                        { text: "❌ Not Approved", callback_data: `reject_${approval._id}` }
+                      ]
+                    ]
+                  };
+
+                  // Send inside that topic in Telegram where the keyword was matched
+                  if (chatId) {
+                    const targetTopicId = (topicId === 1 || !topicId) ? undefined : topicId;
+                    bot.sendMessage(chatId, notificationText, {
+                      parse_mode: 'HTML',
+                      message_thread_id: targetTopicId,
+                      reply_markup: replyMarkup
+                    }).then(msg => {
+                      if (bot) {
+                        bot.pinChatMessage(chatId, msg.message_id).catch(e => console.error("Failed to pin message:", e.message));
+                      }
+                    }).catch(e => console.error("Failed to send approval message into topic:", e.message));
+                  }
+
+                  // Also send to the configured notification group if different
+                  const groupIdsSetting = settingsCache["telegram_group_ids"] || "";
+                  const firstGroupId = groupIdsSetting.split(",")[0].trim();
+                  if (firstGroupId && firstGroupId !== chatId) {
+                    bot.sendMessage(firstGroupId, notificationText, {
+                      parse_mode: 'HTML',
+                      reply_markup: replyMarkup
+                    }).catch(e => console.error("Failed to send approval message to log group:", e.message));
+                  }
+                }
+
+                // Notify via SSE
+                sendSseEvent('approval_needed', {
+                  id: approval._id,
+                  keyword: match.matchedWord,
+                  group: chatTitle,
+                  topic: topicName,
+                  message: message.message,
+                  timestamp: new Date()
+                });
+
+                continue; // Skip automatic sending
+              }
 
               // If system is paused, save as missed trigger and skip reply
               if (isSystemPaused) {
@@ -1339,7 +1835,9 @@ async function startServer() {
                   matched_keyword: match.matchedWord,
                   rule_id: kw._id
                 });
-                console.log(`Saved missed trigger for keyword "${match.matchedWord}" while paused.`);
+                const pauseMsg = `Keyword "${match.matchedWord}" matched but system is PAUSED. Saved as missed trigger.`;
+                console.log(pauseMsg);
+                await saveLog(pauseMsg, 'warn', 'USERBOT', undefined, { topicId, keyword: match.matchedWord });
                 continue;
               }
 
@@ -1366,7 +1864,9 @@ async function startServer() {
                 }
 
                 if (maxReplies > 0 && currentCount >= maxReplies) {
-                  console.log(`Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: limit reached (${currentCount}/${maxReplies}).`);
+                  const skipMsg = `Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: daily limit reached (${currentCount}/${maxReplies}).`;
+                  console.log(skipMsg);
+                  await saveLog(skipMsg, 'warn', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, count: currentCount, limit: maxReplies });
                   continue;
                 }
               }
@@ -1552,14 +2052,11 @@ async function startServer() {
                        );
                     }
                   }
-                  
-                  await saveLog(`Keyword matched: ${match.matchedWord}`, 'info', 'USERBOT');
                 } catch (err) {
                   console.error("Async log/history update failed:", err);
                 }
               })();
               
-              // If a reply was sent, we continue to the next keyword match
               if (replySent) {
                 console.log("Reply sent for keyword. Continuing to next match.");
               }
@@ -1691,31 +2188,23 @@ async function startServer() {
     });
   }
 
-  // Bot Logic (Logging only, no auto-replies)
-  bot.on("message", async (msg) => {
-    // Only process messages from target groups
-    const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
-    const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
-    const currentChatId = msg.chat.id.toString().replace("-100", "");
-
-    if (!allowedGroupIds.includes(currentChatId)) return;
-
-    if (msg.forum_topic_created) {
-      const topicName = msg.forum_topic_created.name;
-      const topicId = msg.message_thread_id;
-
-      if (topicId) {
-        await logTopic(topicId, topicName, msg.chat.id.toString());
-      }
-    }
-  });
+  //sseClients.length;
 
   // SSE Endpoint
   app.get("/api/notifications", (req, res) => {
+    req.setTimeout(0);
+    req.socket.setKeepAlive(true);
+    req.socket.setNoDelay(true);
+
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // Disable buffering for Nginx
     res.flushHeaders();
+
+    try {
+      res.write(': connected\n\n');
+    } catch (e) {}
 
     const clientId = Date.now();
     const newClient = { id: clientId, res };
@@ -1811,6 +2300,80 @@ async function startServer() {
   let cachedAuthStatus = false;
   let sessionStartTime: number | null = null;
 
+  async function checkAndReconnectUserBot() {
+    if (isConnecting) return;
+    
+    let isUserBotConnected = !!userClient && userClient.connected;
+    
+    // Check if actually authorized, not just connected (with 1-minute cache to avoid rate limits)
+    if (isUserBotConnected && userClient) {
+      const now = Date.now();
+      if (now - lastAuthCheck > 60000) {
+        try {
+          cachedAuthStatus = await userClient.isUserAuthorized();
+          lastAuthCheck = now;
+          if (!cachedAuthStatus) {
+            console.log("UserBot connected but not authorized. Marking as disconnected.");
+            isUserBotConnected = false;
+          }
+        } catch (e) {
+          console.error("Error checking authorization in background:", e);
+          isUserBotConnected = false;
+        }
+      } else {
+        isUserBotConnected = cachedAuthStatus;
+      }
+    }
+    
+    if (!isUserBotConnected) {
+      const sessionString = (await getSetting("session_string"))?.value;
+      const apiIdRaw = (await getSetting("api_id"))?.value || "";
+      const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+      const apiId = parseInt(apiIdRaw.trim(), 10);
+
+      if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
+        try {
+          isConnecting = true;
+          console.log("Auto-reconnecting UserBot in background...");
+          if (userClient) {
+            try {
+              await userClient.disconnect();
+            } catch (e) {}
+          }
+          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+            connectionRetries: 5,
+            requestRetries: 5,
+            deviceModel: "Desktop",
+            systemVersion: "Windows 10",
+            appVersion: "1.0.0",
+          });
+          await userClient.connect();
+          
+          const authorized = await userClient.isUserAuthorized();
+          if (authorized) {
+            const currentGroupId = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
+            setupUserBotHandlers(userClient, currentGroupId);
+            cachedAuthStatus = true;
+            lastAuthCheck = Date.now();
+            sessionStartTime = Date.now();
+            await saveLog("UserBot background auto-reconnect successful", "info", "SYSTEM");
+          } else {
+            console.log("Background reconnect successful but session is unauthorized.");
+            await userClient.disconnect();
+            userClient = null;
+          }
+        } catch (connErr: any) {
+          console.error("Background auto-reconnect failed:", connErr.message);
+        } finally {
+          isConnecting = false;
+        }
+      }
+    }
+  }
+
+  // Start background connection check every 1 minute
+  setInterval(checkAndReconnectUserBot, 60000);
+
   app.get("/api/stats", async (req, res) => {
     try {
       const topicCount = await getTopicCount();
@@ -1847,89 +2410,7 @@ async function startServer() {
       const lastLoginTime = (await getSetting("last_login_time"))?.value || "";
       const targetGroupId = (await getSetting("telegram_group_ids"))?.value || process.env.TELEGRAM_GROUP_ID || "";
       
-      let isUserBotConnected = !!userClient && userClient.connected;
-      
-      // Check if actually authorized, not just connected (with 1-minute cache to avoid rate limits)
-      if (isUserBotConnected && userClient) {
-        const now = Date.now();
-        if (now - lastAuthCheck > 60000) {
-          try {
-            cachedAuthStatus = await userClient.isUserAuthorized();
-            lastAuthCheck = now;
-            if (!cachedAuthStatus) {
-              console.log("UserBot connected but not authorized. Marking as disconnected.");
-              isUserBotConnected = false;
-            }
-          } catch (e) {
-            console.error("Error checking authorization:", e);
-            isUserBotConnected = false;
-          }
-        } else {
-          isUserBotConnected = cachedAuthStatus;
-        }
-      }
-      
-      // Auto-reconnect attempt if disconnected but we have a session
-      if (!isUserBotConnected && !isConnecting) {
-        const sessionString = (await getSetting("session_string"))?.value;
-        const apiIdRaw = (await getSetting("api_id"))?.value || "";
-        const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-        const apiId = parseInt(apiIdRaw.trim(), 10);
-
-        if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-          try {
-            isConnecting = true;
-            console.log("Auto-reconnecting UserBot during stats check...");
-            if (userClient) {
-              try {
-                await userClient.disconnect();
-              } catch (e) {
-                console.error("Error disconnecting existing client:", e);
-              }
-            }
-            userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-              connectionRetries: 5,
-              requestRetries: 5,
-              deviceModel: "Desktop",
-              systemVersion: "Windows 10",
-              appVersion: "1.0.0",
-            });
-            await userClient.connect();
-            
-            const newSessionString = (userClient.session as StringSession).save();
-            if (newSessionString && newSessionString !== sessionString) {
-              await setSetting("session_string", newSessionString);
-            }
-            
-            // Re-verify authorization after connect
-            const authorized = await userClient.isUserAuthorized();
-            if (authorized) {
-              setupUserBotHandlers(userClient, groupId);
-              isUserBotConnected = true;
-              await saveLog("UserBot auto-reconnected during stats check", "info", "API", "/api/stats");
-            } else {
-              console.log("Auto-reconnect successful but session is unauthorized/expired.");
-              await userClient.disconnect();
-              userClient = null;
-            }
-          } catch (connErr: any) {
-            console.error("Auto-reconnect failed:", connErr.message);
-            if (connErr.message?.includes("AUTH_KEY_UNREGISTERED") || 
-                connErr.message?.includes("AUTH_KEY_DUPLICATED")) {
-              console.log(`Session invalid or duplicated (${connErr.message}). Clearing session string.`);
-              await deleteSetting("session_string");
-              if (userClient) {
-                try { await userClient.disconnect(); } catch (e) {}
-              }
-              userClient = null;
-            } else if (connErr.message?.includes("TIMEOUT")) {
-              console.log(`Connection timed out (${connErr.message}). Will retry later.`);
-            }
-          } finally {
-            isConnecting = false;
-          }
-        }
-      }
+      let isUserBotConnected = !!userClient && userClient.connected && cachedAuthStatus;
 
       const apiId = (await getSetting("api_id"))?.value || "";
       const apiHash = (await getSetting("api_hash"))?.value || "";
@@ -2030,7 +2511,9 @@ async function startServer() {
         replyInGeneral,
         photoReplyMessage2StartTime,
         photoReplyMessage2EndTime,
-        targetGroupId
+        targetGroupId,
+        telegramBotToken,
+        globalApprovalMode
       } = req.body;
       if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
       if (typeof autoReply2Enabled !== "undefined") await setSetting("auto_reply_2_enabled", String(autoReply2Enabled));
@@ -2061,8 +2544,27 @@ async function startServer() {
       if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime);
       if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime);
       if (typeof targetGroupId !== "undefined") await setSetting("telegram_group_ids", String(targetGroupId));
+      if (typeof globalApprovalMode !== "undefined") await setSetting("global_approval_mode", String(globalApprovalMode));
+      
+      if (typeof telegramBotToken !== "undefined") {
+        const oldToken = (await getSetting("telegram_bot_token"))?.value;
+        if (telegramBotToken && telegramBotToken !== oldToken) {
+          await setSetting("telegram_bot_token", telegramBotToken);
+          console.log("Telegram Bot Token updated. Restarting bot...");
+          // We'll restart after settings cache refresh
+        }
+      }
       
       await refreshSettingsCache();
+
+      if (typeof telegramBotToken !== "undefined") {
+        const currentToken = (await getSetting("telegram_bot_token"))?.value;
+        const oldToken = settingsCache["telegram_bot_token"]; // This might be old if cache just refreshed but we want to compare with what's actually running
+        // If bot is not running or token changed, restart
+        if (telegramBotToken && (!bot || telegramBotToken !== oldToken)) {
+           await initBot(telegramBotToken);
+        }
+      }
       
       await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, keywordDelaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
       res.json({ success: true });
@@ -2112,10 +2614,11 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled, approval_mode, target_groups } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
+      const targetGroupsArray = Array.isArray(target_groups) ? target_groups : [];
       
       const updateData = { 
         keyword, // Keep legacy
@@ -2126,15 +2629,14 @@ async function startServer() {
         message_links,
         max_replies: typeof max_replies === 'number' ? max_replies : 0,
         match_mode: match_mode || 'exact',
-        ai_reply_enabled: !!ai_reply_enabled
+        ai_reply_enabled: !!ai_reply_enabled,
+        approval_mode: !!approval_mode,
+        target_groups: targetGroupsArray
       };
       
       if (id) {
         await Keyword.findByIdAndUpdate(id, updateData);
       } else {
-        // For new entries, we can't rely on unique 'keyword' anymore if we use arrays
-        // But we can check if a document with the same primary keyword exists?
-        // Or just create new. Let's just create/update.
         await Keyword.create(updateData);
       }
       
@@ -2144,6 +2646,17 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/keywords] ${err.message}` });
+    }
+  });
+
+  app.put("/api/keywords/:id/approval", async (req, res) => {
+    try {
+      const { approval_mode } = req.body;
+      await Keyword.findByIdAndUpdate(req.params.id, { approval_mode: !!approval_mode });
+      await refreshKeywordCache();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: `[PUT /api/keywords/approval] ${err.message}` });
     }
   });
 
@@ -2159,12 +2672,57 @@ async function startServer() {
 
   app.put("/api/keywords/:id", async (req, res) => {
     try {
-      const { enabled } = req.body;
-      await Keyword.findByIdAndUpdate(req.params.id, { enabled });
+      const updateData: any = {};
+      if (typeof req.body.enabled !== 'undefined') updateData.enabled = req.body.enabled;
+      if (typeof req.body.approval_mode !== 'undefined') updateData.approval_mode = !!req.body.approval_mode;
+      await Keyword.findByIdAndUpdate(req.params.id, updateData);
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[PUT /api/keywords] ${err.message}` });
+    }
+  });
+
+  // Approval Endpoints
+  app.get("/api/approvals", async (req, res) => {
+    try {
+      const approvals = await PendingApproval.find({ status: 'pending' }).sort({ created_at: -1 });
+      res.json(approvals);
+    } catch (err: any) {
+      res.status(500).json({ error: `[GET /api/approvals] ${err.message}` });
+    }
+  });
+
+  app.post("/api/approvals/:id/decide", async (req, res) => {
+    const { action } = req.body; // 'approve' or 'reject'
+    const { id } = req.params;
+    
+    try {
+      const approval = await PendingApproval.findById(id).populate('rule_id');
+      if (!approval || approval.status !== 'pending') {
+        return res.status(404).json({ error: "Approval already processed or not found." });
+      }
+      
+      if (action === 'approve') {
+        await executeApprovedReply(approval);
+
+        approval.status = 'approved';
+        approval.processed_at = new Date();
+        await approval.save();
+
+        sendSseEvent('approval_processed', { id, status: 'approved' });
+      } else {
+        approval.status = 'rejected';
+        approval.processed_at = new Date();
+        await approval.save();
+
+        sendSseEvent('approval_processed', { id, status: 'rejected' });
+      }
+      
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("API Approval decision error:", err);
+      res.status(500).json({ error: `[POST /api/approvals/decide] ${err.message}` });
     }
   });
 
@@ -3407,7 +3965,7 @@ async function startServer() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log("Shutting down...");
-    if (bot.isPolling()) {
+    if (bot && bot.isPolling()) {
       await bot.stopPolling();
     }
     if (userClient) {
@@ -3418,6 +3976,14 @@ async function startServer() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("Unhandled Rejection at:", promise, "reason:", reason);
+  });
+
+  process.on("uncaughtException", (err) => {
+    console.error("Uncaught Exception:", err);
+  });
 }
 
 startServer();

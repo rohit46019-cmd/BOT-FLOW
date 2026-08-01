@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare } from 'lucide-react';
+import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check } from 'lucide-react';
 
 export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkMode, index }: any) => {
   const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
@@ -69,6 +69,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(0);
   const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
+  const [newApprovalMode, setNewApprovalMode] = useState(false);
+  const [newTargetGroups, setNewTargetGroups] = useState<string[]>([]);
+  const [customGroupInput, setCustomGroupInput] = useState("");
 
   useEffect(() => {
     if (editingKeyword) {
@@ -85,6 +88,8 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewMaxReplies(editingKeyword.max_replies !== undefined ? editingKeyword.max_replies : 0);
       setNewMatchMode(editingKeyword.match_mode || 'exact');
       setNewAiReplyEnabled(!!editingKeyword.ai_reply_enabled);
+      setNewApprovalMode(!!editingKeyword.approval_mode);
+      setNewTargetGroups(editingKeyword.target_groups || []);
     } else {
       setNewKeywords([""]);
       setNewReply("");
@@ -92,8 +97,30 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewMaxReplies(0);
       setNewMatchMode('exact');
       setNewAiReplyEnabled(false);
+      setNewApprovalMode(false);
+      setNewTargetGroups([]);
     }
   }, [editingKeyword]);
+
+  const addGroup = (group: string) => {
+    const splitGroups = group.split(',').map(g => g.trim()).filter(g => g);
+    let added = false;
+    let nextGroups = [...newTargetGroups];
+    for (const g of splitGroups) {
+      if (!nextGroups.includes(g)) {
+        nextGroups.push(g);
+        added = true;
+      }
+    }
+    if (added) {
+      setNewTargetGroups(nextGroups);
+      setCustomGroupInput("");
+    }
+  };
+
+  const removeGroup = (group: string) => {
+    setNewTargetGroups(newTargetGroups.filter(g => g !== group));
+  };
 
   const addKeywordField = () => setNewKeywords([...newKeywords, ""]);
   const updateKeywordField = (index: number, value: string) => {
@@ -126,7 +153,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       match_mode: newMatchMode,
       message_links: newMessageLinks,
       max_replies: newMaxReplies,
-      ai_reply_enabled: newAiReplyEnabled
+      ai_reply_enabled: newAiReplyEnabled,
+      approval_mode: newApprovalMode,
+      target_groups: newTargetGroups
     });
   };
 
@@ -281,23 +310,101 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                   </div>
                 </div>
 
-                <div className={`p-4 rounded-2xl border transition ${newAiReplyEnabled ? (darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div className={`p-2 rounded-lg ${newAiReplyEnabled ? 'bg-blue-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
-                        <Sparkles size={18} />
-                      </div>
-                      <div>
-                        <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>AI Smart Reply</p>
-                        <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Use Gemini AI to enhance responses</p>
-                      </div>
+                <div>
+                  <label className={`block text-[10px] font-black uppercase tracking-widest mb-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Target Groups / Chat IDs (Optional)
+                  </label>
+                  <p className={`text-[11px] mb-3 ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>
+                    Leave empty to apply to all authorized groups. Or add specific Group IDs / Chat titles below:
+                  </p>
+                  <div className="flex gap-2 mb-3">
+                    <div className="relative flex-1">
+                      <Users className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-500" />
+                      <input
+                        type="text"
+                        value={customGroupInput}
+                        onChange={(e) => setCustomGroupInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGroup(customGroupInput); } }}
+                        placeholder="Enter Group ID or Title (e.g. -100123456789)..."
+                        className={`w-full pl-10 pr-4 py-2 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition ${darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'}`}
+                      />
                     </div>
-                    <button 
-                      onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
-                      className={`w-12 h-6 rounded-full p-1 transition duration-300 ${newAiReplyEnabled ? 'bg-blue-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
+                    <button
+                      type="button"
+                      onClick={() => addGroup(customGroupInput)}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1"
                     >
-                      <div className={`w-4 h-4 rounded-full bg-white transition duration-300 ${newAiReplyEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                      <Plus size={14} /> Add Group
                     </button>
+                  </div>
+
+                  {newTargetGroups.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {newTargetGroups.map((grp, idx) => (
+                        <span
+                          key={idx}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold ${
+                            darkMode ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                          }`}
+                        >
+                          <Users size={12} />
+                          <span>{grp}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeGroup(grp)}
+                            className="hover:text-rose-500 transition ml-1"
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={`text-xs italic p-2 rounded-lg border border-dashed ${darkMode ? 'border-white/10 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
+                      🌐 Applies to All Groups
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className={`p-4 rounded-2xl border transition ${newAiReplyEnabled ? (darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className={`p-2 rounded-lg ${newAiReplyEnabled ? 'bg-blue-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
+                          <Sparkles size={18} />
+                        </div>
+                        <div>
+                          <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>AI Smart Reply</p>
+                          <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Use Gemini AI to enhance responses</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
+                        className={`w-12 h-6 rounded-full p-1 transition duration-300 ${newAiReplyEnabled ? 'bg-blue-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
+                      >
+                        <div className={`w-4 h-4 rounded-full bg-white transition duration-300 ${newAiReplyEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className={`p-4 rounded-2xl border transition ${newApprovalMode ? (darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className={`p-2 rounded-lg ${newApprovalMode ? 'bg-amber-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
+                          <Zap size={18} />
+                        </div>
+                        <div>
+                          <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Approval Mode</p>
+                          <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Ask before sending reply</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setNewApprovalMode(!newApprovalMode)}
+                        className={`w-12 h-6 rounded-full p-1 transition duration-300 ${newApprovalMode ? 'bg-amber-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
+                      >
+                        <div className={`w-4 h-4 rounded-full bg-white transition duration-300 ${newApprovalMode ? 'translate-x-6' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -1,6 +1,7 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Zap, Plus, Trash2, CheckCircle2, Image as ImageIcon, Bell, Send, Database, Download, Upload, Save, RefreshCw } from 'lucide-react';
+import { Bot, Zap, Plus, Trash2, CheckCircle2, Image as ImageIcon, Bell, Send, Database, Download, Upload, Save, RefreshCw, FileText } from 'lucide-react';
+import ActivityLogs from './ActivityLogs';
 
 interface SettingsPanelProps {
   darkMode: boolean;
@@ -55,10 +56,36 @@ interface SettingsPanelProps {
   importing: boolean;
   targetGroupId: string;
   setTargetGroupId: (val: string) => void;
+  telegramBotToken: string;
+  setTelegramBotToken: (val: string) => void;
   handleUpdateSettings: () => void;
   saving: boolean;
   direction: number;
   slideVariants: any;
+
+  // Logs Props for Settings Logs Subtab
+  logs?: any[];
+  handleDownloadLogs?: (format: 'json' | 'csv') => void;
+  fetchLogs?: () => void;
+  refreshingLogs?: boolean;
+  clearLogs?: () => void;
+  isConfirmingClear?: boolean;
+  logSearch?: string;
+  setLogSearch?: (val: string) => void;
+  logLevelFilter?: string;
+  setLogLevelFilter?: (val: string) => void;
+  logCategoryFilter?: string;
+  setLogCategoryFilter?: (val: string) => void;
+  logCategories?: string[];
+  displayedLogs?: any[];
+  handleLogsScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+  expandedLogId?: string | null;
+  setExpandedLogId?: (id: string | null) => void;
+  visibleLogsCount?: number;
+  setVisibleLogsCount?: (val: number | ((prev: number) => number)) => void;
+  filteredLogsCount?: number;
+  showNotification?: (type: 'success' | 'error', message: string) => void;
+  setActiveTab?: (tab: any) => void;
 }
 
 const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -114,11 +141,38 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   importing,
   targetGroupId,
   setTargetGroupId,
+  telegramBotToken,
+  setTelegramBotToken,
   handleUpdateSettings,
   saving,
   direction,
   slideVariants,
+
+  logs = [],
+  handleDownloadLogs = () => {},
+  fetchLogs = () => {},
+  refreshingLogs = false,
+  clearLogs = () => {},
+  isConfirmingClear = false,
+  logSearch = "",
+  setLogSearch = () => {},
+  logLevelFilter = "all",
+  setLogLevelFilter = () => {},
+  logCategoryFilter = "all",
+  setLogCategoryFilter = () => {},
+  logCategories = [],
+  displayedLogs = [],
+  handleLogsScroll = () => {},
+  expandedLogId = null,
+  setExpandedLogId = () => {},
+  visibleLogsCount = 50,
+  setVisibleLogsCount = () => {},
+  filteredLogsCount = 0,
+  showNotification = () => {},
+  setActiveTab = () => {},
 }) => {
+  const [settingsSubTab, setSettingsSubTab] = useState<'settings' | 'logs'>('settings');
+
   return (
     <motion.div
       key="settings"
@@ -129,6 +183,66 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
       exit="exit"
       className="space-y-6 w-full pb-20"
     >
+      {/* 2 Sub-Tabs: Settings & Logs */}
+      <div className={`p-1.5 rounded-2xl border flex items-center gap-2 ${darkMode ? 'bg-neutral-900/90 border-white/10' : 'bg-slate-200/80 border-slate-300'}`}>
+        <button
+          type="button"
+          onClick={() => setSettingsSubTab('settings')}
+          className={`flex-1 py-3 px-4 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
+            settingsSubTab === 'settings'
+              ? (darkMode ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20' : 'bg-white text-slate-900 shadow-md')
+              : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900')
+          }`}
+        >
+          <Bot size={16} />
+          <span>Settings</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSettingsSubTab('logs')}
+          className={`flex-1 py-3 px-4 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
+            settingsSubTab === 'logs'
+              ? (darkMode ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20' : 'bg-white text-slate-900 shadow-md')
+              : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900')
+          }`}
+        >
+          <FileText size={16} />
+          <span>Logs</span>
+        </button>
+      </div>
+
+      {settingsSubTab === 'logs' ? (
+        <div className="rounded-2xl overflow-hidden border border-white/10">
+          <ActivityLogs 
+            darkMode={darkMode}
+            handleDownloadLogs={handleDownloadLogs}
+            fetchLogs={fetchLogs}
+            refreshingLogs={refreshingLogs}
+            direction={direction}
+            slideVariants={slideVariants}
+            clearLogs={clearLogs}
+            isConfirmingClear={isConfirmingClear}
+            logSearch={logSearch}
+            setLogSearch={setLogSearch}
+            logLevelFilter={logLevelFilter}
+            setLogLevelFilter={setLogLevelFilter}
+            logCategoryFilter={logCategoryFilter}
+            setLogCategoryFilter={setLogCategoryFilter}
+            logCategories={logCategories}
+            displayedLogs={displayedLogs}
+            handleLogsScroll={handleLogsScroll}
+            expandedLogId={expandedLogId}
+            setExpandedLogId={setExpandedLogId}
+            visibleLogsCount={visibleLogsCount}
+            setVisibleLogsCount={setVisibleLogsCount}
+            filteredLogsCount={filteredLogsCount}
+            showNotification={showNotification}
+            setActiveTab={setActiveTab}
+          />
+        </div>
+      ) : (
+        <>
       {/* General Settings Card */}
       <div className={`p-6 rounded-[2rem] border transition duration-500 ${darkMode ? 'bg-neutral-900/50 border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
         <div className="flex items-center space-x-3 mb-6">
@@ -150,6 +264,19 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
             />
             <p className={`text-[10px] mt-1 leading-relaxed ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
               Separate multiple groups with commas. The bot will automatically start, reply to messages, and broadcast across all configured groups simultaneously.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className={`text-[9px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Telegram Bot Token</label>
+            <input
+              type="password"
+              value={telegramBotToken}
+              onChange={(e) => setTelegramBotToken(e.target.value)}
+              placeholder="Enter bot token from @BotFather"
+              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-xs transition ${darkMode ? 'bg-neutral-950 border-white/5 text-white placeholder-white/10' : 'bg-slate-50 border-slate-100 text-slate-900 placeholder-slate-400'}`}
+            />
+            <p className={`text-[10px] mt-1 leading-relaxed ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+              Required for topic creation logs and other bot features. Get this from @BotFather on Telegram.
             </p>
           </div>
           <div className="space-y-2">
@@ -563,24 +690,28 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
           <input type="file" ref={fileInputRef} onChange={handleImportData} accept=".json" className="hidden" />
         </div>
       </div>
+      </>
+      )}
 
-      {/* Save Button */}
-      <div className="fixed bottom-32 left-4 right-4 z-40">
-        <motion.button
-          whileHover={{ scale: 1.02, y: -2 }}
-          whileTap={{ scale: 0.98 }}
-          onClick={handleUpdateSettings}
-          disabled={saving}
-          className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] transition-colors shadow-lg flex items-center justify-center space-x-2 ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/40' : 'bg-emerald-500 text-white shadow-emerald-500/30'}`}
-        >
-          {saving ? (
-            <RefreshCw className="animate-spin" size={14} />
-          ) : (
-            <Save size={14} />
-          )}
-          <span>{saving ? 'Saving...' : 'Save Settings'}</span>
-        </motion.button>
-      </div>
+      {/* Save Button - only show when in settings tab */}
+      {settingsSubTab === 'settings' && (
+        <div className="fixed bottom-32 left-4 right-4 z-40">
+          <motion.button
+            whileHover={{ scale: 1.02, y: -2 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={handleUpdateSettings}
+            disabled={saving}
+            className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] transition-colors shadow-lg flex items-center justify-center space-x-2 ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-900/40' : 'bg-emerald-500 text-white shadow-emerald-500/30'}`}
+          >
+            {saving ? (
+              <RefreshCw className="animate-spin" size={14} />
+            ) : (
+              <Save size={14} />
+            )}
+            <span>{saving ? 'Saving...' : 'Save Settings'}</span>
+          </motion.button>
+        </div>
+      )}
     </motion.div>
   );
 };

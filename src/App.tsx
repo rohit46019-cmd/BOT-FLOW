@@ -17,6 +17,7 @@ import Insights from './components/Insights';
 import MediaManager from './components/MediaManager';
 import UserManager from './components/UserManager';
 import AddKeywordSection from './components/AddKeywordSection';
+import ApprovalDashboard from './components/ApprovalDashboard';
 import { 
   MessageSquare, 
   LayoutGrid,
@@ -119,6 +120,7 @@ interface Stats {
   aiPersona: string;
   geminiApiKeys: string; // JSON string
   replyInGeneral: boolean;
+  telegram_bot_token?: string;
   sessionStartTime: number | null;
   lastLoginTime: string;
   loginUser?: {
@@ -185,7 +187,7 @@ interface HeatmapItem {
   value: number;
 }
 
-const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights', 'photo_stats', 'catchup'] as const;
+const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights', 'photo_stats', 'catchup', 'approvals'] as const;
 type TabType = typeof TABS[number];
 
 const TabButton = ({ 
@@ -207,48 +209,58 @@ const TabButton = ({
 }) => {
   const isActive = activeTab === id;
   const colors: Record<TabType, { bg: string, text: string, glow: string }> = {
-    dashboard: { bg: 'from-emerald-400 to-emerald-600', text: 'text-emerald-500', glow: 'shadow-emerald-500/50' },
-    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-500', glow: 'shadow-cyan-500/50' },
-    keywords: { bg: 'from-blue-400 to-blue-600', text: 'text-blue-500', glow: 'shadow-blue-500/50' },
-    broadcast: { bg: 'from-purple-400 to-purple-600', text: 'text-purple-500', glow: 'shadow-purple-500/50' },
-    settings: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/50' },
-    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-500', glow: 'shadow-orange-500/50' },
-    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-500', glow: 'shadow-pink-500/50' },
-    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-500', glow: 'shadow-slate-500/50' },
-    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-500', glow: 'shadow-indigo-500/50' },
-    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/50' },
-    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/50' },
-    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/50' }
+    dashboard: { bg: 'from-emerald-400 to-emerald-600', text: 'text-emerald-500', glow: 'shadow-emerald-500/40' },
+    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-500', glow: 'shadow-cyan-500/40' },
+    keywords: { bg: 'from-blue-400 to-blue-600', text: 'text-blue-500', glow: 'shadow-blue-500/40' },
+    broadcast: { bg: 'from-purple-400 to-purple-600', text: 'text-purple-500', glow: 'shadow-purple-500/40' },
+    settings: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' },
+    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-500', glow: 'shadow-orange-500/40' },
+    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-500', glow: 'shadow-pink-500/40' },
+    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-500', glow: 'shadow-slate-500/40' },
+    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-500', glow: 'shadow-indigo-500/40' },
+    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/40' },
+    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' },
+    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/40' },
+    approvals: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' }
   };
 
   const theme = colors[id] || colors.dashboard;
 
   return (
-      <button
-        onClick={() => {
-          const currentIndex = TABS.indexOf(activeTab);
-          const newIndex = TABS.indexOf(id);
-          if (currentIndex !== newIndex) {
-            setDirection(newIndex > currentIndex ? 1 : -1);
-            setActiveTab(id);
-          }
-        }}
-        className={`flex flex-col items-center justify-center py-2 px-3 sm:px-6 rounded-full transition-all duration-300 relative group hover:scale-105 ${
-          isActive ? (darkMode ? "text-white" : "text-slate-900") : (darkMode ? `${theme.text} hover:text-white` : `${theme.text} hover:text-slate-900`)
-        }`}
-      >
-        <div className={`p-2.5 rounded-full transition-all duration-300 ${isActive ? `bg-gradient-to-tr ${theme.bg} shadow-lg ${theme.glow}` : `group-hover:bg-gradient-to-tr group-hover:${theme.bg} group-hover:shadow-lg group-hover:${theme.glow} bg-transparent`}`}>
-          <Icon strokeWidth={2.5} className={`w-6 h-6 sm:w-7 sm:h-7 transition duration-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] ${isActive ? "scale-110 text-white" : `group-hover:scale-110 group-hover:text-white ${darkMode ? 'drop-shadow-[0_0_8px_currentColor]' : ''}`}`} />
-        </div>
-        <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest mt-1 transition ${isActive ? "opacity-100" : "opacity-70"}`}>{label}</span>
-        {isActive && (
-          <motion.div 
-            layoutId="activeTab"
-            className={`absolute -bottom-1 w-6 h-1 bg-gradient-to-r ${theme.bg} rounded-full`}
-            transition={{ type: "spring", stiffness: 500, damping: 30 }}
-          />
-        )}
-      </button>
+    <button
+      type="button"
+      onClick={() => {
+        const currentIndex = TABS.indexOf(activeTab);
+        const newIndex = TABS.indexOf(id);
+        if (currentIndex !== newIndex) {
+          setDirection(newIndex > currentIndex ? 1 : -1);
+          setActiveTab(id);
+        }
+      }}
+      className={`flex flex-col items-center justify-center py-1 px-1.5 sm:px-2.5 rounded-full transition-all duration-300 relative group ${
+        isActive 
+          ? (darkMode ? "text-white" : "text-slate-900") 
+          : (darkMode ? "text-slate-400 hover:text-white" : "text-slate-500 hover:text-slate-900")
+      }`}
+    >
+      <div className={`p-1.5 rounded-full transition-all duration-300 flex items-center justify-center ${
+        isActive 
+          ? `bg-gradient-to-tr ${theme.bg} text-white shadow-md ${theme.glow} scale-105` 
+          : `group-hover:bg-slate-800/20 dark:group-hover:bg-white/10`
+      }`}>
+        <Icon strokeWidth={2.2} className={`w-4 h-4 transition-transform duration-300 ${isActive ? "scale-105" : ""}`} />
+      </div>
+      <span className={`text-[9px] font-extrabold tracking-tight mt-0.5 transition-all ${isActive ? "opacity-100 font-black" : "opacity-60"}`}>
+        {label}
+      </span>
+      {isActive && (
+        <motion.div 
+          layoutId="activeTabIndicator"
+          className={`absolute -bottom-0.5 w-4 h-0.5 bg-gradient-to-r ${theme.bg} rounded-full`}
+          transition={{ type: "spring", stiffness: 500, damping: 35 }}
+        />
+      )}
+    </button>
   );
 };
 
@@ -264,6 +276,7 @@ const useDebounce = (value: any, delay: number) => {
 export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [targetGroupId, setTargetGroupId] = useState("");
+  const [telegramBotToken, setTelegramBotToken] = useState("");
   const [autoReplyInput, setAutoReplyInput] = useState("");
   const [autoReply2Enabled, setAutoReply2Enabled] = useState(false);
   const [autoReply2Input, setAutoReply2Input] = useState("");
@@ -726,8 +739,28 @@ export default function App() {
       try {
         const registration = await navigator.serviceWorker.ready;
         
+        // First check if an active subscription already exists
+        const existingSub = await registration.pushManager.getSubscription().catch(() => null);
+        if (existingSub) {
+          const subJSON = existingSub.toJSON();
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(subJSON)
+          }).catch(e => console.warn('Failed to post existing subscription:', e));
+          return;
+        }
+
+        // Check if inside an iframe where push service is restricted
+        const inIframe = window.self !== window.top;
+        if (inIframe) {
+          console.info('Push subscription skipped in iframe preview.');
+          return;
+        }
+        
         // Get VAPID public key from server
         const response = await fetch('/api/push/vapid-public-key');
+        if (!response.ok) return;
         const text = await response.text();
         
         if (text.includes("Rate exceeded")) {
@@ -740,7 +773,7 @@ export default function App() {
           const data = JSON.parse(text);
           publicKey = data.publicKey;
         } catch (e) {
-          console.error("Failed to parse VAPID public key response", e);
+          console.warn("Failed to parse VAPID public key response", e);
           return;
         }
         
@@ -770,8 +803,8 @@ export default function App() {
         });
         
         console.log('Push subscription successful');
-      } catch (err) {
-        console.error('Push subscription failed:', err);
+      } catch (err: any) {
+        console.warn('Push subscription unavailable or restricted:', err?.message || err);
       }
     }
   };
@@ -830,8 +863,12 @@ export default function App() {
     };
 
     eventSource.onerror = (err) => {
-      console.error("SSE connection error:", err);
-      // EventSource automatically retries
+      // EventSource automatically retries connection on drop/heartbeat idle
+      if (eventSource.readyState === EventSource.CLOSED) {
+        console.warn("SSE connection closed, retrying...");
+      } else {
+        console.warn("SSE connection interrupted, retrying...");
+      }
     };
     
     eventSource.onmessage = (event) => {
@@ -990,6 +1027,7 @@ export default function App() {
         setAiModeEnabled(data.aiModeEnabled);
         setAiPersona(data.aiPersona);
         setReplyInGeneral(data.replyInGeneral);
+        setTelegramBotToken(data.telegram_bot_token || "");
         try {
           const parsedKeys = JSON.parse(data.geminiApiKeys || "[]");
           setGeminiApiKeys(Array.isArray(parsedKeys) ? parsedKeys : []);
@@ -1743,7 +1781,8 @@ export default function App() {
           targetGroupId,
           aiModeEnabled,
           aiPersona,
-          geminiApiKeys: JSON.stringify(geminiApiKeys)
+          geminiApiKeys: JSON.stringify(geminiApiKeys),
+          telegramBotToken
         }),
       });
       
@@ -1791,9 +1830,11 @@ export default function App() {
         keywords: validKeywords,
         reply: data.reply,
         match_mode: data.match_mode,
-        message_links: data.message_links.filter((l: string) => l.trim().length > 0),
+        message_links: data.message_links ? data.message_links.filter((l: string) => l.trim().length > 0) : [],
         max_replies: parseInt(data.max_replies.toString()) || 0,
-        ai_reply_enabled: data.ai_reply_enabled
+        ai_reply_enabled: !!data.ai_reply_enabled,
+        approval_mode: !!data.approval_mode,
+        target_groups: data.target_groups || []
       };
 
       const res = await fetch("/api/keywords", {
@@ -1869,6 +1910,8 @@ export default function App() {
   };
 
   const handleToggleKeyword = async (id: string, enabled: boolean) => {
+    // Optimistic state update
+    setKeywords(prev => prev.map(k => k._id === id ? { ...k, enabled } : k));
     try {
       const res = await fetch(`/api/keywords/${id}`, {
         method: "PUT",
@@ -1880,9 +1923,33 @@ export default function App() {
         fetchKeywords();
       } else {
         showNotification('error', 'Failed to update keyword');
+        fetchKeywords();
       }
     } catch (err) {
       showNotification('error', 'Update failed');
+      fetchKeywords();
+    }
+  };
+
+  const handleToggleApprovalMode = async (id: string, approval_mode: boolean) => {
+    // Optimistic state update
+    setKeywords(prev => prev.map(k => k._id === id ? { ...k, approval_mode } : k));
+    try {
+      const res = await fetch(`/api/keywords/${id}/approval`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approval_mode }),
+      });
+      if (res.ok) {
+        showNotification('success', `Approval mode ${approval_mode ? 'enabled' : 'disabled'}`);
+        fetchKeywords();
+      } else {
+        showNotification('error', 'Failed to update approval mode');
+        fetchKeywords();
+      }
+    } catch (err) {
+      showNotification('error', 'Update failed');
+      fetchKeywords();
     }
   };
 
@@ -2628,6 +2695,8 @@ export default function App() {
               darkMode={darkMode}
               targetGroupId={targetGroupId}
               setTargetGroupId={setTargetGroupId}
+              telegramBotToken={telegramBotToken}
+              setTelegramBotToken={setTelegramBotToken}
               autoReplyInput={autoReplyInput}
               setAutoReplyInput={setAutoReplyInput}
               autoReply2Enabled={autoReply2Enabled}
@@ -2681,6 +2750,28 @@ export default function App() {
               saving={saving}
               direction={direction}
               slideVariants={slideVariants}
+              logs={logs}
+              handleDownloadLogs={handleDownloadLogs}
+              fetchLogs={fetchLogs}
+              refreshingLogs={refreshingLogs}
+              clearLogs={clearLogs}
+              isConfirmingClear={isConfirmingClear}
+              logSearch={logSearch}
+              setLogSearch={setLogSearch}
+              logLevelFilter={logLevelFilter}
+              setLogLevelFilter={setLogLevelFilter}
+              logCategoryFilter={logCategoryFilter}
+              setLogCategoryFilter={setLogCategoryFilter}
+              logCategories={logCategories}
+              displayedLogs={displayedLogs}
+              handleLogsScroll={handleLogsScroll}
+              expandedLogId={expandedLogId}
+              setExpandedLogId={setExpandedLogId}
+              visibleLogsCount={visibleLogsCount}
+              setVisibleLogsCount={setVisibleLogsCount}
+              filteredLogsCount={filteredLogs.length}
+              showNotification={showNotification}
+              setActiveTab={setActiveTab}
             />
           )}
 
@@ -2696,6 +2787,7 @@ export default function App() {
               handleAddKeyword={handleAddKeyword}
               handleDeleteKeyword={handleDeleteKeyword}
               handleToggleKeyword={handleToggleKeyword}
+              handleToggleApprovalMode={handleToggleApprovalMode}
               cancelEdit={cancelEdit}
               visibleKeywordsCount={visibleKeywordsCount}
               handleKeywordsScroll={handleKeywordsScroll}
@@ -3506,7 +3598,7 @@ export default function App() {
               className="space-y-6 w-full"
             >
               <div className={`border p-6 rounded-[2.5rem] space-y-6 transition-colors duration-500 relative overflow-hidden group ${darkMode ? 'bg-amber-950/40 border-amber-500/30' : 'bg-amber-50 border-amber-200 shadow-xl shadow-amber-500/10'}`}>
-                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-500' : 'text-amber-500'}`} />
+                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-amber-400' : 'text-amber-500'}`} />
                 <div className="relative z-10 flex items-center justify-between">
                   <div className="flex items-center space-x-4">
                     <button 
@@ -3592,6 +3684,14 @@ export default function App() {
             </motion.div>
           )}
 
+          {activeTab === 'approvals' && (
+            <ApprovalDashboard 
+              darkMode={darkMode}
+              direction={direction}
+              slideVariants={slideVariants}
+            />
+          )}
+
           {activeTab === 'logs' && (
             <ActivityLogs 
               darkMode={darkMode}
@@ -3623,13 +3723,18 @@ export default function App() {
         </AnimatePresence>
         </main>
 
-      {/* Floating Bottom Navigation */}
-      <div className={`fixed bottom-4 left-4 right-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-[90%] sm:max-w-xs z-50 transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none translate-y-10' : 'opacity-100 translate-y-0'}`}>
-        <nav className={`rounded-2xl border px-2 py-1 flex items-center justify-between transition duration-500 shadow-2xl backdrop-blur-xl ${darkMode ? 'bg-slate-950/90 border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.8)]' : 'bg-white/90 border-slate-200 shadow-[0_10px_40px_rgba(0,0,0,0.1)]'}`}>
+      {/* Floating Bottom Navigation Bar */}
+      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-sm sm:max-w-md z-50 transition-all duration-300">
+        <nav className={`rounded-full border px-2.5 py-1 flex items-center justify-between transition-all duration-300 shadow-2xl backdrop-blur-xl ${
+          darkMode 
+            ? 'bg-slate-950/90 border-white/15 shadow-[0_10px_35px_rgba(0,0,0,0.8)]' 
+            : 'bg-white/95 border-slate-200/90 shadow-[0_10px_35px_rgba(0,0,0,0.12)]'
+        }`}>
           <TabButton id="dashboard" icon={LayoutGrid} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="keywords" icon={MessageCircle} label="Words" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="keywords" icon={MessageCircle} label="Rules" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="approvals" icon={Zap} label="Check" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="broadcast" icon={Radio} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="settings" icon={Settings} label="Set" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="settings" icon={Settings} label="Settings" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="logs" icon={Activity} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         </nav>
       </div>

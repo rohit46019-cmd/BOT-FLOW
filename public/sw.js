@@ -34,6 +34,9 @@ self.addEventListener('fetch', (event) => {
   // Skip cross-origin requests
   if (!event.request.url.startsWith(self.location.origin)) return;
 
+  // Skip API requests and SSE to avoid caching or connection issues
+  if (event.request.url.includes('/api/')) return;
+
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
