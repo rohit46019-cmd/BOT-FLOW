@@ -30,19 +30,38 @@ self.addEventListener('activate', (event) => {
 });
 
 // Fetch event
-self.addEventListener('fetch', (event) => {
-  // Skip cross-origin requests
+self.addEventListener("fetch", (event) => {
   if (!event.request.url.startsWith(self.location.origin)) return;
-
-  // Skip API requests and SSE to avoid caching or connection issues
-  if (event.request.url.includes('/api/')) return;
-
+  if (event.request.url.includes("/api/stream") || event.request.url.includes("/api/events")) return;
+  if (event.request.url.includes("/api/")) {
+    if (event.request.method !== "GET") return;
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open("botflow-api-cache-v1").then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+        }
+        return networkResponse;
+      }).catch(async () => {
+        const cachedResponse = await caches.match(event.request);
+        if (cachedResponse) return cachedResponse;
+        return new Response(JSON.stringify({ error: "Offline mode. Data not available." }), { status: 503, headers: { "Content-Type": "application/json" } });
+      })
+    );
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request);
+      if (cachedResponse) return cachedResponse;
+      return fetch(event.request).then(response => {
+        if (response && response.status === 200 && response.type === "basic") {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache));
+        }
+        return response;
+      });
     })
   );
 });

@@ -82,6 +82,88 @@ const escapeHtml = (text: string) => {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 };
 
+async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
+  if (!topicId) return "";
+  try {
+    const historyMessages = await client.getMessages(peerId, {
+      replyTo: topicId,
+      limit: 10, // Fetch last 10 messages for context
+    });
+    
+    if (!historyMessages || historyMessages.length === 0) return "";
+    
+    let contextStr = "--- Recent Conversation History in this Topic ---\n";
+    const reversed = [...historyMessages].reverse();
+    for (const msg of reversed) {
+      if (msg.message) {
+        let senderName = "User";
+        if (msg.out) {
+          senderName = "Bot (You)";
+        } else if (msg.sender) {
+          senderName = (msg.sender as any).firstName || (msg.sender as any).username || "User";
+        }
+        contextStr += `[${senderName}]: ${msg.message}\n`;
+      }
+    }
+    return contextStr;
+  } catch (err) {
+    console.error("Failed to fetch conversation history for context:", err);
+    return "";
+  }
+}
+
+function extractTopicInfo(input: string): { topicId: number; normalizedLink: string; rawGroupId?: string } | null {
+  if (!input) return null;
+  const text = input.trim();
+  
+  // Find URL if embedded in text
+  const urlMatch = text.match(/(https?:\/\/(?:t\.me|telegram\.me)\/[^\s]+)/i);
+  const targetStr = urlMatch ? urlMatch[1] : text;
+
+  if (targetStr.includes("t.me/") || targetStr.includes("telegram.me/")) {
+    const cleanUrl = targetStr.split("?")[0].replace(/\/$/, "");
+    const parts = cleanUrl.split("/").filter(p => p.length > 0);
+    const cIndex = parts.indexOf("c");
+    let topicId = NaN;
+    let rawGroupId: string | undefined;
+
+    if (cIndex !== -1 && parts.length > cIndex + 2) {
+      rawGroupId = parts[cIndex + 1];
+      topicId = parseInt(parts[cIndex + 2], 10);
+    } else {
+      const tmeIndex = parts.findIndex(p => p.includes("t.me") || p.includes("telegram.me"));
+      if (tmeIndex !== -1 && parts.length > tmeIndex + 2) {
+        rawGroupId = parts[tmeIndex + 1];
+        topicId = parseInt(parts[tmeIndex + 2], 10);
+      } else if (parts.length >= 2) {
+        topicId = parseInt(parts[parts.length - 1], 10);
+      }
+    }
+
+    if (!isNaN(topicId) && topicId > 0) {
+      return {
+        topicId,
+        normalizedLink: cleanUrl,
+        rawGroupId
+      };
+    }
+  }
+
+  // Check if it's a numeric ID passed directly (e.g. "/block 456" or "456")
+  const numMatch = text.match(/(?:(?:block|unblock|\/block|\/unblock)\s+)?(\d{2,15})/i);
+  if (numMatch && numMatch[1]) {
+    const topicId = parseInt(numMatch[1], 10);
+    if (!isNaN(topicId) && topicId > 0) {
+      return {
+        topicId,
+        normalizedLink: `Topic ID ${topicId}`
+      };
+    }
+  }
+
+  return null;
+}
+
 async function executeApprovedReply(approvalDoc: any) {
   if (!userClient) {
     throw new Error("Telegram User Client is not connected or logged in.");
@@ -317,21 +399,209 @@ async function initBot(token: string) {
   });
 
   bot.on("message", async (msg) => {
-    // Only process messages from target groups
-    const groupIdsSetting = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
-    const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
-    const currentChatId = msg.chat.id.toString().replace("-100", "");
+    try {
+      const chatId = msg.chat.id;
+      const isPrivate = msg.chat.type === 'private';
+      const text = (msg.text || "").trim();
 
-    if (!allowedGroupIds.includes(currentChatId)) return;
-
-    if (msg.forum_topic_created) {
-      const topicName = msg.forum_topic_created.name;
-      const topicId = msg.message_thread_id;
-
-      if (topicId) {
-        await logTopic(topicId, topicName, msg.chat.id.toString());
-        console.log(`Topic tracked: ${topicName} (${topicId}) in chat ${msg.chat.id}`);
+      // 1. Forum topic tracking in target groups
+      if (msg.forum_topic_created) {
+        const topicName = msg.forum_topic_created.name;
+        const topicId = msg.message_thread_id;
+        if (topicId) {
+          await logTopic(topicId, topicName, msg.chat.id.toString());
+          console.log(`Topic tracked: ${topicName} (${topicId}) in chat ${msg.chat.id}`);
+        }
+        return;
       }
+
+      if (!text) return;
+
+      const groupIdsSetting = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
+      const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
+      const currentChatId = chatId.toString().replace("-100", "");
+      const isAllowedGroup = allowedGroupIds.includes(currentChatId);
+
+      // Only respond to private messages or bot commands in allowed groups
+      if (!isPrivate && !text.startsWith("/") && !text.toLowerCase().startsWith("block") && !text.toLowerCase().startsWith("unblock")) {
+        return;
+      }
+
+      const lowerText = text.toLowerCase();
+
+      // --- COMMAND: /start or /help ---
+      if (lowerText === "/start" || lowerText.startsWith("/start ") || lowerText === "/help" || lowerText.startsWith("/help ")) {
+        const welcomeText = `👋 <b>Welcome to BotFlow Control Bot!</b>\n\nYou can manage blocked topics directly here:\n\n• <b>Block a topic:</b> Send any Telegram topic link (e.g. <code>https://t.me/c/12345/678</code>) or <code>/block &lt;link&gt;</code>\n• <b>Unblock a topic:</b> Send <code>/unblock &lt;link or ID&gt;</code>\n• <b>View blocked topics:</b> <code>/blocked</code>\n• <b>System status:</b> <code>/status</code>\n\n<i>When a topic is blocked, the userbot skips all automatic replies and broadcasts for that topic.</i>`;
+        await bot?.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // --- COMMAND: /status or /stats ---
+      if (lowerText === "/status" || lowerText === "/stats") {
+        const isUserConnected = !!(userClient && userClient.connected);
+        const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+        const blockedCount = await BlockedTopic.countDocuments();
+        const keywordCount = await Keyword.countDocuments({ enabled: true });
+        const pendingCount = await PendingApproval.countDocuments({ status: 'pending' });
+
+        const statusText = `🤖 <b>BotFlow System Status</b>\n\n` +
+          `• <b>UserBot:</b> ${isUserConnected ? '🟢 Connected' : '🔴 Disconnected'}\n` +
+          `• <b>Auto-Reply System:</b> ${isSystemPaused ? '⏸ Paused' : '▶️ Active'}\n` +
+          `• <b>Active Rules:</b> <code>${keywordCount}</code>\n` +
+          `• <b>Blocked Topics:</b> <code>${blockedCount}</code>\n` +
+          `• <b>Pending Approvals:</b> <code>${pendingCount}</code>`;
+
+        await bot?.sendMessage(chatId, statusText, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // --- COMMAND: /blocked or /list ---
+      if (lowerText === "/blocked" || lowerText === "/list" || lowerText.startsWith("/blocked ") || lowerText.startsWith("/list ")) {
+        const blockedList = await BlockedTopic.find().sort({ created_at: -1 }).limit(25);
+        if (blockedList.length === 0) {
+          await bot?.sendMessage(chatId, `✅ <b>No topics are currently blocked.</b>\n\nTo block a topic, send its link here.`, { parse_mode: 'HTML' });
+          return;
+        }
+
+        let listText = `🚫 <b>Blocked Topics (${blockedList.length}):</b>\n\n`;
+        const keyboardButtons: any[] = [];
+
+        blockedList.forEach((bt, idx) => {
+          listText += `${idx + 1}. <b>${escapeHtml(bt.name || 'Unknown')}</b> (ID: <code>${bt.telegram_topic_id}</code>)\n`;
+          if (bt.link && bt.link.startsWith('http')) {
+            listText += `   🔗 ${escapeHtml(bt.link)}\n`;
+          }
+          listText += `   <i>Unblock:</i> <code>/unblock ${bt.telegram_topic_id}</code>\n\n`;
+
+          if (idx < 5) {
+            keyboardButtons.push([
+              { text: `🔓 Unblock ${bt.name ? (bt.name.length > 18 ? bt.name.slice(0, 18) + '...' : bt.name) : `ID ${bt.telegram_topic_id}`}`, callback_data: `unblock_topic_${bt.telegram_topic_id}` }
+            ]);
+          }
+        });
+
+        await bot?.sendMessage(chatId, listText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboardButtons.length > 0 ? { inline_keyboard: keyboardButtons } : undefined,
+          disable_web_page_preview: true
+        });
+        return;
+      }
+
+      // --- UNBLOCK ACTION ---
+      const isExplicitUnblock = lowerText.startsWith("/unblock") || lowerText.startsWith("unblock ");
+      if (isExplicitUnblock) {
+        const topicInfo = extractTopicInfo(text);
+        if (!topicInfo) {
+          await bot?.sendMessage(chatId, `⚠️ <b>Invalid link or ID!</b>\n\nPlease provide a valid Telegram topic link or ID.\nExample: <code>/unblock https://t.me/c/12345/678</code> or <code>/unblock 678</code>`, { parse_mode: 'HTML' });
+          return;
+        }
+
+        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicInfo.topicId });
+        if (existing) {
+          const topicName = existing.name || topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
+          await BlockedTopic.findByIdAndDelete(existing._id);
+          blockedTopicsCache.delete(topicInfo.topicId);
+
+          const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
+          await saveLog(`Topic ${topicInfo.topicId} unblocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { topicName, topicId: topicInfo.topicId });
+          sendSseEvent('topic_unblocked', { topicId: topicInfo.topicId, timestamp: new Date() });
+
+          const replyText = `✅ <b>Topic Unblocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code>\n\n<i>Auto-replies and broadcasts are now ENABLED for this topic.</i>`;
+          await bot?.sendMessage(chatId, replyText, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🚫 Block Again", callback_data: `block_topic_${topicInfo.topicId}` }]
+              ]
+            }
+          });
+        } else {
+          const topicName = topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
+          await bot?.sendMessage(chatId, `ℹ️ <b>Topic is not blocked</b>\n\n📌 <b>Topic:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code> is already active.`, { parse_mode: 'HTML' });
+        }
+        return;
+      }
+
+      // --- BLOCK ACTION / DIRECT LINK SENT ---
+      const topicInfo = extractTopicInfo(text);
+      if (topicInfo) {
+        const topicId = topicInfo.topicId;
+        const normalizedLink = topicInfo.normalizedLink;
+
+        let name = topicNamesCache[topicId] || "";
+        if (!name) {
+          const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+          if (foundTopic && foundTopic.name) {
+            name = foundTopic.name;
+          }
+        }
+        if (!name) {
+          name = `Topic #${topicId}`;
+        }
+
+        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+        if (existing) {
+          const displayName = existing.name || name;
+          const alreadyBlockedText = `ℹ️ <b>Topic is Already Blocked</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(displayName)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n🔗 <b>Link:</b> ${escapeHtml(existing.link || normalizedLink)}\n\n<i>This topic is already blocked from auto-replies and broadcasts.</i>`;
+          await bot?.sendMessage(chatId, alreadyBlockedText, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔓 Unblock This Topic", callback_data: `unblock_topic_${topicId}` }]
+              ]
+            },
+            disable_web_page_preview: true
+          });
+          return;
+        }
+
+        // Create new BlockedTopic
+        await BlockedTopic.create({
+          telegram_topic_id: topicId,
+          name,
+          link: normalizedLink
+        });
+        blockedTopicsCache.add(topicId);
+
+        const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
+        await saveLog(`Topic ${topicId} blocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { link: normalizedLink, topicName: name, topicId });
+
+        // Notify frontend
+        sendSseEvent('topic_blocked', {
+          message: `Topic "${name}" blocked via Telegram Bot`,
+          topicName: name,
+          timestamp: new Date()
+        });
+
+        const blockedReplyText = `🚫 <b>Topic Blocked Successfully!</b>\n\n` +
+          `📌 <b>Topic Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Topic ID:</b> <code>${topicId}</code>\n` +
+          `🔗 <b>Link:</b> ${escapeHtml(normalizedLink)}\n\n` +
+          `<i>The bot will now skip all auto-replies and broadcasts in this topic.</i>`;
+
+        await bot?.sendMessage(chatId, blockedReplyText, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔓 Unblock Topic", callback_data: `unblock_topic_${topicId}` }]
+            ]
+          },
+          disable_web_page_preview: true
+        });
+        return;
+      }
+
+      // If user sent something unrecognized in private DM
+      if (isPrivate) {
+        await bot?.sendMessage(
+          chatId,
+          `❓ <b>Unrecognized Input</b>\n\nPlease send a Telegram topic link (e.g. <code>https://t.me/c/12345/678</code>) to block it, or type <code>/help</code> for available commands.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } catch (err: any) {
+      console.error("Error processing bot message:", err);
     }
   });
 
@@ -339,6 +609,86 @@ async function initBot(token: string) {
     const data = query.data;
     if (!data) return;
     
+    // 1. Topic Block / Unblock via inline buttons
+    if (data.startsWith("block_topic_") || data.startsWith("unblock_topic_")) {
+      const isBlock = data.startsWith("block_topic_");
+      const topicId = parseInt(data.replace(isBlock ? "block_topic_" : "unblock_topic_", ""), 10);
+      
+      if (isNaN(topicId)) {
+        await bot?.answerCallbackQuery(query.id, { text: "Invalid topic ID" });
+        return;
+      }
+
+      let name = topicNamesCache[topicId] || "";
+      if (!name) {
+        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+        if (foundTopic && foundTopic.name) name = foundTopic.name;
+      }
+      if (!name) name = `Topic #${topicId}`;
+
+      try {
+        if (isBlock) {
+          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+          if (!existing) {
+            await BlockedTopic.create({
+              telegram_topic_id: topicId,
+              name,
+              link: `Topic ID ${topicId}`
+            });
+            blockedTopicsCache.add(topicId);
+            sendSseEvent('topic_blocked', { message: `Topic "${name}" blocked`, topicName: name, timestamp: new Date() });
+            await saveLog(`Topic ${topicId} blocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
+          }
+          await bot?.answerCallbackQuery(query.id, { text: `🚫 Topic ${topicId} blocked!` });
+          if (query.message) {
+            await bot?.editMessageText(
+              `🚫 <b>Topic Blocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(name)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n\n<i>Auto-replies and broadcasts are now blocked for this topic.</i>`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: "🔓 Unblock Topic", callback_data: `unblock_topic_${topicId}` }]
+                  ]
+                }
+              }
+            ).catch(() => {});
+          }
+        } else {
+          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+          if (existing) {
+            name = existing.name || name;
+            await BlockedTopic.findByIdAndDelete(existing._id);
+            blockedTopicsCache.delete(topicId);
+            sendSseEvent('topic_unblocked', { topicId, timestamp: new Date() });
+            await saveLog(`Topic ${topicId} unblocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
+          }
+          await bot?.answerCallbackQuery(query.id, { text: `✅ Topic ${topicId} unblocked!` });
+          if (query.message) {
+            await bot?.editMessageText(
+              `✅ <b>Topic Unblocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(name)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n\n<i>Auto-replies and broadcasts are now enabled for this topic.</i>`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: "🚫 Block Again", callback_data: `block_topic_${topicId}` }]
+                  ]
+                }
+              }
+            ).catch(() => {});
+          }
+        }
+      } catch (e: any) {
+        console.error("Error handling topic button toggle:", e);
+        await bot?.answerCallbackQuery(query.id, { text: `Error: ${e.message || 'Operation failed'}` });
+      }
+      return;
+    }
+
+    // 2. Keyword Approval / Reject buttons
     if (data.startsWith("approve_") || data.startsWith("reject_")) {
       const parts = data.split("_");
       const action = parts[0];
@@ -433,6 +783,8 @@ const PendingApprovalSchema = new mongoose.Schema({
   topic_id: { type: Number },
   topic_name: { type: String },
   original_text: { type: String },
+  bot_chat_id: { type: String },
+  bot_message_id: { type: Number },
   status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   created_at: { type: Date, default: Date.now },
   processed_at: { type: Date }
@@ -1120,10 +1472,12 @@ let cancelCatchupFlag = false;
 let phoneCodeHash: string | null = null;
 let phoneNumber: string | null = null;
 let cachedKeywords: any[] = [];
+let lastKeywordRefresh = 0;
 
 async function refreshKeywordCache() {
   try {
     cachedKeywords = await Keyword.find();
+    lastKeywordRefresh = Date.now();
     console.log(`Keyword cache refreshed: ${cachedKeywords.length} keywords.`);
   } catch (err) {
     console.error("Failed to refresh keyword cache:", err);
@@ -1249,39 +1603,6 @@ async function startServer() {
       startApp();
     });
 
-  //sseClients.length;
-
-  async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
-    if (!topicId) return "";
-    try {
-      const historyMessages = await client.getMessages(peerId, {
-        replyTo: topicId,
-        limit: 10, // Fetch last 10 messages for context
-      });
-      
-      if (!historyMessages || historyMessages.length === 0) return "";
-      
-      let contextStr = "--- Recent Conversation History in this Topic ---\n";
-      const reversed = [...historyMessages].reverse();
-      for (const msg of reversed) {
-        if (msg.message) {
-          let senderName = "User";
-          if (msg.out) {
-            senderName = "Bot (You)";
-          } else if (msg.sender) {
-            senderName = (msg.sender as any).firstName || (msg.sender as any).username || "User";
-          }
-          contextStr += `[${senderName}]: ${msg.message}\n`;
-        }
-      }
-      contextStr += "-------------------------------------------------\n";
-      return contextStr;
-    } catch (e) {
-      console.error("Failed to fetch conversation context:", e);
-      return "";
-    }
-  }
-
   function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
     client.addEventHandler(async (event: any) => {
       try {
@@ -1341,10 +1662,14 @@ async function startServer() {
       let forumTopicId: number;
       if (message.action instanceof Api.MessageActionTopicCreate) {
         forumTopicId = Number(messageId);
-      } else if (message.replyTo && message.replyTo.forumTopic) {
-        // In a forum, replyToTopId is the topic ID. 
-        // If it's missing but replyToMsgId is present, it might be a direct reply to the topic head.
-        forumTopicId = Number(replyToTopId || replyToId || 1);
+      } else if (message.replyTo) {
+        if (message.replyTo.replyToTopId) {
+          forumTopicId = Number(message.replyTo.replyToTopId);
+        } else if (message.replyTo.forumTopic) {
+          forumTopicId = Number(replyToId || 1);
+        } else {
+          forumTopicId = 1;
+        }
       } else {
         // General topic or non-forum group
         forumTopicId = 1;
@@ -1622,6 +1947,10 @@ async function startServer() {
       }
 
       // 2. Keyword Handler
+      if (Date.now() - lastKeywordRefresh > 5000) {
+        await refreshKeywordCache();
+      }
+      
       let keywordMatched = false;
       if (message.message && !message.out) {
         const text = message.message.toLowerCase().trim();
@@ -1738,21 +2067,7 @@ async function startServer() {
               
               // Check Approval Mode (Global setting or Rule-specific)
               const isGlobalApproval = settingsCache["global_approval_mode"] === "true";
-              let requiresApproval = isGlobalApproval || kw.approval_mode;
-
-              if (requiresApproval) {
-                const alreadyApproved = await PendingApproval.exists({
-                  rule_id: kw._id,
-                  chat_id: chatId,
-                  topic_id: topicId,
-                  status: 'approved'
-                });
-                
-                if (alreadyApproved) {
-                  console.log(`Keyword ${match.matchedWord} was already approved in ${chatId} > ${topicId}. Auto-approving.`);
-                  requiresApproval = false;
-                }
-              }
+              const requiresApproval = isGlobalApproval || !!kw.approval_mode;
 
               if (requiresApproval) {
                 const chat = await client.getEntity(message.peerId) as any;
@@ -1789,12 +2104,16 @@ async function startServer() {
 
                   // Send inside that topic in Telegram where the keyword was matched
                   if (chatId) {
-                    const targetTopicId = (topicId === 1 || !topicId) ? undefined : topicId;
+                    const targetTopicId = topicId ? Number(topicId) : undefined;
                     bot.sendMessage(chatId, notificationText, {
                       parse_mode: 'HTML',
                       message_thread_id: targetTopicId,
                       reply_markup: replyMarkup
-                    }).then(msg => {
+                    }).then(async (msg) => {
+                      approval.bot_chat_id = chatId;
+                      approval.bot_message_id = msg.message_id;
+                      await approval.save().catch(() => {});
+
                       if (bot) {
                         bot.pinChatMessage(chatId, msg.message_id).catch(e => console.error("Failed to pin message:", e.message));
                       }
@@ -2717,6 +3036,20 @@ async function startServer() {
         await approval.save();
 
         sendSseEvent('approval_processed', { id, status: 'rejected' });
+      }
+
+      // Update Telegram Bot message to remove buttons
+      if (bot && approval.bot_chat_id && approval.bot_message_id) {
+        const text = action === 'approve'
+          ? `✅ <b>Approved & Reply Sent! (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`
+          : `❌ <b>Not Approved / Rejected (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`;
+
+        bot.editMessageText(text, {
+          chat_id: approval.bot_chat_id,
+          message_id: approval.bot_message_id,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [] }
+        }).catch(e => console.error("Failed to edit Telegram bot message from API:", e.message));
       }
       
       res.json({ success: true });
@@ -3683,48 +4016,45 @@ async function startServer() {
     if (!link) return res.status(400).json({ error: "Link required" });
 
     try {
-      const parts = link.split("/").filter((p: string) => p.length > 0);
-      let topicId = NaN;
-      
-      const cIndex = parts.indexOf('c');
-      if (cIndex !== -1 && parts.length > cIndex + 2) {
-        // Format: https://t.me/c/groupId/topicId[/messageId]
-        topicId = parseInt(parts[cIndex + 2], 10);
-      } else {
-        const tmeIndex = parts.findIndex(p => p === 't.me' || p === 'telegram.me');
-        if (tmeIndex !== -1 && parts.length > tmeIndex + 2) {
-          // Format: https://t.me/groupname/topicId[/messageId]
-          topicId = parseInt(parts[tmeIndex + 2], 10);
-        } else {
-          // Fallback
-          topicId = parseInt(parts[parts.length - 1], 10);
-        }
+      const topicInfo = extractTopicInfo(link);
+      if (!topicInfo) {
+        return res.status(400).json({ error: "Invalid topic link or ID" });
       }
 
-      if (isNaN(topicId)) {
-        return res.status(400).json({ error: "Invalid topic link" });
-      }
+      const topicId = topicInfo.topicId;
+      const normalizedLink = topicInfo.normalizedLink;
 
       // Toggle behavior: If already blocked, unblock it
       const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
       if (existing) {
         await BlockedTopic.findByIdAndDelete(existing._id);
         blockedTopicsCache.delete(topicId);
-        await saveLog(`Topic ${topicId} unblocked via link`, 'info', 'API', '/api/blocked-topics', { link });
+        await saveLog(`Topic ${topicId} unblocked via link`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink });
+        sendSseEvent('topic_unblocked', { topicId, timestamp: new Date() });
         return res.json({ success: true, action: 'unblocked' });
       }
 
-      // Try to find topic name from our Topic collection
-      const name = topicNamesCache[topicId] || "Unknown Topic";
+      // Try to find topic name from our Topic collection or cache
+      let name = topicNamesCache[topicId] || "";
+      if (!name) {
+        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+        if (foundTopic && foundTopic.name) name = foundTopic.name;
+      }
+      if (!name) name = `Topic #${topicId}`;
 
       await BlockedTopic.create({
         telegram_topic_id: topicId,
         name,
-        link
+        link: normalizedLink
       });
       blockedTopicsCache.add(topicId);
       
-      await saveLog(`Topic ${topicId} blocked`, 'info', 'API', '/api/blocked-topics', { link, name });
+      await saveLog(`Topic ${topicId} blocked`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink, name });
+      sendSseEvent('topic_blocked', {
+        message: `Topic "${name}" blocked via Dashboard`,
+        topicName: name,
+        timestamp: new Date()
+      });
       res.json({ success: true, action: 'blocked', name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

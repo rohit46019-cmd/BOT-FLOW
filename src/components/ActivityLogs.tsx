@@ -75,36 +75,47 @@ const ActivityLogs: React.FC<ActivityLogsProps> = ({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="w-full min-h-screen bg-neutral-950"
+      className={`w-full min-h-screen rounded-2xl transition-colors duration-300 ${
+        darkMode ? 'bg-slate-950 text-slate-200' : 'bg-slate-50 text-slate-800'
+      }`}
     >
-      <div className="p-0 space-y-0 transition-all duration-500 relative bg-neutral-950 w-full">
-        {/* Terminal Header - Raw Style */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between px-6 py-4 border-b border-neutral-800 bg-neutral-950 gap-4">
-          <div className="flex items-center space-x-4">
+      <div className="p-0 space-y-0 w-full">
+        {/* Terminal Header */}
+        <div className={`flex flex-col md:flex-row md:items-center justify-between px-5 py-3 border-b gap-3 transition-colors ${
+          darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-200 bg-white'
+        }`}>
+          <div className="flex items-center space-x-3">
             <button 
               onClick={() => setActiveTab('dashboard')}
-              className="p-2 rounded-lg bg-neutral-800 text-neutral-300 hover:text-white transition-all mr-2"
+              className={`p-1.5 rounded-lg transition-all ${
+                darkMode ? 'bg-slate-800 text-slate-300 hover:text-white' : 'bg-slate-200 text-slate-700 hover:text-slate-900'
+              }`}
+              title="Back to Dashboard"
             >
-              <ArrowLeft size={16} />
+              <ArrowLeft size={15} />
             </button>
-            <div className="flex items-center space-x-2 px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-md">
+            <div className={`flex items-center space-x-2 px-2.5 py-1 rounded-lg border ${
+              darkMode ? 'bg-slate-800/60 border-slate-700/60 text-slate-200' : 'bg-slate-100 border-slate-200 text-slate-800'
+            }`}>
               <Terminal size={14} className="text-emerald-500" />
-              <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-200">System Logs</h3>
+              <h3 className="text-[11px] font-bold uppercase tracking-wider">System Logs</h3>
             </div>
           </div>
           
-          <div className="flex flex-wrap items-center space-x-2 gap-y-2">
-            <div className="flex items-center space-x-2 bg-neutral-900 px-3 py-1.5 rounded-md border border-neutral-800">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-bold tracking-wider ${
+              darkMode ? 'bg-slate-800/60 border-slate-700/60' : 'bg-slate-100 border-slate-200'
+            }`}>
               <button 
                 onClick={() => handleDownloadLogs('json')}
-                className="text-[10px] font-bold uppercase tracking-widest text-neutral-300 hover:text-emerald-400 transition-all"
+                className="hover:text-emerald-500 transition-colors"
               >
                 JSON
               </button>
-              <span className="text-neutral-600">/</span>
+              <span className="opacity-40">/</span>
               <button 
                 onClick={() => handleDownloadLogs('csv')}
-                className="text-[10px] font-bold uppercase tracking-widest text-neutral-300 hover:text-emerald-400 transition-all"
+                className="hover:text-emerald-500 transition-colors"
               >
                 CSV
               </button>
@@ -113,123 +124,159 @@ const ActivityLogs: React.FC<ActivityLogsProps> = ({
             <button 
               onClick={fetchLogs}
               disabled={refreshingLogs}
-              className="bg-neutral-900 px-3 py-1.5 rounded-md border border-neutral-800 text-neutral-300 hover:text-emerald-400 transition-all flex items-center gap-2 text-[10px] uppercase font-bold"
-            >
-              <RefreshCw size={14} className={refreshingLogs ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-            <button 
-              onClick={clearLogs}
-              className={`px-3 py-1.5 rounded-md border transition-all text-[10px] font-bold uppercase tracking-widest ${
-                isConfirmingClear 
-                  ? 'bg-rose-900/30 border-rose-500/50 text-rose-400 animate-pulse'
-                  : 'bg-neutral-900 border-neutral-800 text-neutral-300 hover:text-rose-400 hover:border-rose-900/50'
+              className={`px-2.5 py-1 rounded-lg border flex items-center gap-1.5 text-[10px] font-bold transition-all ${
+                darkMode ? 'bg-slate-800/60 border-slate-700/60 text-slate-300 hover:text-emerald-400' : 'bg-slate-100 border-slate-200 text-slate-700 hover:text-emerald-600'
               }`}
             >
-              {isConfirmingClear ? 'CONFIRM_CLEAR' : 'CLEAR_ALL'}
+              <RefreshCw size={12} className={refreshingLogs ? 'animate-spin' : ''} />
+              <span>Refresh</span>
+            </button>
+            
+            <button 
+              onClick={clearLogs}
+              className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold transition-all ${
+                isConfirmingClear 
+                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-500 animate-pulse'
+                  : darkMode 
+                    ? 'bg-slate-800/60 border-slate-700/60 text-slate-300 hover:text-rose-400' 
+                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:text-rose-600'
+              }`}
+            >
+              {isConfirmingClear ? 'Confirm Clear' : 'Clear Logs'}
             </button>
           </div>
         </div>
 
-        {/* Filters & Search - Raw Terminal Style */}
-        <div className="px-6 py-3 border-b border-neutral-800 bg-neutral-950 grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="md:col-span-2 flex items-center space-x-3 bg-neutral-900 px-3 py-2 border border-neutral-800 rounded-md">
-            <span className="text-neutral-400 text-[11px] font-mono">$ grep</span>
+        {/* Filters & Search Bar */}
+        <div className={`px-5 py-2.5 border-b grid grid-cols-1 md:grid-cols-4 gap-3 ${
+          darkMode ? 'border-slate-800/80 bg-slate-950/80' : 'border-slate-200 bg-slate-100/60'
+        }`}>
+          <div className={`md:col-span-2 flex items-center space-x-2 px-3 py-1.5 border rounded-lg ${
+            darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-800'
+          }`}>
+            <Search size={13} className="text-slate-400" />
             <input 
               type="text"
-              placeholder="..."
+              placeholder="Search logs..."
               value={logSearch}
               onChange={(e) => setLogSearch(e.target.value)}
-              className="flex-1 bg-transparent text-[12px] font-mono text-neutral-200 outline-none placeholder:text-neutral-600"
+              className="flex-1 bg-transparent text-[11px] font-mono outline-none placeholder:text-slate-500"
             />
           </div>
-          <div className="flex items-center space-x-2 bg-neutral-900 px-3 py-2 border border-neutral-800 rounded-md">
-            <span className="text-neutral-400 text-[11px] font-mono">--level</span>
+
+          <div className={`flex items-center space-x-2 px-3 py-1.5 border rounded-lg ${
+            darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-800'
+          }`}>
+            <span className="text-slate-400 text-[10px] font-mono uppercase">Level:</span>
             <select 
               value={logLevelFilter}
               onChange={(e) => setLogLevelFilter(e.target.value)}
-              className="flex-1 bg-transparent text-[12px] font-mono text-neutral-200 outline-none appearance-none cursor-pointer"
+              className="flex-1 bg-transparent text-[11px] font-mono outline-none cursor-pointer"
             >
-              <option value="all">all</option>
-              <option value="info">info</option>
-              <option value="warn">warn</option>
-              <option value="error">error</option>
+              <option value="all" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All Levels</option>
+              <option value="info" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Info</option>
+              <option value="warn" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Warn</option>
+              <option value="error" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Error</option>
             </select>
           </div>
-          <div className="flex items-center space-x-2 bg-neutral-900 px-3 py-2 border border-neutral-800 rounded-md">
-            <span className="text-neutral-400 text-[11px] font-mono">--cat</span>
+
+          <div className={`flex items-center space-x-2 px-3 py-1.5 border rounded-lg ${
+            darkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-800'
+          }`}>
+            <span className="text-slate-400 text-[10px] font-mono uppercase">Category:</span>
             <select 
               value={logCategoryFilter}
               onChange={(e) => setLogCategoryFilter(e.target.value)}
-              className="flex-1 bg-transparent text-[12px] font-mono text-neutral-200 outline-none appearance-none cursor-pointer"
+              className="flex-1 bg-transparent text-[11px] font-mono outline-none cursor-pointer"
             >
-              <option value="all">all</option>
+              <option value="all" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All Categories</option>
               {logCategories.map(cat => (
-                <option key={cat} value={cat}>{cat.toLowerCase()}</option>
+                <option key={cat} value={cat} className={darkMode ? 'bg-slate-900' : 'bg-white'}>
+                  {cat}
+                </option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Terminal Content - Raw Stream */}
+        {/* Log List Stream */}
         <div 
-          className="p-6 space-y-2 min-h-[70vh] overflow-y-auto custom-scrollbar font-mono bg-neutral-950"
+          className="p-4 space-y-1.5 min-h-[60vh] max-h-[75vh] overflow-y-auto custom-scrollbar font-mono text-[11px]"
           onScroll={handleLogsScroll}
         >
           {displayedLogs.length === 0 ? (
-            <div className="text-center py-40 opacity-30">
-              <Terminal size={80} className="mx-auto mb-4 text-neutral-500" />
-              <p className="text-[14px] font-black uppercase tracking-[1em] text-neutral-400">NULL_STREAM</p>
+            <div className="text-center py-24 opacity-50">
+              <Terminal size={48} className="mx-auto mb-3 text-slate-400" />
+              <p className="text-xs font-semibold text-slate-400">No logs available</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-1.5">
               {displayedLogs.map((log, i) => (
                 <div 
                   key={log._id || i} 
-                  className="group/line flex flex-col py-1.5 transition-colors border-b border-neutral-900/50"
+                  className={`group/line flex flex-col py-2 px-3 rounded-xl border transition-all ${
+                    darkMode 
+                      ? 'bg-slate-900/60 border-slate-800/80 hover:bg-slate-900/90' 
+                      : 'bg-white border-slate-200 hover:bg-slate-50 shadow-2xs'
+                  }`}
                 >
-                  <div className="flex items-start space-x-4">
-                    <span className="text-[10px] text-neutral-500 shrink-0 select-none w-10 text-right mt-0.5">
-                      {String(i + 1).padStart(3, '0')}
-                    </span>
-                    
-                    <div className="flex items-start space-x-4 flex-1 min-w-0">
-                      <span className={`text-[10px] font-bold shrink-0 mt-0.5 w-12 ${
-                        log.level === 'error' 
-                          ? 'text-rose-500' 
-                          : log.level === 'warn'
-                            ? 'text-amber-400'
-                            : 'text-emerald-400'
-                      }`}>
-                        [{log.level?.toUpperCase() || 'INFO'}]
+                  {/* Top Metadata Row */}
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-mono mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 select-none font-bold">
+                        #{i + 1}
                       </span>
                       
-                      <span className="text-[11px] text-blue-400 shrink-0 mt-0.5 bg-blue-500/10 px-1 rounded">
-                        {new Date(log.timestamp).toLocaleTimeString([], { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                        log.level === 'error' 
+                          ? 'bg-rose-500/20 text-rose-500 border border-rose-500/30' 
+                          : log.level === 'warn'
+                            ? 'bg-amber-500/20 text-amber-500 border border-amber-500/30'
+                            : 'bg-emerald-500/20 text-emerald-500 border border-emerald-500/30'
+                      }`}>
+                        {log.level || 'INFO'}
                       </span>
 
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[13px] text-neutral-200 leading-relaxed whitespace-pre-wrap break-words group-hover/line:text-white transition-colors">
-                          {log.message}
-                        </p>
-                        
-                        {log.route && (
-                          <div className="mt-1.5 flex items-center space-x-1 text-[10px] text-neutral-500">
-                            <LinkIcon size={10} className="text-indigo-400" />
-                            <span className="bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800">{log.route}</span>
-                          </div>
-                        )}
-                      </div>
+                      <span className={`px-1.5 py-0.5 rounded font-mono ${
+                        darkMode ? 'bg-indigo-500/15 text-indigo-300' : 'bg-indigo-50 text-indigo-700'
+                      }`}>
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {log.route && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-slate-400">
+                          <LinkIcon size={10} className="text-indigo-400" />
+                          <span className={`px-1.5 py-0.5 rounded border text-[9px] ${
+                            darkMode ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-slate-100 border-slate-200 text-slate-600'
+                          }`}>
+                            {log.route}
+                          </span>
+                        </span>
+                      )}
 
                       {log.details && (
                         <button 
                           onClick={() => setExpandedLogId(expandedLogId === log._id ? null : log._id)}
-                          className="p-1.5 bg-neutral-900 border border-neutral-800 rounded text-neutral-400 hover:text-emerald-400 hover:border-emerald-900/50 transition-colors shrink-0"
+                          className={`p-1 rounded border transition-colors shrink-0 ${
+                            darkMode 
+                              ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-emerald-400' 
+                              : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-emerald-600'
+                          }`}
+                          title="Toggle Details"
                         >
-                          {expandedLogId === log._id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                          {expandedLogId === log._id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                         </button>
                       )}
                     </div>
+                  </div>
+
+                  {/* Full Log Message starting from the left edge */}
+                  <div className={`font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words ${
+                    darkMode ? 'text-slate-200' : 'text-slate-800'
+                  }`}>
+                    {log.message}
                   </div>
 
                   <AnimatePresence>
@@ -238,10 +285,14 @@ const ActivityLogs: React.FC<ActivityLogsProps> = ({
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
-                        className="overflow-hidden ml-14 mt-3"
+                        className="overflow-hidden ml-10 mt-2"
                       >
                         <div className="relative">
-                          <pre className="text-[11px] p-4 bg-black border border-neutral-800 rounded-md text-emerald-500/80 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed shadow-inner">
+                          <pre className={`text-[10px] p-3 border rounded-lg overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed ${
+                            darkMode 
+                              ? 'bg-slate-950 border-slate-800 text-emerald-400' 
+                              : 'bg-slate-900 text-emerald-300 border-slate-800'
+                          }`}>
                             {typeof log.details === 'string' ? log.details : JSON.stringify(log.details, null, 2)}
                           </pre>
                           <button 
@@ -249,10 +300,10 @@ const ActivityLogs: React.FC<ActivityLogsProps> = ({
                               navigator.clipboard.writeText(typeof log.details === 'string' ? log.details : JSON.stringify(log.details, null, 2));
                               showNotification('success', 'Details copied to clipboard');
                             }}
-                            className="absolute top-2 right-2 p-1.5 bg-neutral-900 border border-neutral-800 rounded text-neutral-400 hover:text-white hover:border-neutral-600 transition-all opacity-0 group-hover/line:opacity-100 shadow-md"
+                            className="absolute top-2 right-2 p-1 bg-slate-800 border border-slate-700 rounded text-slate-300 hover:text-white transition-all opacity-80 hover:opacity-100"
                             title="Copy details"
                           >
-                            <Copy size={12} />
+                            <Copy size={11} />
                           </button>
                         </div>
                       </motion.div>
@@ -262,34 +313,33 @@ const ActivityLogs: React.FC<ActivityLogsProps> = ({
               ))}
 
               {visibleLogsCount < filteredLogsCount && (
-                <div className="py-12 text-center">
+                <div className="py-6 text-center">
                   <button 
                     onClick={() => setVisibleLogsCount(prev => prev + 100)}
-                    className="text-[10px] font-bold tracking-[0.3em] text-neutral-500 hover:text-emerald-500 bg-neutral-900 px-6 py-2 border border-neutral-800 rounded-md transition-all"
+                    className={`text-[10px] font-bold tracking-wider px-4 py-2 border rounded-lg transition-all ${
+                      darkMode 
+                        ? 'bg-slate-900 border-slate-800 text-slate-300 hover:text-emerald-400' 
+                        : 'bg-white border-slate-200 text-slate-700 hover:text-emerald-600'
+                    }`}
                   >
-                    [FETCH_MORE_DATA]
+                    Load More Logs ({filteredLogsCount - visibleLogsCount} remaining)
                   </button>
                 </div>
               )}
-
-              <div className="flex items-center space-x-2 py-6 px-2">
-                <span className="text-emerald-500 animate-pulse select-none text-xl font-bold">_</span>
-              </div>
             </div>
           )}
         </div>
         
-        {/* Terminal Footer - Minimal Raw */}
-        <div className="px-6 py-4 border-t border-neutral-800 bg-neutral-950 flex items-center justify-between">
-          <div className="flex items-center space-x-8 text-[9px] font-bold tracking-widest text-neutral-500">
-            <span className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              SYSTEM_READY
-            </span>
-            <span>LOG_COUNT: {filteredLogsCount}</span>
+        {/* Terminal Footer */}
+        <div className={`px-5 py-3 border-t flex items-center justify-between text-[10px] font-medium ${
+          darkMode ? 'border-slate-800/80 bg-slate-950 text-slate-400' : 'border-slate-200 bg-slate-100/80 text-slate-600'
+        }`}>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+            <span>Status: Active</span>
           </div>
-          <div className="text-[9px] font-bold tracking-widest text-neutral-600">
-            AIS_OS_V4.2 // RAW_STREAM
+          <div>
+            Total Logs: <span className="font-bold">{filteredLogsCount}</span>
           </div>
         </div>
       </div>

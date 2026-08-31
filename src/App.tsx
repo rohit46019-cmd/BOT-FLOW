@@ -273,8 +273,30 @@ const useDebounce = (value: any, delay: number) => {
   return debouncedValue;
 };
 
+export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [state, setState] = useState<T>(() => {
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached) return JSON.parse(cached);
+    } catch (e) {
+      console.warn('Error reading from localStorage', e);
+    }
+    return defaultValue;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch (e) {
+      console.warn('Error writing to localStorage', e);
+    }
+  }, [key, state]);
+
+  return [state, setState];
+}
+
 export default function App() {
-  const [stats, setStats] = useState<Stats | null>(null);
+  const [stats, setStats] = useCachedState<Stats | null>("botflow_stats", null);
   const [targetGroupId, setTargetGroupId] = useState("");
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [autoReplyInput, setAutoReplyInput] = useState("");
@@ -304,8 +326,8 @@ export default function App() {
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [broadcastTarget, setBroadcastTarget] = useState<'all' | 'general'>('all');
   const [broadcastProgress, setBroadcastProgress] = useState({ total: 0, current: 0, status: 'idle' });
-  const [keywords, setKeywords] = useState<Keyword[]>([]);
-  const [logs, setLogs] = useState<AppLog[]>([]);
+  const [keywords, setKeywords] = useCachedState<Keyword[]>("botflow_keywords", []);
+  const [logs, setLogs] = useCachedState<AppLog[]>("botflow_logs", []);
   const [logSearch, setLogSearch] = useState("");
   const debouncedLogSearch = useDebounce(logSearch, 300);
   const [logLevelFilter, setLogLevelFilter] = useState<string>("all");
@@ -320,7 +342,7 @@ export default function App() {
   const [expandedKeywordId, setExpandedKeywordId] = useState<string | null>(null);
   const deferredKeywordSearch = useDeferredValue(keywordSearch);
   const [visibleKeywordsCount, setVisibleKeywordsCount] = useState(50);
-  const [blockedTopics, setBlockedTopics] = useState<any[]>([]);
+  const [blockedTopics, setBlockedTopics] = useCachedState<any[]>("botflow_blockedTopics", []);
   const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
   const [blockedTopicSearch, setBlockedTopicSearch] = useState("");
   const [blockingTopic, setBlockingTopic] = useState(false);
@@ -330,7 +352,7 @@ export default function App() {
   const [replyInGeneral, setReplyInGeneral] = useState(false);
   const [photoStatsTab, setPhotoStatsTab] = useState<'today' | '24h'>('today');
   
-  const [analyticsData, setAnalyticsData] = useState<{keywordData: any[], topicData: any[]}>({ keywordData: [], topicData: [] });
+  const [analyticsData, setAnalyticsData] = useCachedState<{keywordData: any[], topicData: any[]}>("botflow_analytics", { keywordData: [], topicData: [] });
   const [testMessage, setTestMessage] = useState("");
   const [testReply, setTestReply] = useState("");
   const [isTesting, setIsTesting] = useState(false);
@@ -964,6 +986,7 @@ export default function App() {
     // Fetch initial broadcast status
     fetch("/api/broadcast/status")
       .then(async res => {
+        if (!res.ok) return null;
         const text = await res.text();
         if (text.includes("Rate exceeded")) return null;
         try {
@@ -978,7 +1001,9 @@ export default function App() {
           setBroadcastProgress(data);
         }
       })
-      .catch(err => console.error("Error fetching broadcast status:", err));
+      .catch(() => {
+        // Silently handle fetch failure during server startup/restarts
+      });
 
     return () => {
       console.log("Closing SSE connection");
@@ -2457,93 +2482,93 @@ export default function App() {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className={`fixed top-0 left-0 bottom-0 w-1/2 min-w-[280px] z-[101] shadow-2xl flex flex-col overflow-hidden ${darkMode ? 'bg-slate-950 border-r border-white/10' : 'bg-white border-r border-slate-200'}`}
+              className={`fixed top-0 left-0 bottom-0 w-1/2 min-w-[260px] max-w-[320px] z-[101] shadow-2xl flex flex-col overflow-hidden ${darkMode ? 'bg-slate-950 border-r border-white/10' : 'bg-white border-r border-slate-200'}`}
             >
-              <div className={`p-6 border-b flex flex-col space-y-6 ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
+              <div className={`p-3.5 border-b flex flex-col space-y-3 ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="relative w-8 h-8">
+                  <div className="flex items-center space-x-2.5">
+                    <div className="relative w-7 h-7">
                       <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40"></div>
                       <div className={`relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
-                        <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
+                        <img src="/logo.svg" alt="Logo" className="w-4 h-4 object-contain" />
                       </div>
                     </div>
                     <div className="flex flex-col">
                       <div className="flex items-center space-x-1">
-                        <h1 className={`font-black text-base tracking-tighter leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>BotFlow</h1>
+                        <h1 className={`font-black text-sm tracking-tight leading-none ${darkMode ? 'text-white' : 'text-slate-900'}`}>BotFlow</h1>
                         <Sparkles className="w-2.5 h-2.5 text-emerald-500" />
                       </div>
-                      <span className="text-[7px] font-black text-emerald-500 tracking-[0.2em] uppercase block">Premium Edition</span>
+                      <span className="text-[6.5px] font-black text-emerald-500 tracking-[0.2em] uppercase block">Premium Edition</span>
                       {stats?.loginUser && (
-                        <span className={`text-[9px] font-medium mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        <span className={`text-[8.5px] font-medium mt-0.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                           {stats?.loginUser?.firstName || ''} {stats?.loginUser?.lastName || ''} {stats?.loginUser?.phone ? `(${stats?.loginUser?.phone})` : ''}
                         </span>
                       )}
                     </div>
                   </div>
-                  <button onClick={() => setIsMenuOpen(false)} className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-                    <X size={20} />
+                  <button onClick={() => setIsMenuOpen(false)} className={`p-1.5 rounded-lg transition-colors ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+                    <X size={18} />
                   </button>
                 </div>
 
-                {/* Beautiful Connected Shape */}
-                <div className={`relative overflow-hidden rounded-2xl p-4 border transition duration-500 ${
+                {/* Connected Shape */}
+                <div className={`relative overflow-hidden rounded-xl p-2.5 border transition duration-500 ${
                   stats?.isUserBotConnected 
                     ? (darkMode ? 'bg-emerald-500/10 border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.15)]' : 'bg-emerald-50 border-emerald-200 shadow-[0_0_20px_rgba(16,185,129,0.15)]')
                     : (darkMode ? 'bg-rose-500/10 border-rose-500/20 shadow-[0_0_20px_rgba(244,63,94,0.15)]' : 'bg-rose-50 border-rose-200 shadow-[0_0_20px_rgba(244,63,94,0.15)]')
                 }`}>
-                  <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl -mr-10 -mt-10 opacity-50 ${
+                  <div className={`absolute top-0 right-0 w-24 h-24 rounded-full blur-2xl -mr-6 -mt-6 opacity-40 ${
                     stats?.isUserBotConnected ? 'bg-emerald-500' : 'bg-rose-500'
                   }`}></div>
-                  <div className="relative z-10 flex items-center space-x-4">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg relative ${
+                  <div className="relative z-10 flex items-center space-x-2.5">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shadow relative shrink-0 ${
                       stats?.isUserBotConnected ? 'bg-emerald-500 shadow-emerald-500/30' : 'bg-rose-500 shadow-rose-500/30'
                     }`}>
                       <div className="absolute inset-0 rounded-full animate-ping opacity-50 bg-inherit"></div>
-                      {stats?.isUserBotConnected ? <CheckCircle2 size={24} className="text-white relative z-10" /> : <X size={24} className="text-white relative z-10" />}
+                      {stats?.isUserBotConnected ? <CheckCircle2 size={16} className="text-white relative z-10" /> : <X size={16} className="text-white relative z-10" />}
                     </div>
-                    <div className="flex flex-col">
-                      <span className={`text-sm font-black uppercase tracking-widest ${
+                    <div className="flex flex-col min-w-0">
+                      <span className={`text-xs font-black uppercase tracking-wider ${
                         stats?.isUserBotConnected ? (darkMode ? 'text-emerald-400' : 'text-emerald-600') : (darkMode ? 'text-rose-400' : 'text-rose-600')
                       }`}>
                         {stats?.isUserBotConnected ? 'Connected' : 'Disconnected'}
                       </span>
-                      <span className={`text-[10px] font-medium mt-0.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {stats?.isUserBotConnected ? 'System is online and active' : 'System is currently offline'}
+                      <span className={`text-[8.5px] font-medium truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {stats?.isUserBotConnected ? 'System online' : 'System offline'}
                       </span>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              <div className="flex-1 overflow-y-auto p-2.5 space-y-0.5">
                 <button
                   onClick={() => {
                     setIsNotificationOpen(true);
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition group ${darkMode ? 'text-blue-400 hover:bg-white/5' : 'text-blue-600 hover:bg-black/5'}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition group ${darkMode ? 'text-blue-400 hover:bg-white/5' : 'text-blue-600 hover:bg-black/5'}`}
                 >
-                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
-                    <Bell size={20} />
+                  <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+                    <Bell size={16} />
                   </div>
                   <div className="flex flex-col items-start">
-                    <span className="text-xs font-black uppercase tracking-widest">Notifications</span>
-                    <span className="text-[9px] opacity-50">View recent alerts</span>
+                    <span className="text-[11px] font-bold uppercase tracking-wide">Notifications</span>
+                    <span className="text-[8px] opacity-50">View recent alerts</span>
                   </div>
                 </button>
                 
-                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
+                <div className={`h-px my-1 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
 
                 <button
                   onClick={() => {
                     setActiveTab('analytics');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'analytics' ? (darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-50 text-cyan-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${activeTab === 'analytics' ? (darkMode ? 'bg-cyan-500/20 text-cyan-400' : 'bg-cyan-50 text-cyan-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
                 >
-                  <PieChart size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Analytics</span>
+                  <PieChart size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Analytics</span>
                 </button>
 
                 <button
@@ -2551,10 +2576,10 @@ export default function App() {
                     setActiveTab('tester');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'tester' ? (darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-50 text-orange-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${activeTab === 'tester' ? (darkMode ? 'bg-orange-500/20 text-orange-400' : 'bg-orange-50 text-orange-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
                 >
-                  <Bot size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">AI Test</span>
+                  <Bot size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">AI Test</span>
                 </button>
 
                 <button
@@ -2562,10 +2587,10 @@ export default function App() {
                     setActiveTab('media');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'media' ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${activeTab === 'media' ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
                 >
-                  <Library size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Media Library</span>
+                  <Library size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Media Library</span>
                 </button>
 
                 <button
@@ -2573,10 +2598,10 @@ export default function App() {
                     setActiveTab('insights');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'insights' ? (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${activeTab === 'insights' ? (darkMode ? 'bg-rose-500/20 text-rose-400' : 'bg-rose-50 text-rose-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
                 >
-                  <BarChart3 size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Insights</span>
+                  <BarChart3 size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Insights</span>
                 </button>
 
                 <button
@@ -2584,23 +2609,23 @@ export default function App() {
                     setActiveTab('user');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${activeTab === 'user' ? (darkMode ? 'bg-pink-500/20 text-pink-400' : 'bg-pink-50 text-pink-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${activeTab === 'user' ? (darkMode ? 'bg-pink-500/20 text-pink-400' : 'bg-pink-50 text-pink-600') : (darkMode ? 'text-slate-400 hover:bg-white/5' : 'text-slate-600 hover:bg-black/5')}`}
                 >
-                  <User size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Profile</span>
+                  <User size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Profile</span>
                 </button>
 
-                <div className={`h-px my-2 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
+                <div className={`h-px my-1 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
 
                 <button
                   onClick={() => {
                     setShowClearDataConfirm(true);
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
                 >
-                  <Trash size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Clear All Data</span>
+                  <Trash size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Clear All Data</span>
                 </button>
 
                 <button
@@ -2608,26 +2633,26 @@ export default function App() {
                     setShowDeleteLastKeywordConfirm(true);
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-4 rounded-2xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition ${darkMode ? 'text-rose-400 hover:bg-white/5' : 'text-rose-600 hover:bg-black/5'}`}
                 >
-                  <Trash2 size={20} />
-                  <span className="text-xs font-black uppercase tracking-widest">Delete Last Keyword</span>
+                  <Trash2 size={16} />
+                  <span className="text-[11px] font-bold uppercase tracking-wide">Delete Last Keyword</span>
                 </button>
               </div>
 
-              <div className={`p-6 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Theme</span>
+              <div className={`p-3 border-t ${darkMode ? 'border-white/10' : 'border-slate-100'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Theme</span>
                   <button 
                     onClick={() => setDarkMode(!darkMode)}
-                    className={`p-2 rounded-xl transition ${darkMode ? 'bg-white/5 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}
+                    className={`p-1.5 rounded-lg transition ${darkMode ? 'bg-white/5 text-yellow-400' : 'bg-slate-100 text-slate-600'}`}
                   >
-                    {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+                    {darkMode ? <Sun size={15} /> : <Moon size={15} />}
                   </button>
                 </div>
                 <button 
                   onClick={() => setIsMenuOpen(false)}
-                  className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  className={`w-full py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                 >
                   Close Menu
                 </button>
@@ -2814,7 +2839,10 @@ export default function App() {
                 <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
                 <div className="relative z-10 space-y-4 pointer-events-auto">
                   <div className="flex items-center justify-between">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Block Topics (No Auto-Reply)</label>
+                    <div>
+                      <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Block Topics (No Auto-Reply)</label>
+                      <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Paste topic link below, or send it directly to your Telegram Bot in chat</p>
+                    </div>
                     <ShieldAlert size={16} className="text-rose-500" />
                   </div>
                   
@@ -3735,7 +3763,6 @@ export default function App() {
           <TabButton id="approvals" icon={Zap} label="Check" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="broadcast" icon={Radio} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="settings" icon={Settings} label="Settings" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="logs" icon={Activity} label="Logs" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         </nav>
       </div>
 

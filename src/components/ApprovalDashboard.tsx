@@ -28,8 +28,24 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
 
   useEffect(() => {
     fetchApprovals();
-    const interval = setInterval(fetchApprovals, 4000); // Poll every 4s
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchApprovals, 3000);
+
+    const eventSource = new EventSource("/api/notifications");
+    eventSource.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        if (parsed.type === 'approval_processed') {
+          setApprovals(prev => prev.filter(a => a._id !== parsed.data.id));
+        } else if (parsed.type === 'approval_needed') {
+          fetchApprovals();
+        }
+      } catch (err) {}
+    };
+
+    return () => {
+      clearInterval(interval);
+      eventSource.close();
+    };
   }, []);
 
   const handleDecision = async (id: string, action: 'approve' | 'reject') => {
