@@ -10,10 +10,10 @@ const LiveLogBox: React.FC<LiveLogBoxProps> = ({ logs, darkMode }) => {
   const latestLogs = logs.slice(-5).reverse();
 
   return (
-    <div className={`col-span-2 p-4 rounded-3xl border ${darkMode ? 'bg-black border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
-      <div className="flex items-center space-x-2 mb-3">
-        <Terminal size={16} className={darkMode ? 'text-emerald-400' : 'text-emerald-600'} />
-        <h3 className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-white' : 'text-slate-900'}`}>Live Logs</h3>
+    <div className={`col-span-2 p-3 rounded-xl border ${darkMode ? 'bg-black border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
+      <div className="flex items-center space-x-2 mb-2">
+        <Terminal size={14} className={darkMode ? 'text-emerald-400' : 'text-emerald-600'} />
+        <h3 className={`text-[9px] font-bold uppercase tracking-widest ${darkMode ? 'text-white' : 'text-slate-900'}`}>Live Logs</h3>
       </div>
       <div className="space-y-1 font-mono text-[10px]">
         {latestLogs.map((log, i) => (

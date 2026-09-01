@@ -1,5 +1,5 @@
 // Service Worker Version: 1.3
-const CACHE_NAME = 'botflow-v1';
+const CACHE_NAME = 'botflow-v3';
 const ASSETS = [
   '/',
   '/index.html',

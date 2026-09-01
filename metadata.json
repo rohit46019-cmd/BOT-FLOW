@@ -1,5 +1,6 @@
 {
   "name": "BotFlow Premium",
   "description": "Professional Telegram Topic & Userbot Manager with PWA support.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

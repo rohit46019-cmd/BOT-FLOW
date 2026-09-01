@@ -148,6 +148,10 @@ interface Keyword {
   max_replies?: number;
   match_mode?: 'exact' | 'partial';
   ai_reply_enabled?: boolean;
+  notify_on_hit?: boolean;
+  enabled?: boolean;
+  approval_mode?: boolean;
+  target_groups?: string[];
 }
 
 interface Topic {
@@ -337,7 +341,7 @@ export default function App() {
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isAddingNewRule, setIsAddingNewRule] = useState(false);
   const [keywordSearch, setKeywordSearch] = useState("");
-  const [keywordFilter, setKeywordFilter] = useState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest'>('all');
+  const [keywordFilter, setKeywordFilter] = useState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest' | 'approval' | 'notify'>('all');
   const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
   const [expandedKeywordId, setExpandedKeywordId] = useState<string | null>(null);
   const deferredKeywordSearch = useDeferredValue(keywordSearch);
@@ -406,6 +410,14 @@ export default function App() {
     } catch (e) {
       console.error("Error parsing darkMode from localStorage", e);
       return true;
+    }
+  });
+
+  const [notificationStyle, setNotificationStyle] = useState<string>(() => {
+    try {
+      return localStorage.getItem("notificationStyle") || "minimalist";
+    } catch (e) {
+      return "minimalist";
     }
   });
 
@@ -644,13 +656,139 @@ export default function App() {
   };
 
   const showNotification = (type: 'success' | 'error' | 'warn', message: string, duration = 3000) => {
-    if (type === 'success') {
-      toast.success(message, { duration });
-    } else if (type === 'error') {
-      toast.error(message, { duration: 6000 });
-    } else {
-      toast(message, { duration: 6000, icon: '⚠️' });
+    // If default style, fallback to react-hot-toast standard
+    if (notificationStyle === 'default') {
+      if (type === 'success') {
+        toast.success(message, { duration });
+      } else if (type === 'error') {
+        toast.error(message, { duration: 6000 });
+      } else {
+        toast(message, { duration: 6000, icon: '⚠️' });
+      }
+      return;
     }
+
+    // Custom Styled Toasts based on user selection
+    toast.custom((t) => {
+      const isVisible = t.visible;
+      const baseAnim = isVisible ? 'animate-enter' : 'animate-leave';
+
+      switch (notificationStyle) {
+        case 'glassmorphic':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3.5 rounded-xl border backdrop-blur-md shadow-xl flex items-center gap-3 transition-all ${
+              darkMode ? 'bg-black/65 border-white/10 text-white shadow-purple-500/5' : 'bg-white/65 border-slate-200/55 text-slate-900 shadow-slate-200/30'
+            }`}>
+              <div className={`p-1.5 rounded-lg flex-shrink-0 ${
+                type === 'success' ? 'bg-emerald-500/10 text-emerald-400' : type === 'error' ? 'bg-rose-500/10 text-rose-400' : 'bg-amber-500/10 text-amber-400'
+              }`}>
+                {type === 'success' ? '✦' : type === 'error' ? '✕' : '⚠️'}
+              </div>
+              <div className="flex-1 text-[11px] font-medium tracking-wide leading-relaxed break-words">{message}</div>
+            </div>
+          );
+        case 'neobrutalist':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3 border-2 border-black font-mono flex items-center gap-3 shadow-[3px_3px_0px_#000000] ${
+              type === 'success' ? 'bg-lime-400 text-black' : type === 'error' ? 'bg-rose-400 text-black' : 'bg-amber-400 text-black'
+            }`}>
+              <span className="font-bold text-sm flex-shrink-0">{type === 'success' ? '✦' : type === 'error' ? '✕' : '⚠'}</span>
+              <div className="flex-1 text-[11px] font-black tracking-tight uppercase break-words leading-tight">{message}</div>
+            </div>
+          );
+        case 'cyberpunk':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3 rounded-none bg-zinc-950 border border-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.25)] flex items-center gap-3 font-mono text-cyan-400`}>
+              <div className="relative flex h-2 w-2 flex-shrink-0">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                  type === 'success' ? 'bg-cyan-400' : type === 'error' ? 'bg-rose-500' : 'bg-amber-400'
+                }`} />
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                  type === 'success' ? 'bg-cyan-400' : type === 'error' ? 'bg-rose-500' : 'bg-amber-400'
+                }`} />
+              </div>
+              <div className="flex-1 text-[10px] font-bold tracking-widest uppercase break-words leading-tight">{message}</div>
+            </div>
+          );
+        case 'terminal':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-2.5 rounded-xs bg-black border border-emerald-500/30 flex items-start gap-2 font-mono text-[11px] text-emerald-400 shadow-[inset_0_0_15px_rgba(16,185,129,0.05)]`}>
+              <span className="text-emerald-500 animate-pulse font-bold flex-shrink-0">{'>'}</span>
+              <div className="flex-1 leading-normal tracking-wide break-words">
+                <span className="text-emerald-600 mr-1 font-black">[sys_{type}]</span>
+                {message}
+              </div>
+            </div>
+          );
+        case 'gradient':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 shadow-xl flex items-center gap-3 border border-white/20 text-white relative overflow-hidden`}>
+              <div className="absolute inset-0 bg-white/5 backdrop-blur-[1px] pointer-events-none" />
+              <div className="relative z-10 p-1 bg-white/15 rounded-lg flex-shrink-0 text-sm text-white flex items-center justify-center">
+                {type === 'success' ? '✦' : type === 'error' ? '✕' : '⚠️'}
+              </div>
+              <div className="relative z-10 flex-1 text-[11px] font-bold leading-normal break-words">{message}</div>
+            </div>
+          );
+        case 'compact-pill':
+          return (
+            <div className={`${baseAnim} max-w-xs mx-auto py-1.5 px-3 rounded-full border shadow-sm flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider ${
+              darkMode 
+                ? 'bg-neutral-900/95 border-white/10 text-slate-300' 
+                : 'bg-white/95 border-slate-200 text-slate-700'
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${
+                type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-rose-500' : 'bg-amber-500'
+              }`} />
+              <span className="break-words leading-none">{message}</span>
+            </div>
+          );
+        case 'organic':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3 rounded-lg bg-[#FAF6F0] border border-[#E6DFD5] text-[#3F3B35] flex items-center gap-3 shadow-xs font-serif`}>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                type === 'success' ? 'bg-[#5B7065]' : type === 'error' ? 'bg-[#C17D7D]' : 'bg-[#D2B48C]'
+              }`} />
+              <div className="flex-1 text-[11px] font-medium tracking-tight italic break-words leading-relaxed">{message}</div>
+            </div>
+          );
+        case 'luxury-gold':
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-3.5 rounded-lg bg-slate-950 border border-amber-500/40 shadow-[0_4px_12px_rgba(245,158,11,0.08)] flex items-center gap-3.5`}>
+              <div className={`w-1 h-6 flex-shrink-0 rounded-sm ${
+                type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-rose-500' : 'bg-gradient-to-b from-amber-300 to-amber-600'
+              }`} />
+              <div className="flex-1 text-xs font-serif tracking-wide text-amber-100 italic leading-normal break-words">{message}</div>
+            </div>
+          );
+        case 'dynamic-island':
+          return (
+            <div className={`${baseAnim} max-w-xs mx-auto py-2 px-4 rounded-full bg-black border border-neutral-800 text-white shadow-2xl flex items-center gap-2.5 transition-all duration-300 transform hover:scale-105`}>
+              <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                  type === 'success' ? 'bg-emerald-400' : type === 'error' ? 'bg-rose-400' : 'bg-amber-400'
+                }`} />
+                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${
+                  type === 'success' ? 'bg-emerald-400' : type === 'error' ? 'bg-rose-400' : 'bg-amber-400'
+                }`} />
+              </span>
+              <div className="text-[10px] font-black tracking-tight uppercase break-words leading-none">{message}</div>
+            </div>
+          );
+        case 'minimalist':
+        default:
+          return (
+            <div className={`${baseAnim} max-w-xs sm:max-w-sm w-full p-2.5 rounded-lg border shadow-xs flex items-center gap-2.5 transition-all ${
+              darkMode ? 'bg-neutral-900 border-neutral-800 text-white' : 'bg-white border-slate-200 text-slate-900'
+            }`}>
+              <div className={`w-1 h-6 rounded-full flex-shrink-0 ${
+                type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-rose-500' : 'bg-amber-500'
+              }`} />
+              <div className="flex-1 text-[11.5px] font-bold leading-normal break-words">{message}</div>
+            </div>
+          );
+      }
+    }, { duration });
   };
 
   // Notification Sound
@@ -914,6 +1052,12 @@ export default function App() {
           return;
         }
 
+        
+        if (parsed.type === 'keyword_hit_notify') {
+          showNotification('success', parsed.data.message || 'Keyword Hit!');
+          if (notificationSoundEnabled) playNotificationSound();
+          return;
+        }
         if (parsed.type === 'photo_received') {
           const message = parsed.data.message;
           
@@ -1119,6 +1263,8 @@ export default function App() {
     switch (keywordFilter) {
       case 'active': result = result.filter(kw => kw.enabled !== false); break;
       case 'inactive': result = result.filter(kw => kw.enabled === false); break;
+      case 'approval': result = result.filter(kw => !!kw.approval_mode); break;
+      case 'notify': result = result.filter(kw => !!kw.notify_on_hit); break;
       case 'forward': result = result.filter(kw => kw.message_link || (kw.message_links && kw.message_links.length > 0)); break;
       case 'message': result = result.filter(kw => kw.reply); break;
       case 'highest': result = [...result].sort((a, b) => (b.keywords?.length || 0) - (a.keywords?.length || 0)); break;
@@ -1522,12 +1668,13 @@ export default function App() {
     fetchAnalytics();
     fetchMissedCount();
 
-    // Auto-refresh missed count every 30 seconds
-    const interval = setInterval(() => {
+    // Auto-refresh stats and missed count every 15 seconds globally to ensure connections are tracked
+    const globalInterval = setInterval(() => {
+      fetchStats();
       fetchMissedCount();
-    }, 30000);
+    }, 15000);
 
-    return () => clearInterval(interval);
+    return () => clearInterval(globalInterval);
   }, []);
 
   useEffect(() => {
@@ -1538,6 +1685,21 @@ export default function App() {
     } else if (activeTab === 'catchup') {
       fetchMissedList();
     }
+
+    // Auto-refresh active tab data every 10 seconds for instant, live updates
+    const tabInterval = setInterval(() => {
+      if (activeTab === 'dashboard') {
+        fetchLogs(); // Keep dashboard Live Logs perfectly updated
+      } else if (activeTab === 'logs') {
+        fetchLogs();
+      } else if (activeTab === 'analytics') {
+        fetchAnalytics();
+      } else if (activeTab === 'catchup') {
+        fetchMissedList();
+      }
+    }, 10000);
+
+    return () => clearInterval(tabInterval);
   }, [activeTab]);
 
   const handleTogglePause = () => {
@@ -1859,6 +2021,7 @@ export default function App() {
         max_replies: parseInt(data.max_replies.toString()) || 0,
         ai_reply_enabled: !!data.ai_reply_enabled,
         approval_mode: !!data.approval_mode,
+        notify_on_hit: !!data.notify_on_hit,
         target_groups: data.target_groups || []
       };
 
@@ -1948,6 +2111,29 @@ export default function App() {
         fetchKeywords();
       } else {
         showNotification('error', 'Failed to update keyword');
+        fetchKeywords();
+      }
+    } catch (err) {
+      showNotification('error', 'Update failed');
+      fetchKeywords();
+    }
+  };
+
+  
+  const handleToggleNotifyOnHit = async (id: string, notify_on_hit: boolean) => {
+    // Optimistic state update
+    setKeywords(prev => prev.map(k => k._id === id ? { ...k, notify_on_hit } : k));
+    try {
+      const res = await fetch(`/api/keywords/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notify_on_hit }),
+      });
+      if (res.ok) {
+        showNotification('success', `Notifications ${notify_on_hit ? 'enabled' : 'disabled'}`);
+        fetchKeywords();
+      } else {
+        showNotification('error', 'Failed to update notification setting');
         fetchKeywords();
       }
     } catch (err) {
@@ -2767,6 +2953,9 @@ export default function App() {
               handleUpdateNotificationSoundType={handleUpdateNotificationSoundType}
               requestNotificationPermission={requestNotificationPermission}
               testPush={testPush}
+              notificationStyle={notificationStyle}
+              setNotificationStyle={setNotificationStyle}
+              showNotification={showNotification}
               handleExportData={handleExportData}
               handleImportData={handleImportData}
               fileInputRef={fileInputRef}
@@ -2795,7 +2984,6 @@ export default function App() {
               visibleLogsCount={visibleLogsCount}
               setVisibleLogsCount={setVisibleLogsCount}
               filteredLogsCount={filteredLogs.length}
-              showNotification={showNotification}
               setActiveTab={setActiveTab}
             />
           )}
@@ -2813,6 +3001,7 @@ export default function App() {
               handleDeleteKeyword={handleDeleteKeyword}
               handleToggleKeyword={handleToggleKeyword}
               handleToggleApprovalMode={handleToggleApprovalMode}
+              handleToggleNotifyOnHit={handleToggleNotifyOnHit}
               cancelEdit={cancelEdit}
               visibleKeywordsCount={visibleKeywordsCount}
               handleKeywordsScroll={handleKeywordsScroll}

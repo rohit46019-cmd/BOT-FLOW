@@ -770,7 +770,8 @@ const KeywordSchema = new mongoose.Schema({
   ai_reply_enabled: { type: Boolean, default: false },
   approval_mode: { type: Boolean, default: false },
   target_groups: { type: [String], default: [] }, // Target group IDs or titles
-  enabled: { type: Boolean, default: true }
+  enabled: { type: Boolean, default: true },
+  notify_on_hit: { type: Boolean, default: false }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
 
@@ -2032,6 +2033,15 @@ async function startServer() {
             await new Promise(resolve => setTimeout(resolve, keywordDelaySeconds * 1000));
           }
 
+          
+          let chatTitle = "Unknown Group";
+          try {
+            const chatEntity = await client.getEntity(message.peerId) as any;
+            if (chatEntity && chatEntity.title) {
+              chatTitle = chatEntity.title;
+            }
+          } catch(e) {}
+          const topicName = topicNamesCache[topicId] || "General";
           const processedRuleIds = new Set<string>();
           let isFirstMatch = true;
 
@@ -2051,6 +2061,13 @@ async function startServer() {
             processedRuleIds.add(kw._id.toString());
             
             console.log(`DEBUG: Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
+
+            if (kw.notify_on_hit) {
+              const notifyBody = `Matched "${match.matchedWord}" in topic "${topicName}" (${chatTitle})`;
+              sendPushNotification("Keyword Triggered! 🎯", notifyBody, { url: '/' });
+              sendSseEvent('keyword_hit_notify', { message: notifyBody, topicName, groupName: chatTitle, keyword: match.matchedWord });
+            }
+
             
             // Normalize links
             const linksToProcess = [...(kw.message_links || [])];
@@ -2070,9 +2087,6 @@ async function startServer() {
               const requiresApproval = isGlobalApproval || !!kw.approval_mode;
 
               if (requiresApproval) {
-                const chat = await client.getEntity(message.peerId) as any;
-                const chatTitle = chat.title || "Unknown Group";
-                const topicName = topicNamesCache[topicId] || "General";
                 
                 const approval = await PendingApproval.create({
                   matched_keyword: match.matchedWord,
@@ -2933,7 +2947,7 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled, approval_mode, target_groups } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled, approval_mode, notify_on_hit, target_groups } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
@@ -2950,6 +2964,7 @@ async function startServer() {
         match_mode: match_mode || 'exact',
         ai_reply_enabled: !!ai_reply_enabled,
         approval_mode: !!approval_mode,
+        notify_on_hit: !!notify_on_hit,
         target_groups: targetGroupsArray
       };
       
@@ -2994,6 +3009,7 @@ async function startServer() {
       const updateData: any = {};
       if (typeof req.body.enabled !== 'undefined') updateData.enabled = req.body.enabled;
       if (typeof req.body.approval_mode !== 'undefined') updateData.approval_mode = !!req.body.approval_mode;
+      if (typeof req.body.notify_on_hit !== 'undefined') updateData.notify_on_hit = !!req.body.notify_on_hit;
       await Keyword.findByIdAndUpdate(req.params.id, updateData);
       await refreshKeywordCache();
       res.json({ success: true });

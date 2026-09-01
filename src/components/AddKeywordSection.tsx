@@ -1,31 +1,37 @@
 import React, { useState, useEffect, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check } from 'lucide-react';
+import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check, Bell, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react';
 
 export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkMode, index }: any) => {
   const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
   const color = colors[(index || 0) % 6];
 
   return (
-    <div className="flex items-center space-x-2 group">
-      <div className={`flex-shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black ${darkMode ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
+    <div className="flex items-center gap-1.5 group">
+      <div className={`flex-shrink-0 w-5 h-5 rounded flex items-center justify-center text-[9px] font-mono font-bold ${darkMode ? 'bg-white/10 text-slate-300' : 'bg-slate-200 text-slate-600'}`}>
         {(index || 0) + 1}
       </div>
       <div className="relative flex-1">
-        <div className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-${color}-500`}>
-          <Hash size={16} />
-        </div>
+        <Hash size={12} className={`absolute left-2.5 top-1/2 -translate-y-1/2 text-${color}-500 pointer-events-none`} />
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Enter keyword..."
-          className={`w-full pl-10 pr-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-${color}-500 outline-none text-sm transition ${darkMode ? `bg-${color}-500/10 border-${color}-500/30 text-white placeholder-white/20` : `bg-${color}-50 border-${color}-200 text-slate-900 placeholder-slate-400`}`}
+          placeholder="Enter keyword or phrase..."
+          className={`w-full pl-7 pr-3 py-1.5 border rounded-lg focus:ring-1 focus:ring-${color}-500 outline-none text-xs transition ${
+            darkMode 
+              ? `bg-${color}-500/10 border-${color}-500/30 text-white placeholder-white/20` 
+              : `bg-${color}-50/50 border-${color}-200 text-slate-900 placeholder-slate-400`
+          }`}
         />
       </div>
       {showRemove && (
-        <button onClick={onRemove} className="p-2.5 text-rose-500 hover:bg-rose-500/10 rounded-xl transition">
-          <Trash2 size={18} />
+        <button 
+          onClick={onRemove} 
+          className="p-1 text-rose-500 hover:bg-rose-500/10 rounded-md transition"
+          title="Remove keyword"
+        >
+          <Trash2 size={13} />
         </button>
       )}
     </div>
@@ -35,15 +41,17 @@ export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkM
 export const ReplyInput = memo(({ value, onChange, darkMode }: any) => {
   return (
     <div className="relative">
-      <div className="absolute left-3 top-3 text-blue-500">
-        <MessageSquare size={18} />
-      </div>
+      <MessageSquare size={13} className="absolute left-2.5 top-2.5 text-blue-500 pointer-events-none" />
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="What should the bot say?"
-        rows={4}
-        className={`w-full pl-10 pr-4 py-3 border rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition resize-none ${darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'}`}
+        placeholder="Auto-reply text message..."
+        rows={3}
+        className={`w-full pl-7 pr-3 py-2 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition resize-none leading-relaxed ${
+          darkMode 
+            ? 'bg-white/5 border-white/10 text-white placeholder-white/20' 
+            : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+        }`}
       />
     </div>
   );
@@ -62,7 +70,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   onCancel, 
   darkMode 
 }) => {
-  const [isExpanded, setIsExpanded] = useState(!!editingKeyword);
+  const [isExpanded, setIsExpanded] = useState(true);
   const [newKeywords, setNewKeywords] = useState<string[]>([""]);
   const [newReply, setNewReply] = useState("");
   const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
@@ -70,6 +78,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(0);
   const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
   const [newApprovalMode, setNewApprovalMode] = useState(false);
+  const [newNotifyOnHit, setNewNotifyOnHit] = useState(false);
   const [newTargetGroups, setNewTargetGroups] = useState<string[]>([]);
   const [customGroupInput, setCustomGroupInput] = useState("");
 
@@ -89,6 +98,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewMatchMode(editingKeyword.match_mode || 'exact');
       setNewAiReplyEnabled(!!editingKeyword.ai_reply_enabled);
       setNewApprovalMode(!!editingKeyword.approval_mode);
+      setNewNotifyOnHit(!!editingKeyword.notify_on_hit);
       setNewTargetGroups(editingKeyword.target_groups || []);
     } else {
       setNewKeywords([""]);
@@ -98,6 +108,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewMatchMode('exact');
       setNewAiReplyEnabled(false);
       setNewApprovalMode(false);
+      setNewNotifyOnHit(false);
       setNewTargetGroups([]);
     }
   }, [editingKeyword]);
@@ -105,7 +116,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const addGroup = (group: string) => {
     const splitGroups = group.split(',').map(g => g.trim()).filter(g => g);
     let added = false;
-    let nextGroups = [...newTargetGroups];
+    const nextGroups = [...newTargetGroups];
     for (const g of splitGroups) {
       if (!nextGroups.includes(g)) {
         nextGroups.push(g);
@@ -155,31 +166,55 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       max_replies: newMaxReplies,
       ai_reply_enabled: newAiReplyEnabled,
       approval_mode: newApprovalMode,
+      notify_on_hit: newNotifyOnHit,
       target_groups: newTargetGroups
     });
   };
 
   return (
     <div 
-      className={`p-3 rounded-none border transition duration-500 ${darkMode ? 'bg-slate-900/50 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/50'}`}
-      onFocus={() => setIsExpanded(true)}
+      className={`p-3.5 rounded-xl border transition duration-300 ${
+        darkMode 
+          ? 'bg-neutral-900/90 border-blue-500/30 shadow-lg shadow-black/40' 
+          : 'bg-white border-blue-200 shadow-lg shadow-blue-500/5'
+      }`}
     >
-      <div className="flex items-center justify-between mb-2 cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
-        <div className="flex items-center space-x-2">
-          <div className={`p-1.5 rounded-none ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
-            <Plus className="w-4 h-4 text-blue-500" />
+      {/* Header */}
+      <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-white/5">
+        <div className="flex items-center gap-2">
+          <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
+            <Plus className="w-3.5 h-3.5" />
           </div>
           <div>
             <h2 className={`text-xs font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-              {editingKeyword ? "Edit Rule" : "Create New Rule"}
+              {editingKeyword ? "Edit Auto-Reply Rule" : "Create New Rule"}
             </h2>
+            <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              Configure keywords, actions, notifications & targets
+            </p>
           </div>
         </div>
-        {editingKeyword && (
-          <button onClick={onCancel} className={`p-1 rounded-none transition ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-            <X size={14} />
+        <div className="flex items-center gap-1.5">
+          <button 
+            type="button"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className={`p-1 rounded-md text-[10px] font-bold transition flex items-center gap-1 ${
+              darkMode ? 'bg-white/5 text-slate-400 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>
-        )}
+          {editingKeyword && (
+            <button 
+              type="button"
+              onClick={onCancel} 
+              className={`p-1 rounded-md transition ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
+              title="Cancel Edit"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <AnimatePresence>
@@ -190,13 +225,20 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
             exit={{ opacity: 0, height: 0 }}
             className="overflow-hidden"
           >
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-              <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+              {/* Left Column: Keywords & Message */}
+              <div className="space-y-3">
+                {/* Keywords List */}
                 <div>
-                  <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                    Keywords to Match
-                  </label>
-                  <div className="space-y-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={`block text-[10px] font-black uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Keywords to Match
+                    </label>
+                    <span className={`text-[9px] font-mono ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {newKeywords.filter(k => k.trim()).length} keyword(s)
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
                     {newKeywords.map((kw, index) => (
                       <KeywordInput 
                         key={index}
@@ -209,17 +251,23 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                       />
                     ))}
                     <button 
+                      type="button"
                       onClick={addKeywordField}
-                      className={`w-full p-3 border-2 border-dashed rounded-xl text-sm font-bold transition flex items-center justify-center space-x-2 ${darkMode ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400' : 'border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-500'}`}
+                      className={`w-full py-1.5 border border-dashed rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1 ${
+                        darkMode 
+                          ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400 bg-white/[0.02]' 
+                          : 'border-slate-200 text-slate-500 hover:border-blue-400 hover:text-blue-600 bg-slate-50/50'
+                      }`}
                     >
-                      <Plus size={16} />
+                      <Plus size={12} />
                       <span>Add Another Keyword</span>
                     </button>
                   </div>
                 </div>
 
+                {/* Auto Reply Text */}
                 <div>
-                  <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                     Auto-Reply Message
                   </label>
                   <ReplyInput 
@@ -228,24 +276,33 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                     darkMode={darkMode}
                   />
                 </div>
-              </div>
 
-              <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-4">
+                {/* Match Mode & Max Replies */}
+                <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                       Match Mode
                     </label>
-                    <div className={`p-1 rounded-xl flex ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`}>
+                    <div className={`p-0.5 rounded-lg flex ${darkMode ? 'bg-white/5 border border-white/5' : 'bg-slate-100'}`}>
                       <button 
+                        type="button"
                         onClick={() => setNewMatchMode('exact')}
-                        className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition ${newMatchMode === 'exact' ? (darkMode ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-white text-blue-600 shadow-md') : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700')}`}
+                        className={`flex-1 py-1 px-2 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
+                          newMatchMode === 'exact' 
+                            ? (darkMode ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-blue-600 shadow-sm') 
+                            : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
+                        }`}
                       >
                         Exact
                       </button>
                       <button 
+                        type="button"
                         onClick={() => setNewMatchMode('partial')}
-                        className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition ${newMatchMode === 'partial' ? (darkMode ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-white text-blue-600 shadow-md') : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700')}`}
+                        className={`flex-1 py-1 px-2 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
+                          newMatchMode === 'partial' 
+                            ? (darkMode ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-blue-600 shadow-sm') 
+                            : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
+                        }`}
                       >
                         Partial
                       </button>
@@ -253,175 +310,211 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                   </div>
 
                   <div>
-                    <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                      Max Replies
+                    <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Max Replies / Topic
                     </label>
                     <div className="relative">
-                      <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <Hash size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                       <input
                         type="number"
                         value={newMaxReplies}
                         onChange={(e) => setNewMaxReplies(e.target.value)}
                         placeholder="0 = Unlimited"
-                        className={`w-full pl-10 pr-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition ${darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'}`}
+                        className={`w-full pl-7 pr-2.5 py-1 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'
+                        }`}
                       />
                     </div>
                   </div>
                 </div>
+              </div>
 
+              {/* Right Column: Links, Target Groups & Toggles */}
+              <div className="space-y-3">
+                {/* Message Links */}
                 <div>
-                  <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                    Message Links (Optional)
+                  <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Telegram Message Link (Forward/Quote)
                   </label>
-                  <div className="space-y-3">
-                    {newMessageLinks.map((link, index) => {
-                      const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
-                      const color = colors[index % 6];
-                      return (
-                        <div key={index} className="flex items-center space-x-2">
-                          <div className={`flex-shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black ${darkMode ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                            {index + 1}
-                          </div>
-                          <div className="relative flex-1">
-                            <Link className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-${color}-500`} />
-                            <input
-                              type="text"
-                              value={link}
-                              onChange={(e) => updateMessageLinkField(index, e.target.value)}
-                              placeholder="https://t.me/..."
-                              className={`w-full pl-10 pr-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-${color}-500 outline-none text-sm transition ${darkMode ? `bg-${color}-500/10 border-${color}-500/30 text-white placeholder-white/20` : `bg-${color}-50 border-${color}-200 text-slate-900 placeholder-slate-400`}`}
-                            />
-                          </div>
-                          {newMessageLinks.length > 1 && (
-                            <button onClick={() => removeMessageLinkField(index)} className="p-2.5 text-rose-500 hover:bg-rose-500/10 rounded-xl transition">
-                              <Trash2 size={18} />
-                            </button>
-                          )}
+                  <div className="space-y-1.5">
+                    {newMessageLinks.map((link, index) => (
+                      <div key={index} className="flex items-center gap-1.5">
+                        <div className="relative flex-1">
+                          <Link size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={link}
+                            onChange={(e) => updateMessageLinkField(index, e.target.value)}
+                            placeholder="https://t.me/c/12345/678"
+                            className={`w-full pl-7 pr-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition ${
+                              darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                            }`}
+                          />
                         </div>
-                      );
-                    })}
+                        {newMessageLinks.length > 1 && (
+                          <button 
+                            type="button"
+                            onClick={() => removeMessageLinkField(index)} 
+                            className="p-1 text-rose-500 hover:bg-rose-500/10 rounded-md transition"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
                     <button 
+                      type="button"
                       onClick={addMessageLinkField}
-                      className={`w-full p-2.5 border-2 border-dashed rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${darkMode ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400' : 'border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-500'}`}
+                      className={`w-full py-1 border border-dashed rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1 ${
+                        darkMode 
+                          ? 'border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-blue-400 bg-white/[0.02]' 
+                          : 'border-slate-200 text-slate-500 hover:border-blue-400 hover:text-blue-600 bg-slate-50/50'
+                      }`}
                     >
-                      <Plus size={14} />
+                      <Plus size={11} />
                       <span>Add Another Link</span>
                     </button>
                   </div>
                 </div>
 
+                {/* Target Groups */}
                 <div>
-                  <label className={`block text-[10px] font-black uppercase tracking-widest mb-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                    Target Groups / Chat IDs (Optional)
+                  <label className={`block text-[10px] font-black uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Target Groups / Chat IDs
                   </label>
-                  <p className={`text-[11px] mb-3 ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>
-                    Leave empty to apply to all authorized groups. Or add specific Group IDs / Chat titles below:
-                  </p>
-                  <div className="flex gap-2 mb-3">
+                  <div className="flex gap-1.5 mb-1.5">
                     <div className="relative flex-1">
-                      <Users className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-500" />
+                      <Users size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" />
                       <input
                         type="text"
                         value={customGroupInput}
                         onChange={(e) => setCustomGroupInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGroup(customGroupInput); } }}
-                        placeholder="Enter Group ID or Title (e.g. -100123456789)..."
-                        className={`w-full pl-10 pr-4 py-2 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs transition ${darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'}`}
+                        placeholder="Group ID or Title (e.g. -100123456789)..."
+                        className={`w-full pl-7 pr-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none text-xs transition ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                        }`}
                       />
                     </div>
                     <button
                       type="button"
                       onClick={() => addGroup(customGroupInput)}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1"
+                      className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded-lg transition flex items-center gap-1 flex-shrink-0"
                     >
-                      <Plus size={14} /> Add Group
+                      <Plus size={11} /> Add
                     </button>
                   </div>
 
                   {newTargetGroups.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1">
                       {newTargetGroups.map((grp, idx) => (
                         <span
                           key={idx}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold ${
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
                             darkMode ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
                           }`}
                         >
-                          <Users size={12} />
-                          <span>{grp}</span>
+                          <Users size={10} />
+                          <span className="truncate max-w-[150px]">{grp}</span>
                           <button
                             type="button"
                             onClick={() => removeGroup(grp)}
-                            className="hover:text-rose-500 transition ml-1"
+                            className="hover:text-rose-500 transition ml-0.5"
                           >
-                            <X size={12} />
+                            <X size={10} />
                           </button>
                         </span>
                       ))}
                     </div>
                   ) : (
-                    <div className={`text-xs italic p-2 rounded-lg border border-dashed ${darkMode ? 'border-white/10 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
+                    <div className={`text-[10px] py-1 px-2 rounded-md border border-dashed ${darkMode ? 'border-white/10 text-slate-400' : 'border-slate-200 text-slate-500'}`}>
                       🌐 Applies to All Groups
                     </div>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className={`p-4 rounded-2xl border transition ${newAiReplyEnabled ? (darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className={`p-2 rounded-lg ${newAiReplyEnabled ? 'bg-blue-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
-                          <Sparkles size={18} />
-                        </div>
-                        <div>
-                          <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>AI Smart Reply</p>
-                          <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Use Gemini AI to enhance responses</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
-                        className={`w-12 h-6 rounded-full p-1 transition duration-300 ${newAiReplyEnabled ? 'bg-blue-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
-                      >
-                        <div className={`w-4 h-4 rounded-full bg-white transition duration-300 ${newAiReplyEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
-                      </button>
+                {/* 3 Compact Feature Toggles */}
+                <div className="grid grid-cols-3 gap-1.5 pt-1">
+                  {/* AI Smart Reply */}
+                  <button
+                    type="button"
+                    onClick={() => setNewAiReplyEnabled(!newAiReplyEnabled)}
+                    className={`p-2 rounded-lg border text-left transition ${
+                      newAiReplyEnabled 
+                        ? (darkMode ? 'bg-blue-500/20 border-blue-500/40 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700') 
+                        : (darkMode ? 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100')
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Sparkles size={13} className={newAiReplyEnabled ? 'text-blue-500' : ''} />
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded ${newAiReplyEnabled ? 'bg-blue-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-slate-200 text-slate-600')}`}>
+                        {newAiReplyEnabled ? 'ON' : 'OFF'}
+                      </span>
                     </div>
-                  </div>
+                    <p className="text-[10px] font-black tracking-tight leading-tight">AI Smart</p>
+                    <p className={`text-[8px] leading-tight truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Gemini assist</p>
+                  </button>
 
-                  <div className={`p-4 rounded-2xl border transition ${newApprovalMode ? (darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200') : (darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200')}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className={`p-2 rounded-lg ${newApprovalMode ? 'bg-amber-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-white text-slate-400')}`}>
-                          <Zap size={18} />
-                        </div>
-                        <div>
-                          <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Approval Mode</p>
-                          <p className={`text-[10px] font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Ask before sending reply</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setNewApprovalMode(!newApprovalMode)}
-                        className={`w-12 h-6 rounded-full p-1 transition duration-300 ${newApprovalMode ? 'bg-amber-500' : (darkMode ? 'bg-white/10' : 'bg-slate-300')}`}
-                      >
-                        <div className={`w-4 h-4 rounded-full bg-white transition duration-300 ${newApprovalMode ? 'translate-x-6' : 'translate-x-0'}`} />
-                      </button>
+                  {/* Notify on Hit */}
+                  <button
+                    type="button"
+                    onClick={() => setNewNotifyOnHit(!newNotifyOnHit)}
+                    className={`p-2 rounded-lg border text-left transition ${
+                      newNotifyOnHit 
+                        ? (darkMode ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700') 
+                        : (darkMode ? 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100')
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Bell size={13} className={newNotifyOnHit ? 'text-emerald-500 animate-pulse' : ''} />
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded ${newNotifyOnHit ? 'bg-emerald-500 text-white' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-slate-200 text-slate-600')}`}>
+                        {newNotifyOnHit ? 'ON' : 'OFF'}
+                      </span>
                     </div>
-                  </div>
+                    <p className="text-[10px] font-black tracking-tight leading-tight">Notify</p>
+                    <p className={`text-[8px] leading-tight truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Push alert</p>
+                  </button>
+
+                  {/* Approval Mode */}
+                  <button
+                    type="button"
+                    onClick={() => setNewApprovalMode(!newApprovalMode)}
+                    className={`p-2 rounded-lg border text-left transition ${
+                      newApprovalMode 
+                        ? (darkMode ? 'bg-amber-500/20 border-amber-500/40 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-700') 
+                        : (darkMode ? 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100')
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Zap size={13} className={newApprovalMode ? 'text-amber-500' : ''} />
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded ${newApprovalMode ? 'bg-amber-500 text-slate-950 font-black' : (darkMode ? 'bg-white/10 text-slate-400' : 'bg-slate-200 text-slate-600')}`}>
+                        {newApprovalMode ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] font-black tracking-tight leading-tight">Approval</p>
+                    <p className={`text-[8px] leading-tight truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Ask before send</p>
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div className="mt-4 flex space-x-2">
+            {/* Action Buttons */}
+            <div className="mt-3.5 pt-2.5 border-t border-white/5 flex gap-2">
               <button 
+                type="button"
                 onClick={handleSave}
-                className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-2 rounded-none font-black uppercase tracking-widest text-xs shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98] transition flex items-center justify-center space-x-2"
+                className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-1.5 px-3 rounded-lg font-black uppercase tracking-wider text-[10px] shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-1.5"
               >
-                <Zap size={14} />
-                <span>{editingKeyword ? "Update Rule" : "Create Rule"}</span>
+                <Zap size={12} />
+                <span>{editingKeyword ? "Update Rule" : "Save Rule"}</span>
               </button>
               {editingKeyword && (
                 <button 
+                  type="button"
                   onClick={onCancel}
-                  className={`px-4 py-2 rounded-none font-black uppercase tracking-widest text-xs transition ${darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                  className={`px-3 py-1.5 rounded-lg font-black uppercase tracking-wider text-[10px] transition ${
+                    darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
                 >
                   Cancel
                 </button>
