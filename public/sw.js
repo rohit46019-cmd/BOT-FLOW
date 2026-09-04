@@ -1,108 +1,105 @@
-// Service Worker Version: 1.3
-const CACHE_NAME = 'botflow-v3';
-const ASSETS = [
+const CACHE_NAME = 'botflow-cache-v2';
+const urlsToCache = [
   '/',
   '/index.html',
-  '/logo.svg',
-  '/manifest.json'
+  '/manifest.json',
+  '/pwa-192x192.png',
+  '/favicon.ico'
 ];
 
-// Install event
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    })
-  );
-});
-
-// Activate event
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))
-      );
-    })
-  );
-  return self.clients.claim();
-});
-
-// Fetch event
-self.addEventListener("fetch", (event) => {
-  if (!event.request.url.startsWith(self.location.origin)) return;
-  if (event.request.url.includes("/api/stream") || event.request.url.includes("/api/events")) return;
-  if (event.request.url.includes("/api/")) {
-    if (event.request.method !== "GET") return;
-    event.respondWith(
-      fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseClone = networkResponse.clone();
-          caches.open("botflow-api-cache-v1").then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return networkResponse;
-      }).catch(async () => {
-        const cachedResponse = await caches.match(event.request);
-        if (cachedResponse) return cachedResponse;
-        return new Response(JSON.stringify({ error: "Offline mode. Data not available." }), { status: 503, headers: { "Content-Type": "application/json" } });
-      })
-    );
-    return;
-  }
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse;
-      return fetch(event.request).then(response => {
-        if (response && response.status === 200 && response.type === "basic") {
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache));
-        }
-        return response;
+      return cache.addAll(urlsToCache).catch((err) => {
+        console.warn('SW pre-cache non-fatal warning:', err);
       });
     })
   );
 });
 
-// Push event
-self.addEventListener('push', function(event) {
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          if (cacheName !== CACHE_NAME) {
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    })
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  // Do not intercept non-GET requests or API / SSE requests
+  if (event.request.method !== 'GET' || event.request.url.includes('/api/')) {
+    return;
+  }
+
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(event.request);
+      })
+  );
+});
+
+self.addEventListener('push', (event) => {
+  let title = 'Keyword Triggered! 🎯';
+  const baseUrl = self.location.origin;
+  let options = {
+    body: 'A keyword matched in your Telegram topic.',
+    icon: `${baseUrl}/pwa-192x192.png`,
+    badge: `${baseUrl}/pwa-192x192.png`,
+    vibrate: [300, 100, 300, 100, 300],
+    tag: `botflow-alert-${Date.now()}`,
+    renotify: true,
+    requireInteraction: true,
+    timestamp: Date.now(),
+    data: { url: baseUrl + '/' }
+  };
+
   if (event.data) {
     try {
       const data = event.data.json();
-      const options = {
-        body: data.body || 'New message received',
-        icon: '/logo.svg',
-        badge: '/logo.svg',
-        data: {
-          url: data.url || '/'
-        },
-        vibrate: [100, 50, 100],
-        requireInteraction: true
-      };
-
-      event.waitUntil(
-        self.registration.showNotification(data.title || "BotFlow Premium", options)
-      );
+      if (data.title) title = data.title;
+      if (data.body) options.body = data.body;
+      if (data.url) options.data = { url: data.url.startsWith('http') ? data.url : baseUrl + data.url };
+      if (data.tag) options.tag = data.tag;
+      if (data.data) options.data = { ...options.data, ...data.data };
     } catch (e) {
-      console.error('Push error:', e);
+      options.body = event.data.text() || options.body;
     }
   }
+
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
-self.addEventListener('notificationclick', function(event) {
+self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const urlToOpen = event.notification.data?.url || '/';
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
-      for (let i = 0; i < clientList.length; i++) {
-        let client = clientList[i];
-        if (client.url === urlToOpen || client.url === new URL(urlToOpen, self.location.origin).href) {
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (let client of windowClients) {
+        if (client.url.includes(urlToOpen) && 'focus' in client) {
           return client.focus();
         }
       }
-      return clients.openWindow(urlToOpen);
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
+      }
     })
   );
 });

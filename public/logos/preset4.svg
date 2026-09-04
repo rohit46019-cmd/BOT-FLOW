@@ -1,0 +1,21 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="p4_bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#78350f" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="p4_gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#eab308" />
+      <stop offset="100%" stop-color="#ca8a04" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="28" fill="url(#p4_bg)" />
+  <!-- Shield Outline -->
+  <path d="M50 20L76 32V52C76 68 50 82 50 82C50 82 24 68 24 52V32L50 20Z" fill="#1e1b4b" stroke="url(#p4_gold)" stroke-width="3" />
+  <!-- Crown / Star inside -->
+  <path d="M36 58L42 42L50 50L58 42L64 58H36Z" fill="url(#p4_gold)" />
+  <circle cx="42" cy="39" r="2" fill="#fef08a" />
+  <circle cx="50" cy="46" r="2" fill="#fef08a" />
+  <circle cx="58" cy="39" r="2" fill="#fef08a" />
+</svg>

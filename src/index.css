@@ -13,6 +13,10 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply font-sans text-[13px] antialiased transition-colors duration-500;
   }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check, Bell, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check, Bell, ShieldCheck, ChevronDown, ChevronUp, Copy } from 'lucide-react';
 
 export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkMode, index }: any) => {
   const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
@@ -81,6 +82,36 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const [newNotifyOnHit, setNewNotifyOnHit] = useState(false);
   const [newTargetGroups, setNewTargetGroups] = useState<string[]>([]);
   const [customGroupInput, setCustomGroupInput] = useState("");
+  const [availableGroups, setAvailableGroups] = useState<{ id: string; title: string }[]>([]);
+  const [showGroupDropdown, setShowGroupDropdown] = useState(false);
+  const [groupSearchTerm, setGroupSearchTerm] = useState("");
+
+  useEffect(() => {
+    fetch("/api/groups")
+      .then(res => res.json())
+      .then(data => {
+        if (data && Array.isArray(data.groups)) {
+          setAvailableGroups(data.groups);
+        }
+      })
+      .catch(err => console.error("Error fetching groups:", err));
+  }, []);
+
+  const toggleSelectGroup = (groupIdOrTitle: string) => {
+    if (newTargetGroups.includes(groupIdOrTitle)) {
+      setNewTargetGroups(newTargetGroups.filter(g => g !== groupIdOrTitle));
+    } else {
+      setNewTargetGroups([...newTargetGroups, groupIdOrTitle]);
+    }
+  };
+
+  const getGroupName = (idOrTitle: string) => {
+    const found = availableGroups.find(g => g.id === idOrTitle || g.title === idOrTitle);
+    if (found && found.title && found.title !== found.id) {
+      return found.title;
+    }
+    return idOrTitle;
+  };
 
   useEffect(() => {
     if (editingKeyword) {
@@ -117,10 +148,23 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
     const splitGroups = group.split(',').map(g => g.trim()).filter(g => g);
     let added = false;
     const nextGroups = [...newTargetGroups];
+    const normalize = (id: string) => id.toString().trim().replace(/^-100|^ -100|^-/, "");
+
     for (const g of splitGroups) {
-      if (!nextGroups.includes(g)) {
-        nextGroups.push(g);
-        added = true;
+      if (availableGroups.length > 0) {
+        const normG = normalize(g);
+        const match = availableGroups.find(ag => ag.id === g || ag.title === g || normalize(ag.id) === normG);
+        if (!match) {
+          toast.error(`"${g}" Settings mein registered Target Group nahi hai! Sirf Settings wale groups allow hain.`);
+          continue;
+        }
+        if (!nextGroups.includes(match.id)) {
+          nextGroups.push(match.id);
+          added = true;
+        }
+      } else {
+        toast.error("Pehle Settings mein Target Group IDs configure karein!");
+        return;
       }
     }
     if (added) {
@@ -234,9 +278,27 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                     <label className={`block text-[10px] font-black uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                       Keywords to Match
                     </label>
-                    <span className={`text-[9px] font-mono ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                      {newKeywords.filter(k => k.trim()).length} keyword(s)
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {newKeywords.some(k => k.trim()) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const textToCopy = newKeywords.filter(k => k.trim()).join(', ');
+                            navigator.clipboard.writeText(textToCopy);
+                          }}
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition flex items-center gap-0.5 border ${
+                            darkMode ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/30' : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                          }`}
+                          title="Copy typed keywords to clipboard"
+                        >
+                          <Copy size={10} />
+                          <span>Copy List</span>
+                        </button>
+                      )}
+                      <span className={`text-[9px] font-mono ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                        {newKeywords.filter(k => k.trim()).length} keyword(s)
+                      </span>
+                    </div>
                   </div>
                   <div className="space-y-1.5">
                     {newKeywords.map((kw, index) => (
@@ -378,11 +440,20 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                 </div>
 
                 {/* Target Groups */}
-                <div>
-                  <label className={`block text-[10px] font-black uppercase tracking-wider mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                    Target Groups / Chat IDs
-                  </label>
-                  <div className="flex gap-1.5 mb-1.5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className={`block text-[10px] font-black uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Target Groups
+                    </label>
+                    <span className={`text-[9px] font-mono font-bold ${
+                      newTargetGroups.length === 0 ? 'text-emerald-500' : 'text-indigo-500'
+                    }`}>
+                      {newTargetGroups.length === 0 ? "All Groups" : `${newTargetGroups.length} Selected`}
+                    </span>
+                  </div>
+
+                  {/* Manual Add Input */}
+                  <div className="flex gap-1.5">
                     <div className="relative flex-1">
                       <Users size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" />
                       <input
@@ -390,7 +461,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                         value={customGroupInput}
                         onChange={(e) => setCustomGroupInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGroup(customGroupInput); } }}
-                        placeholder="Group ID or Title (e.g. -100123456789)..."
+                        placeholder="Enter registered Group ID or Name..."
                         className={`w-full pl-7 pr-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none text-xs transition ${
                           darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
                         }`}
@@ -405,32 +476,91 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                     </button>
                   </div>
 
-                  {newTargetGroups.length > 0 ? (
-                    <div className="flex flex-wrap gap-1">
-                      {newTargetGroups.map((grp, idx) => (
-                        <span
-                          key={idx}
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                            darkMode ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                          }`}
-                        >
-                          <Users size={10} />
-                          <span className="truncate max-w-[150px]">{grp}</span>
+                  {/* Available Groups List for Easy 1-Click Multi-Selection */}
+                  {availableGroups.length > 0 ? (
+                    <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto p-1.5 rounded-lg border bg-black/5 dark:bg-white/5">
+                      <button
+                        type="button"
+                        onClick={() => setNewTargetGroups([])}
+                        className={`px-2 py-1 rounded-md text-[10px] font-bold transition flex items-center gap-1 border ${
+                          newTargetGroups.length === 0
+                            ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                            : (darkMode ? 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100')
+                        }`}
+                      >
+                        <Users size={10} />
+                        <span>All Groups</span>
+                        {newTargetGroups.length === 0 && <Check size={11} className="text-emerald-300" />}
+                      </button>
+                      {availableGroups.map((g) => {
+                        const isSelected = newTargetGroups.includes(g.id) || newTargetGroups.includes(g.title);
+                        return (
                           <button
+                            key={g.id}
                             type="button"
-                            onClick={() => removeGroup(grp)}
-                            className="hover:text-rose-500 transition ml-0.5"
+                            onClick={() => toggleSelectGroup(g.id)}
+                            className={`px-2 py-1 rounded-md text-[10px] font-bold transition flex items-center gap-1 border ${
+                              isSelected
+                                ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
+                                : (darkMode ? 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100')
+                            }`}
                           >
-                            <X size={10} />
+                            <Users size={10} />
+                            <span className="truncate max-w-[140px]">{g.title !== g.id ? g.title : `Group ${g.id}`}</span>
+                            {isSelected ? <Check size={11} className="text-emerald-300" /> : <Plus size={10} className="opacity-50" />}
                           </button>
-                        </span>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
-                    <div className={`text-[10px] py-1 px-2 rounded-md border border-dashed ${darkMode ? 'border-white/10 text-slate-400' : 'border-slate-200 text-slate-500'}`}>
-                      🌐 Applies to All Groups
+                    <div className={`p-2.5 rounded-lg border text-xs ${
+                      darkMode ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-800'
+                    }`}>
+                      <p className="font-bold text-[10.5px]">⚠️ Settings mein koi Target Group ID configure nahi hai</p>
+                      <p className="text-[9.5px] opacity-80 mt-0.5">Bot strictly sirf Settings mein add kiye gaye groups mein reply karta hai. Kripya pehle <b>Settings &gt; Target Group IDs</b> mein group add karein.</p>
                     </div>
                   )}
+
+                  {/* Selected Groups Pills */}
+                  <div className="space-y-1">
+                    <div className={`flex flex-wrap gap-1 p-1.5 rounded-lg border ${
+                      newTargetGroups.length === 0 
+                        ? 'bg-emerald-500/5 border-emerald-500/20' 
+                        : 'bg-indigo-500/5 border-indigo-500/20'
+                    }`}>
+                      {newTargetGroups.length === 0 ? (
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold shadow-sm ${
+                          darkMode ? 'bg-emerald-600/30 text-emerald-200 border border-emerald-400/30' : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                        }`}>
+                          <Users size={11} className="text-emerald-500" />
+                          <span>All Target Groups</span>
+                        </span>
+                      ) : (
+                        newTargetGroups.map((grp, idx) => {
+                          const displayName = getGroupName(grp);
+                          return (
+                            <span
+                              key={idx}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold shadow-sm ${
+                                darkMode ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-400/30' : 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                              }`}
+                            >
+                              <Users size={11} className="text-indigo-500" />
+                              <span className="truncate max-w-[160px]" title={grp}>{displayName}</span>
+                              <button
+                                type="button"
+                                onClick={() => removeGroup(grp)}
+                                className="hover:text-rose-500 transition ml-1 p-0.5"
+                                title="Remove group"
+                              >
+                                <X size={11} />
+                              </button>
+                            </span>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {/* 3 Compact Feature Toggles */}

@@ -1,11 +1,18 @@
-import React, { memo, useState } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Zap, Plus, Trash2, CheckCircle2, Image as ImageIcon, Bell, Send, Database, Download, Upload, Save, RefreshCw, FileText } from 'lucide-react';
+import { Bot, Zap, Plus, Trash2, CheckCircle2, Image as ImageIcon, Bell, Send, Database, Download, Upload, Save, RefreshCw, FileText, Eye, EyeOff, ExternalLink, Sparkles, Smartphone } from 'lucide-react';
 import ActivityLogs from './ActivityLogs';
+import { LOGO_PRESETS } from './LogoSelectorModal';
 
 interface SettingsPanelProps {
   darkMode: boolean;
   autoReplyInput: string;
+  appLogoInput: string;
+  setAppLogoInput: (val: string) => void;
+  deferredPrompt: any;
+  handleInstallApp: () => void;
+  onOpenLogoSelector?: () => void;
+  onOpenInstallGuide?: () => void;
   setAutoReplyInput: (val: string) => void;
   autoReply2Enabled: boolean;
   setAutoReply2Enabled: (val: boolean) => void;
@@ -61,6 +68,7 @@ interface SettingsPanelProps {
   telegramBotToken: string;
   setTelegramBotToken: (val: string) => void;
   handleUpdateSettings: () => void;
+  handleForceUpdateAndPurge?: () => void;
   saving: boolean;
   direction: number;
   slideVariants: any;
@@ -93,6 +101,12 @@ interface SettingsPanelProps {
 const SettingsPanel: React.FC<SettingsPanelProps> = ({
   darkMode,
   autoReplyInput,
+  appLogoInput,
+  setAppLogoInput,
+  deferredPrompt,
+  handleInstallApp,
+  onOpenLogoSelector,
+  onOpenInstallGuide,
   setAutoReplyInput,
   autoReply2Enabled,
   setAutoReply2Enabled,
@@ -148,6 +162,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   telegramBotToken,
   setTelegramBotToken,
   handleUpdateSettings,
+  handleForceUpdateAndPurge,
   saving,
   direction,
   slideVariants,
@@ -176,6 +191,25 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   setActiveTab = () => {},
 }) => {
   const [settingsSubTab, setSettingsSubTab] = useState<'settings' | 'logs'>('settings');
+  const [showToken, setShowToken] = useState(false);
+  const [botInfo, setBotInfo] = useState<{ id: number; firstName: string; username: string } | null>(null);
+
+  useEffect(() => {
+    const fetchBotInfo = async () => {
+      try {
+        const res = await fetch('/api/bot-info');
+        const data = await res.json();
+        if (data.bot) {
+          setBotInfo(data.bot);
+        } else {
+          setBotInfo(null);
+        }
+      } catch (err) {
+        console.error("Failed to fetch bot info", err);
+      }
+    };
+    fetchBotInfo();
+  }, [telegramBotToken]); // Re-fetch if token changes, though in reality we only know it after a save
 
   return (
     <motion.div
@@ -247,6 +281,147 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
       ) : (
         <>
+      {/* App Logo & Visual Branding Card */}
+      <div className={`p-4 rounded-xl border transition-all duration-300 ${darkMode ? 'bg-neutral-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xs'}`}>
+        <div className="flex items-center justify-between mb-3.5">
+          <div className="flex items-center space-x-2">
+            <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600'}`}>
+              <Sparkles size={15} />
+            </div>
+            <div>
+              <h3 className={`text-[11px] font-bold uppercase tracking-wider ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                App Logo & Visual Branding
+              </h3>
+              <p className="text-[9.5px] text-slate-400">Choose a curated icon or upload your custom logo</p>
+            </div>
+          </div>
+          {onOpenLogoSelector && (
+            <button
+              type="button"
+              onClick={onOpenLogoSelector}
+              className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center space-x-1"
+            >
+              <span>Full Gallery</span>
+            </button>
+          )}
+        </div>
+
+        {/* Current Active Preview */}
+        <div className={`flex items-center justify-between p-3 rounded-xl border mb-3.5 ${darkMode ? 'bg-black/30 border-white/10' : 'bg-slate-50 border-slate-200'}`}>
+          <div className="flex items-center space-x-3">
+            <div className="w-12 h-12 rounded-xl bg-black border border-white/20 p-1 flex items-center justify-center shrink-0 shadow-md">
+              <img 
+                src={appLogoInput || '/pwa-192x192.png'} 
+                alt="Active Logo" 
+                className="w-full h-full object-contain rounded-lg" 
+              />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[9px] font-bold uppercase text-slate-400 block tracking-wider">Active Logo</span>
+              <span className="text-xs font-bold truncate block">
+                {appLogoInput 
+                  ? (appLogoInput.startsWith('data:') ? 'Custom Uploaded Logo' : 'Selected Preset Icon') 
+                  : 'BotFlow Default Logo'}
+              </span>
+              <span className="text-[9.5px] text-emerald-400 font-medium">⚡ Auto-syncs to outside Home Screen, Tab & APK Icon</span>
+            </div>
+          </div>
+
+          {appLogoInput && (
+            <button
+              type="button"
+              onClick={() => setAppLogoInput('')}
+              className="text-[10px] text-rose-400 hover:text-rose-300 px-2.5 py-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 flex items-center space-x-1 transition"
+            >
+              <Trash2 size={11} />
+              <span>Reset</span>
+            </button>
+          )}
+        </div>
+
+        {/* Curated Presets Selection */}
+        <div className="space-y-1.5 mb-3.5">
+          <label className={`text-[9px] font-bold uppercase tracking-wider block ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            Pick From Curated Logos
+          </label>
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            {LOGO_PRESETS.map((p) => {
+              const isSelected = (appLogoInput === p.url) || (!appLogoInput && p.id === 'default');
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setAppLogoInput(p.url)}
+                  className={`p-2 rounded-xl border flex flex-col items-center gap-1.5 transition-all text-center ${
+                    isSelected
+                      ? 'border-emerald-500 bg-emerald-500/20 ring-1 ring-emerald-500 shadow-sm scale-102'
+                      : darkMode
+                      ? 'border-white/10 bg-black/20 hover:bg-white/5 hover:border-white/20'
+                      : 'border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300'
+                  }`}
+                  title={p.name}
+                >
+                  <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center bg-black/30">
+                    <img src={p.url} alt={p.name} className="w-full h-full object-contain" />
+                  </div>
+                  <span className="text-[8.5px] font-semibold truncate max-w-full leading-tight">{p.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Custom Upload Form */}
+        <div className="space-y-1.5">
+          <label className={`text-[9px] font-bold uppercase tracking-wider block ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            Or Upload Your Custom Image (From Gallery / Phone)
+          </label>
+          <input 
+            type="file" 
+            accept="image/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                  const img = new Image();
+                  img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const MAX_DIM = 512;
+                    let width = img.width;
+                    let height = img.height;
+                    if (width > height) {
+                      if (width > MAX_DIM) {
+                        height = Math.round((height * MAX_DIM) / width);
+                        width = MAX_DIM;
+                      }
+                    } else {
+                      if (height > MAX_DIM) {
+                        width = Math.round((width * MAX_DIM) / height);
+                        height = MAX_DIM;
+                      }
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    if (ctx) {
+                      ctx.drawImage(img, 0, 0, width, height);
+                      setAppLogoInput(canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.9));
+                    }
+                  };
+                  img.src = ev.target?.result as string;
+                };
+                reader.readAsDataURL(file);
+              }
+            }}
+            className={`w-full text-[10px] p-2 border rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none transition ${darkMode ? 'bg-black/30 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+          />
+          <p className={`text-[9.5px] leading-relaxed ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+            Upload any image (PNG, JPG, SVG, WebP). Image is automatically optimized to 512x512. Remember to click 'Save Settings' below to persist your choice!
+          </p>
+        </div>
+      </div>
+
       {/* General Settings Card */}
       <div className={`p-4 rounded-xl border transition-all duration-300 ${darkMode ? 'bg-neutral-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xs'}`}>
         <div className="flex items-center space-x-2 mb-4">
@@ -270,20 +445,63 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
               Separate multiple groups with commas. The bot will automatically start, reply to messages, and broadcast across all configured groups simultaneously.
             </p>
           </div>
-          <div className="space-y-1.5">
-            <label className={`text-[9px] font-bold uppercase tracking-wider block ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Telegram Bot Token</label>
-            <input
-              type="password"
-              value={telegramBotToken}
-              onChange={(e) => setTelegramBotToken(e.target.value)}
-              placeholder="Enter bot token from @BotFather"
-              className={`w-full p-2 border rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none text-xs transition ${darkMode ? 'bg-black/30 border-white/10 text-white placeholder-white/15' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'}`}
-            />
-            <p className={`text-[9.5px] leading-relaxed ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+
+          <div className="space-y-1.5 border-t pt-3 border-white/5">
+            <div className="flex items-center justify-between">
+              <label className={`text-[9px] font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Telegram Bot Token</label>
+            </div>
+            <div className="relative">
+              <input
+                type={showToken ? "text" : "password"}
+                value={telegramBotToken}
+                onChange={(e) => setTelegramBotToken(e.target.value)}
+                placeholder="Enter bot token from @BotFather"
+                className={`w-full p-2 pr-10 border rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none text-xs transition ${darkMode ? 'bg-black/30 border-white/10 text-white placeholder-white/15' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'}`}
+              />
+              <button 
+                type="button"
+                onClick={() => setShowToken(!showToken)}
+                className={`absolute inset-y-0 right-0 px-3 flex items-center justify-center transition-colors ${darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-800'}`}
+              >
+                {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+            
+            {botInfo && (
+              <div className={`mt-2 p-2.5 rounded-lg flex items-center justify-between border ${darkMode ? 'bg-emerald-900/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200/60'}`}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${darkMode ? 'bg-emerald-600' : 'bg-emerald-500 shadow-sm'}`}>
+                    {botInfo.firstName.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className={`text-xs font-bold leading-tight ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>{botInfo.firstName}</p>
+                    <p className={`text-[10px] ${darkMode ? 'text-emerald-400/70' : 'text-emerald-600/80'}`}>@{botInfo.username}</p>
+                  </div>
+                </div>
+                <a 
+                  href={`https://t.me/${botInfo.username}`} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className={`p-1.5 rounded-md transition-colors ${darkMode ? 'hover:bg-emerald-500/20 text-emerald-400' : 'hover:bg-emerald-100 text-emerald-600'}`}
+                >
+                  <ExternalLink size={14} />
+                </a>
+              </div>
+            )}
+
+            {!botInfo && telegramBotToken && (
+              <p className={`text-[9.5px] leading-relaxed ${darkMode ? 'text-rose-400/80' : 'text-rose-500'}`}>
+                Valid token required to fetch bot info. Please check your token and save settings.
+              </p>
+            )}
+
+            
+            <p className={`text-[9.5px] leading-relaxed mt-1 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
               Required for topic creation logs and other bot features. Get this from @BotFather on Telegram.
             </p>
           </div>
-          <div className="space-y-1.5">
+          
+          <div className="space-y-1.5 border-t pt-3 border-white/5">
             <label className={`text-[9px] font-bold uppercase tracking-wider block ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Welcome Message</label>
             <textarea
               value={autoReplyInput}
@@ -324,6 +542,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </div>
               </div>
             )}
+
           </div>
           
           <div className="flex gap-3">
@@ -450,6 +669,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </div>
             </motion.div>
           )}
+
         </AnimatePresence>
       </div>
 
@@ -536,6 +756,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       </div>
                     </motion.div>
                   )}
+
                 </AnimatePresence>
               </div>
 
@@ -576,6 +797,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </div>
             </motion.div>
           )}
+
         </AnimatePresence>
       </div>
 
@@ -619,6 +841,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   <Send size={12} />
                 </button>
               )}
+
               <button
                 onClick={requestNotificationPermission}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none shadow-inner ${Notification.permission === 'granted' ? 'bg-emerald-500' : 'bg-slate-300'}`}
@@ -662,6 +885,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       {notificationStyle === style.id && (
                         <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
                       )}
+
                     </div>
                     <p className={`text-[8.5px] leading-normal ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{style.desc}</p>
                   </div>
@@ -752,6 +976,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </button>
             </motion.div>
           )}
+
         </AnimatePresence>
       </div>
     </div>
@@ -784,26 +1009,77 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
           <input type="file" ref={fileInputRef} onChange={handleImportData} accept=".json" className="hidden" />
         </div>
       </div>
-      </>
+
+      {/* System Update & Cache Maintenance Card */}
+      {handleForceUpdateAndPurge && (
+        <div className={`p-4 rounded-xl border transition duration-300 ${darkMode ? 'bg-neutral-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xs'}`}>
+          <div className="flex items-center space-x-2 mb-2">
+            <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600'}`}>
+              <RefreshCw size={15} />
+            </div>
+            <div>
+              <h3 className={`text-[11px] font-bold uppercase tracking-wider ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>App Updates & Cache</h3>
+              <p className="text-[10px] text-slate-400">Force clear stale cache and sync latest features</p>
+            </div>
+          </div>
+          
+          <button 
+            type="button"
+            onClick={handleForceUpdateAndPurge}
+            className="w-full mt-2 flex items-center justify-center space-x-2 py-2.5 px-3 rounded-lg border text-xs font-bold uppercase tracking-wider transition bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border-emerald-500/30 active:scale-98 shadow-sm"
+          >
+            <RefreshCw size={14} className="text-emerald-400 shrink-0" />
+            <span>Update App & Flush Cache</span>
+          </button>
+          
+          <button 
+            type="button"
+            onClick={() => {
+              if (deferredPrompt) {
+                handleInstallApp();
+              } else if (onOpenInstallGuide) {
+                onOpenInstallGuide();
+              }
+            }}
+            className="w-full mt-3 flex items-center justify-center space-x-2 py-2.5 px-3 rounded-lg border text-xs font-bold uppercase tracking-wider transition bg-gradient-to-r from-blue-600/30 to-emerald-600/30 text-white hover:brightness-110 border-blue-500/30 active:scale-98 shadow-sm"
+          >
+            <Download size={14} className="text-emerald-400 shrink-0" />
+            <span>{deferredPrompt ? 'Install App to Home Screen' : 'Install App / APK Download Guide'}</span>
+          </button>
+
+        </div>
       )}
 
-      {/* Save Button - only show when in settings tab */}
+      </>
+      )}
+      {/* Save Button - cleanly docked at bottom of settings */}
       {settingsSubTab === 'settings' && (
-        <div className="fixed bottom-32 left-4 right-4 z-40 max-w-lg mx-auto">
-          <motion.button
-            whileHover={{ scale: 1.01, y: -1 }}
-            whileTap={{ scale: 0.99 }}
-            onClick={handleUpdateSettings}
-            disabled={saving}
-            className={`w-full py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] transition-all shadow-md flex items-center justify-center space-x-1.5 ${darkMode ? 'bg-emerald-600 text-white shadow-emerald-950/40' : 'bg-emerald-500 text-white shadow-emerald-500/20'}`}
-          >
-            {saving ? (
-              <RefreshCw className="animate-spin" size={13} />
-            ) : (
-              <Save size={13} />
-            )}
-            <span>{saving ? 'Saving...' : 'Save Settings'}</span>
-          </motion.button>
+        <div className="pt-6 pb-6 sticky bottom-16 sm:bottom-20 z-30">
+          <div className={`p-3.5 rounded-2xl border backdrop-blur-xl shadow-2xl flex items-center justify-between gap-3 ${darkMode ? 'bg-neutral-950/95 border-white/15' : 'bg-white/95 border-slate-200 shadow-emerald-500/10'}`}>
+            <div className="flex flex-col pl-1 min-w-0">
+              <span className={`text-[11px] font-black uppercase tracking-wider truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                Configuration
+              </span>
+              <span className="text-[10px] text-slate-400 truncate">
+                Save your changes for this account
+              </span>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={handleUpdateSettings}
+              disabled={saving}
+              className={`py-2.5 px-5 rounded-xl font-black uppercase tracking-wider text-xs transition-all shadow-lg flex items-center justify-center space-x-2 shrink-0 ${darkMode ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-emerald-950/50 hover:brightness-110' : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-emerald-500/25 hover:brightness-105'}`}
+            >
+              {saving ? (
+                <RefreshCw className="animate-spin" size={14} />
+              ) : (
+                <Save size={14} />
+              )}
+
+              <span>{saving ? 'Saving...' : 'Save Settings'}</span>
+            </motion.button>
+          </div>
         </div>
       )}
     </motion.div>

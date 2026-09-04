@@ -18,6 +18,9 @@ import MediaManager from './components/MediaManager';
 import UserManager from './components/UserManager';
 import AddKeywordSection from './components/AddKeywordSection';
 import ApprovalDashboard from './components/ApprovalDashboard';
+import ProfileSelector from './components/ProfileSelector';
+import { LogoSelectorModal } from './components/LogoSelectorModal';
+import { InstallAppModal } from './components/InstallAppModal';
 import { 
   MessageSquare, 
   LayoutGrid,
@@ -38,6 +41,9 @@ import {
   LayoutDashboard,
   Sun,
   Moon,
+  MoonStar,
+  SunMedium,
+  SunMoon,
   Image as ImageIcon,
   X,
   Search,
@@ -87,6 +93,7 @@ import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, 
 
 interface Stats {
   topicCount: number;
+  appLogo?: string;
   todayTopicCount: number;
   todayPhotoSentStats?: {
     count: number;
@@ -191,7 +198,21 @@ interface HeatmapItem {
   value: number;
 }
 
-const TABS = ['dashboard', 'analytics', 'keywords', 'broadcast', 'settings', 'tester', 'user', 'logs', 'media', 'insights', 'photo_stats', 'catchup', 'approvals'] as const;
+const TABS = [
+  'dashboard',   // 0: Home
+  'keywords',    // 1: Rules
+  'approvals',   // 2: Check
+  'broadcast',   // 3: Cast
+  'settings',    // 4: Settings
+  'analytics',   // 5
+  'tester',      // 6
+  'media',       // 7
+  'insights',    // 8
+  'user',        // 9
+  'logs',        // 10
+  'photo_stats', // 11
+  'catchup',     // 12
+] as const;
 type TabType = typeof TABS[number];
 
 const TabButton = ({ 
@@ -212,27 +233,28 @@ const TabButton = ({
   darkMode: boolean
 }) => {
   const isActive = activeTab === id;
-  const colors: Record<TabType, { bg: string, text: string, glow: string }> = {
-    dashboard: { bg: 'from-emerald-400 to-emerald-600', text: 'text-emerald-500', glow: 'shadow-emerald-500/40' },
-    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-500', glow: 'shadow-cyan-500/40' },
-    keywords: { bg: 'from-blue-400 to-blue-600', text: 'text-blue-500', glow: 'shadow-blue-500/40' },
-    broadcast: { bg: 'from-purple-400 to-purple-600', text: 'text-purple-500', glow: 'shadow-purple-500/40' },
-    settings: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' },
-    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-500', glow: 'shadow-orange-500/40' },
-    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-500', glow: 'shadow-pink-500/40' },
-    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-500', glow: 'shadow-slate-500/40' },
-    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-500', glow: 'shadow-indigo-500/40' },
-    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/40' },
-    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' },
-    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-500', glow: 'shadow-rose-500/40' },
-    approvals: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-500', glow: 'shadow-amber-500/40' }
+  const colors: Record<TabType, { bg: string, text: string, glow: string, ring: string }> = {
+    dashboard: { bg: 'from-blue-600 via-indigo-600 to-violet-600', text: 'text-indigo-400', glow: 'shadow-indigo-500/40', ring: 'ring-indigo-500/40' },
+    keywords: { bg: 'from-fuchsia-600 via-purple-600 to-indigo-600', text: 'text-fuchsia-400', glow: 'shadow-fuchsia-500/40', ring: 'ring-purple-500/40' },
+    approvals: { bg: 'from-emerald-500 via-teal-500 to-cyan-600', text: 'text-emerald-400', glow: 'shadow-emerald-500/40', ring: 'ring-emerald-500/40' },
+    broadcast: { bg: 'from-amber-500 via-orange-500 to-rose-600', text: 'text-orange-400', glow: 'shadow-orange-500/40', ring: 'ring-orange-500/40' },
+    settings: { bg: 'from-cyan-500 via-sky-500 to-blue-600', text: 'text-cyan-400', glow: 'shadow-cyan-500/40', ring: 'ring-cyan-500/40' },
+    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-400', glow: 'shadow-cyan-500/40', ring: 'ring-cyan-500/30' },
+    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-400', glow: 'shadow-orange-500/40', ring: 'ring-orange-500/30' },
+    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-400', glow: 'shadow-pink-500/40', ring: 'ring-pink-500/30' },
+    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-400', glow: 'shadow-slate-500/40', ring: 'ring-slate-500/30' },
+    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-400', glow: 'shadow-indigo-500/40', ring: 'ring-indigo-500/30' },
+    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-400', glow: 'shadow-rose-500/40', ring: 'ring-rose-500/30' },
+    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-400', glow: 'shadow-amber-500/40', ring: 'ring-amber-500/30' },
+    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-400', glow: 'shadow-rose-500/40', ring: 'ring-rose-500/30' }
   };
 
   const theme = colors[id] || colors.dashboard;
 
   return (
-    <button
+    <motion.button
       type="button"
+      whileTap={{ scale: 0.92 }}
       onClick={() => {
         const currentIndex = TABS.indexOf(activeTab);
         const newIndex = TABS.indexOf(id);
@@ -241,20 +263,24 @@ const TabButton = ({
           setActiveTab(id);
         }
       }}
-      className={`flex flex-col items-center justify-center py-1 px-1.5 sm:px-2.5 rounded-full transition-all duration-300 relative group ${
+      className={`flex flex-col items-center justify-center py-1 px-1.5 sm:px-2.5 rounded-2xl transition-all duration-300 relative group cursor-pointer ${
         isActive 
           ? (darkMode ? "text-white" : "text-slate-900") 
           : (darkMode ? "text-slate-400 hover:text-white" : "text-slate-500 hover:text-slate-900")
       }`}
     >
-      <div className={`p-1.5 rounded-full transition-all duration-300 flex items-center justify-center ${
+      <div className={`p-1.5 sm:p-2 rounded-xl transition-all duration-300 flex items-center justify-center relative ${
         isActive 
-          ? `bg-gradient-to-tr ${theme.bg} text-white shadow-md ${theme.glow} scale-105` 
-          : `group-hover:bg-slate-800/20 dark:group-hover:bg-white/10`
+          ? `bg-gradient-to-tr ${theme.bg} text-white shadow-lg ${theme.glow} scale-110 ring-2 ${theme.ring}` 
+          : `group-hover:bg-slate-800/30 dark:group-hover:bg-white/10`
       }`}>
-        <Icon strokeWidth={2.2} className={`w-4 h-4 transition-transform duration-300 ${isActive ? "scale-105" : ""}`} />
+        <Icon strokeWidth={isActive ? 2.5 : 2} className={`w-4 h-4 transition-transform duration-300 ${isActive ? "scale-105" : ""}`} />
       </div>
-      <span className={`text-[9px] font-extrabold tracking-tight mt-0.5 transition-all ${isActive ? "opacity-100 font-black" : "opacity-60"}`}>
+      <span className={`text-[9.5px] font-bold tracking-tight mt-1 transition-all ${
+        isActive 
+          ? `${darkMode ? 'text-white font-black' : 'text-slate-950 font-black'}` 
+          : "opacity-65"
+      }`}>
         {label}
       </span>
       {isActive && (
@@ -264,7 +290,7 @@ const TabButton = ({
           transition={{ type: "spring", stiffness: 500, damping: 35 }}
         />
       )}
-    </button>
+    </motion.button>
   );
 };
 
@@ -278,9 +304,12 @@ const useDebounce = (value: any, delay: number) => {
 };
 
 export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const profileId = localStorage.getItem('currentProfileId') || 'default';
+  const scopedKey = `${profileId}_${key}`;
+  
   const [state, setState] = useState<T>(() => {
     try {
-      const cached = localStorage.getItem(key);
+      const cached = localStorage.getItem(scopedKey);
       if (cached) return JSON.parse(cached);
     } catch (e) {
       console.warn('Error reading from localStorage', e);
@@ -290,73 +319,76 @@ export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispa
 
   useEffect(() => {
     try {
-      localStorage.setItem(key, JSON.stringify(state));
+      localStorage.setItem(scopedKey, JSON.stringify(state));
     } catch (e) {
       console.warn('Error writing to localStorage', e);
     }
-  }, [key, state]);
+  }, [scopedKey, state]);
 
   return [state, setState];
 }
 
 export default function App() {
   const [stats, setStats] = useCachedState<Stats | null>("botflow_stats", null);
-  const [targetGroupId, setTargetGroupId] = useState("");
-  const [telegramBotToken, setTelegramBotToken] = useState("");
-  const [autoReplyInput, setAutoReplyInput] = useState("");
-  const [autoReply2Enabled, setAutoReply2Enabled] = useState(false);
-  const [autoReply2Input, setAutoReply2Input] = useState("");
-  const [autoReply2DelayInput, setAutoReply2DelayInput] = useState(1);
-  const [delaySecondsInput, setDelaySecondsInput] = useState(0);
-  const [keywordDelaySecondsInput, setKeywordDelaySecondsInput] = useState(0);
-  const [apiIdInput, setApiIdInput] = useState("");
-  const [apiHashInput, setApiHashInput] = useState("");
-  const [photoReplyEnabled, setPhotoReplyEnabled] = useState(false);
-  const [photoReplyMessage, setPhotoReplyMessage] = useState("");
-  const [photoReplyMessage2Enabled, setPhotoReplyMessage2Enabled] = useState(false);
-  const [photoReplyMessage2, setPhotoReplyMessage2] = useState("");
+  const [targetGroupId, setTargetGroupId] = useCachedState("botflow_targetGroupId", "");
+  const [telegramBotToken, setTelegramBotToken] = useCachedState("botflow_telegramBotToken", "");
+  const [autoReplyInput, setAutoReplyInput] = useCachedState("botflow_autoReplyInput", "");
+  const [appLogoInput, setAppLogoInput] = useCachedState("botflow_appLogoInput", "");
+  const [autoReply2Enabled, setAutoReply2Enabled] = useCachedState("botflow_autoReply2Enabled", false);
+  const [autoReply2Input, setAutoReply2Input] = useCachedState("botflow_autoReply2Input", "");
+  const [autoReply2DelayInput, setAutoReply2DelayInput] = useCachedState("botflow_autoReply2DelayInput", 1);
+  const [delaySecondsInput, setDelaySecondsInput] = useCachedState("botflow_delaySecondsInput", 0);
+  const [keywordDelaySecondsInput, setKeywordDelaySecondsInput] = useCachedState("botflow_keywordDelaySecondsInput", 0);
+  const [apiIdInput, setApiIdInput] = useCachedState("botflow_apiIdInput", "");
+  const [apiHashInput, setApiHashInput] = useCachedState("botflow_apiHashInput", "");
+  const [photoReplyEnabled, setPhotoReplyEnabled] = useCachedState("botflow_photoReplyEnabled", false);
+  const [photoReplyMessage, setPhotoReplyMessage] = useCachedState("botflow_photoReplyMessage", "");
+  const [photoReplyMessage2Enabled, setPhotoReplyMessage2Enabled] = useCachedState("botflow_photoReplyMessage2Enabled", false);
+  const [photoReplyMessage2, setPhotoReplyMessage2] = useCachedState("botflow_photoReplyMessage2", "");
+  const [topicIcon, setTopicIcon] = useCachedState("botflow_topicIcon", "✅");
+  const [topicRenameEmoji, setTopicRenameEmoji] = useCachedState("botflow_topicRenameEmoji", "🛑");
+  const [topicRenameKeywords, setTopicRenameKeywords] = useCachedState("botflow_topicRenameKeywords", "");
+  const [topicRenameMatchMode, setTopicRenameMatchMode] = useCachedState<'exact' | 'partial'>("botflow_topicRenameMatchMode", 'exact');
+  const [notificationSoundEnabled, setNotificationSoundEnabled] = useCachedState("botflow_notificationSoundEnabled", true);
+  const [notificationSoundType, setNotificationSoundType] = useCachedState("botflow_notificationSoundType", "default");
+  const [autoResetKeywords, setAutoResetKeywords] = useCachedState("botflow_autoResetKeywords", true);
+  const [autoBlockKeywords, setAutoBlockKeywords] = useCachedState<AutoBlockKeyword[]>("botflow_autoBlockKeywords", []);
+  const [aiModeEnabled, setAiModeEnabled] = useCachedState("botflow_aiModeEnabled", false);
+  const [aiPersona, setAiPersona] = useCachedState("botflow_aiPersona", "");
+  const [geminiApiKeys, setGeminiApiKeys] = useCachedState<string[]>("botflow_geminiApiKeys", []);
+  const [replyInGeneral, setReplyInGeneral] = useCachedState("botflow_replyInGeneral", false);
+  
+  const [analyticsData, setAnalyticsData] = useCachedState<{keywordData: any[], topicData: any[]}>("botflow_analytics", { keywordData: [], topicData: [] });
+  const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
+  const [blockingTopic, setBlockingTopic] = useState(false);
   const [photoReplyMessage2StartTime, setPhotoReplyMessage2StartTime] = useState("");
   const [photoReplyMessage2EndTime, setPhotoReplyMessage2EndTime] = useState("");
   const [photoReplyMax, setPhotoReplyMax] = useState<number | string>(2);
-  const [topicIcon, setTopicIcon] = useState("✅");
-  const [topicRenameEmoji, setTopicRenameEmoji] = useState("🛑");
-  const [topicRenameKeywords, setTopicRenameKeywords] = useState("");
-  const [topicRenameMatchMode, setTopicRenameMatchMode] = useState<'exact' | 'partial'>('exact');
-  const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
-  const [notificationSoundType, setNotificationSoundType] = useState("default");
-  const [autoResetKeywords, setAutoResetKeywords] = useState(true);
-  const [autoBlockKeywords, setAutoBlockKeywords] = useState<AutoBlockKeyword[]>([]);
-  const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(false);
-  const [broadcastMessage, setBroadcastMessage] = useState("");
-  const [broadcastTarget, setBroadcastTarget] = useState<'all' | 'general'>('all');
-  const [broadcastProgress, setBroadcastProgress] = useState({ total: 0, current: 0, status: 'idle' });
-  const [keywords, setKeywords] = useCachedState<Keyword[]>("botflow_keywords", []);
-  const [logs, setLogs] = useCachedState<AppLog[]>("botflow_logs", []);
-  const [logSearch, setLogSearch] = useState("");
-  const debouncedLogSearch = useDebounce(logSearch, 300);
-  const [logLevelFilter, setLogLevelFilter] = useState<string>("all");
-  const [logCategoryFilter, setLogCategoryFilter] = useState<string>("all");
-  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
-  const [visibleLogsCount, setVisibleLogsCount] = useState(100);
+  const [keywordSearch, setKeywordSearch] = useCachedState("botflow_keywordSearch", "");
+  const deferredKeywordSearch = useDeferredValue(keywordSearch);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isAddingNewRule, setIsAddingNewRule] = useState(false);
-  const [keywordSearch, setKeywordSearch] = useState("");
-  const [keywordFilter, setKeywordFilter] = useState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest' | 'approval' | 'notify'>('all');
-  const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
-  const [expandedKeywordId, setExpandedKeywordId] = useState<string | null>(null);
-  const deferredKeywordSearch = useDeferredValue(keywordSearch);
-  const [visibleKeywordsCount, setVisibleKeywordsCount] = useState(50);
-  const [blockedTopics, setBlockedTopics] = useCachedState<any[]>("botflow_blockedTopics", []);
-  const [newBlockedTopicLink, setNewBlockedTopicLink] = useState("");
   const [blockedTopicSearch, setBlockedTopicSearch] = useState("");
-  const [blockingTopic, setBlockingTopic] = useState(false);
-  const [aiModeEnabled, setAiModeEnabled] = useState(false);
-  const [aiPersona, setAiPersona] = useState("");
-  const [geminiApiKeys, setGeminiApiKeys] = useState<string[]>([]);
-  const [replyInGeneral, setReplyInGeneral] = useState(false);
+  const [autoBlockKeywordsExpanded, setAutoBlockKeywordsExpanded] = useState(false);
   const [photoStatsTab, setPhotoStatsTab] = useState<'today' | '24h'>('today');
+
+  const [broadcastMessage, setBroadcastMessage] = useCachedState("botflow_broadcastMessage", "");
+  const [broadcastTarget, setBroadcastTarget] = useCachedState<'all' | 'general'>("botflow_broadcastTarget", 'all');
+  const [broadcastProgress, setBroadcastProgress] = useCachedState("botflow_broadcastProgress", { total: 0, current: 0, status: 'idle' });
+  const [keywords, setKeywords] = useCachedState<Keyword[]>("botflow_keywords", []);
+  const [logs, setLogs] = useCachedState<AppLog[]>("botflow_logs", []);
+  const [logSearch, setLogSearch] = useCachedState("botflow_logSearch", "");
+  const debouncedLogSearch = useDebounce(logSearch, 300);
+  const [logLevelFilter, setLogLevelFilter] = useCachedState("botflow_logLevelFilter", "all");
+  const [logCategoryFilter, setLogCategoryFilter] = useCachedState("botflow_logCategoryFilter", "all");
+  const [expandedLogId, setExpandedLogId] = useCachedState<string | null>("botflow_expandedLogId", null);
+  const [visibleLogsCount, setVisibleLogsCount] = useCachedState("botflow_visibleLogsCount", 100);
+  const [keywordFilter, setKeywordFilter] = useCachedState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest' | 'approval' | 'notify'>("botflow_keywordFilter", 'all');
+  const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
+  const [expandedKeywordId, setExpandedKeywordId] = useCachedState<string | null>("botflow_expandedKeywordId", null);
+  const [visibleKeywordsCount, setVisibleKeywordsCount] = useCachedState("botflow_visibleKeywordsCount", 50);
+  const [blockedTopics, setBlockedTopics] = useCachedState<any[]>("botflow_blockedTopics", []);
   
-  const [analyticsData, setAnalyticsData] = useCachedState<{keywordData: any[], topicData: any[]}>("botflow_analytics", { keywordData: [], topicData: [] });
   const [testMessage, setTestMessage] = useState("");
   const [testReply, setTestReply] = useState("");
   const [isTesting, setIsTesting] = useState(false);
@@ -399,6 +431,8 @@ export default function App() {
   const [lastSeenLogCount, setLastSeenLogCount] = useState(0);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const keywordsTopRef = useRef<HTMLDivElement>(null);
   const keywordsBottomRef = useRef<HTMLDivElement>(null);
   const castTopRef = useRef<HTMLDivElement>(null);
@@ -476,13 +510,78 @@ export default function App() {
   }, []);
 
   const handleInstallApp = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setDeferredPrompt(null);
+    if (!deferredPrompt) {
+      setIsInstallModalOpen(true);
+      return;
+    }
+    try {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setDeferredPrompt(null);
+      }
+    } catch (e) {
+      setIsInstallModalOpen(true);
     }
   };
+
+  const handleSaveLogo = async (logoUrl: string) => {
+    setAppLogoInput(logoUrl);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appLogo: logoUrl })
+      });
+      if (res.ok) {
+        showNotification('success', 'App logo saved successfully!');
+        fetchStats();
+      } else {
+        showNotification('error', 'Failed to save logo');
+      }
+    } catch (e) {
+      showNotification('error', 'Network error saving logo');
+    }
+  };
+
+  // Automatically synchronize app icon to browser tab, home screen, and PWA manifest when changed in settings
+  useEffect(() => {
+    const currentLogo = appLogoInput || stats?.appLogo || '/pwa-192x192.png';
+    const iconHref = currentLogo.startsWith('data:') ? currentLogo : currentLogo;
+    
+    // 1. Update or create standard favicon
+    let linkIcon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
+    if (!linkIcon) {
+      linkIcon = document.createElement("link");
+      linkIcon.rel = "icon";
+      document.head.appendChild(linkIcon);
+    }
+    linkIcon.href = iconHref;
+    linkIcon.type = currentLogo.endsWith('.svg') ? 'image/svg+xml' : 'image/png';
+
+    // 2. Update shortcut icon
+    let linkShortcut = document.querySelector<HTMLLinkElement>("link[rel='shortcut icon']");
+    if (linkShortcut) {
+      linkShortcut.href = iconHref;
+    }
+
+    // 3. Update Apple touch icon (used by iOS & Android Home screen shortcuts)
+    const appleIcons = document.querySelectorAll<HTMLLinkElement>("link[rel='apple-touch-icon']");
+    if (appleIcons.length > 0) {
+      appleIcons.forEach(el => { el.href = iconHref; });
+    } else {
+      const linkApple = document.createElement("link");
+      linkApple.rel = "apple-touch-icon";
+      linkApple.href = iconHref;
+      document.head.appendChild(linkApple);
+    }
+
+    // 4. Update manifest link with timestamp to trigger immediate browser re-indexing
+    const manifestLink = document.querySelector<HTMLLinkElement>("link[rel='manifest']");
+    if (manifestLink) {
+      manifestLink.href = `/manifest.json?t=${Date.now()}`;
+    }
+  }, [appLogoInput, stats?.appLogo]);
 
   const formatTime = (seconds: number) => {
     const d = Math.floor(seconds / 86400);
@@ -894,50 +993,48 @@ export default function App() {
     }
   };
 
-  const subscribeToPush = async () => {
+  const subscribeToPush = async (forceFresh = false) => {
     if ('serviceWorker' in navigator && 'PushManager' in window) {
       try {
-        const registration = await navigator.serviceWorker.ready;
-        
-        // First check if an active subscription already exists
-        const existingSub = await registration.pushManager.getSubscription().catch(() => null);
-        if (existingSub) {
-          const subJSON = existingSub.toJSON();
-          await fetch('/api/push/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(subJSON)
-          }).catch(e => console.warn('Failed to post existing subscription:', e));
-          return;
+        let registration = await navigator.serviceWorker.getRegistration();
+        if (!registration) {
+          registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
         }
+        await navigator.serviceWorker.ready;
 
-        // Check if inside an iframe where push service is restricted
-        const inIframe = window.self !== window.top;
-        if (inIframe) {
-          console.info('Push subscription skipped in iframe preview.');
-          return;
-        }
-        
         // Get VAPID public key from server
         const response = await fetch('/api/push/vapid-public-key');
         if (!response.ok) return;
         const text = await response.text();
         
-        if (text.includes("Rate exceeded")) {
-          console.warn("Push subscription rate limit exceeded");
-          return;
-        }
+        if (text.includes("Rate exceeded")) return;
         
         let publicKey;
         try {
           const data = JSON.parse(text);
           publicKey = data.publicKey;
         } catch (e) {
-          console.warn("Failed to parse VAPID public key response", e);
           return;
         }
         
         if (!publicKey) return;
+
+        let existingSub = await registration.pushManager.getSubscription().catch(() => null);
+
+        if (existingSub && !forceFresh) {
+          const subJSON = existingSub.toJSON();
+          const res = await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(subJSON)
+          }).catch(() => null);
+
+          if (res && res.ok) {
+            console.log('Existing push subscription confirmed active on server.');
+            return;
+          }
+          await existingSub.unsubscribe().catch(() => {});
+        }
 
         // Convert base64 public key to Uint8Array
         const padding = '='.repeat((4 - publicKey.length % 4) % 4);
@@ -971,22 +1068,24 @@ export default function App() {
 
   const requestNotificationPermission = async () => {
     if ("Notification" in window) {
-      const permission = await Notification.requestPermission();
-      if (permission === "granted") {
-        showNotification('success', 'Notifications enabled!');
-        playNotificationSound();
-        
-        // Subscribe to push
-        subscribeToPush();
-        
-        const options = { body: "Test notification successful!", icon: "/logo.svg" };
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.ready.then(reg => reg.showNotification("UserBot Pro", options));
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission === "granted") {
+          showNotification('success', '🔔 Background notifications enabled!');
+          playNotificationSound();
+          
+          if ('serviceWorker' in navigator) {
+            await navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+          }
+          await subscribeToPush();
+          
+          // Send instant test push
+          fetch('/api/push/test', { method: 'POST' }).catch(() => {});
         } else {
-          new Notification("UserBot Pro", options);
+          showNotification('error', 'Notification permission denied in browser');
         }
-      } else {
-        showNotification('error', 'Permission denied');
+      } catch (e) {
+        showNotification('error', 'Failed to request notification permission');
       }
     }
   };
@@ -995,28 +1094,65 @@ export default function App() {
     localStorage.setItem("darkMode", JSON.stringify(darkMode));
   }, [darkMode]);
 
-  useEffect(() => {
-    // Register Service Worker for notifications
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').then(reg => {
-        console.log('Service Worker registered', reg);
-      }).catch(err => {
-        console.error('Service Worker registration failed', err);
+  const handleForceUpdateAndPurge = async () => {
+    toast.loading('Clearing stale caches & loading latest version...', { id: 'force-update' });
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.unregister();
+        }
+      }
+      if ('caches' in window) {
+        const cacheNames = await caches.keys();
+        for (const name of cacheNames) {
+          await caches.delete(name);
+        }
+      }
+      // Also clear old localStorage caches that could hold stale rule definitions
+      const keysToClear = ['botflow_keywords', 'botflow_stats', 'botflow_logs'];
+      keysToClear.forEach(k => {
+        try {
+          localStorage.removeItem(`default_${k}`);
+          localStorage.removeItem(k);
+        } catch (e) {}
       });
+    } catch (e) {
+      console.warn('Cache purge error:', e);
+    }
+    setTimeout(() => {
+      window.location.href = window.location.origin + window.location.pathname + '?live_sync=' + Date.now();
+    }, 400);
+  };
+
+  useEffect(() => {
+    // Register Service Worker for PWA & Background Push Notifications
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(() => {
+          console.log('Service Worker active');
+          if ('Notification' in window && Notification.permission === 'granted') {
+            subscribeToPush();
+          }
+        })
+        .catch(err => {
+          console.warn('SW registration warning:', err);
+        });
     }
 
-    // Request notification permission on mount
+    // Request notification permission on mount if default
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().then(permission => {
         if (permission === 'granted') subscribeToPush();
-      });
+      }).catch(() => {});
     } else if ("Notification" in window && Notification.permission === "granted") {
       subscribeToPush();
     }
 
     // Connect to SSE
     console.log("Connecting to SSE notifications...");
-    const eventSource = new EventSource("/api/notifications");
+    const activeAccId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
+    const eventSource = new EventSource(`/api/notifications?account_id=${encodeURIComponent(activeAccId)}`);
     
     eventSource.onopen = () => {
       console.log("SSE connection established");
@@ -1054,8 +1190,30 @@ export default function App() {
 
         
         if (parsed.type === 'keyword_hit_notify') {
-          showNotification('success', parsed.data.message || 'Keyword Hit!');
+          const notifyMsg = parsed.data.message || `🎯 Keyword Hit: ${parsed.data.keyword || 'Rule matched'} in ${parsed.data.topicName || 'Topic'}`;
+          showNotification('success', notifyMsg);
           if (notificationSoundEnabled) playNotificationSound();
+
+          if ("Notification" in window && Notification.permission === "granted") {
+            const options = {
+              body: notifyMsg,
+              icon: "/pwa-192x192.png",
+              badge: "/pwa-192x192.png",
+              silent: false,
+              requireInteraction: true,
+              tag: `keyword-hit-${Date.now()}`,
+              data: {
+                url: '/'
+              }
+            };
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.ready.then(reg => reg.showNotification("Keyword Alert 🎯", options)).catch(() => {
+                try { new Notification("Keyword Alert 🎯", options); } catch(e){}
+              });
+            } else {
+              try { new Notification("Keyword Alert 🎯", options); } catch(e){}
+            }
+          }
           return;
         }
         if (parsed.type === 'photo_received') {
@@ -1076,10 +1234,11 @@ export default function App() {
             
             const options = {
               body: message,
-              icon: "/logo.svg",
-              silent: notificationSoundEnabled,
+              icon: "/pwa-192x192.png",
+              badge: "/pwa-192x192.png",
+              silent: false,
               requireInteraction: true,
-              tag: 'photo-received',
+              tag: `photo-received-${Date.now()}`,
               data: {
                 url: notificationUrl
               }
@@ -1175,6 +1334,7 @@ export default function App() {
         setStats(data);
         setTargetGroupId(data.targetGroupId || "");
         setAutoReplyInput(data.autoReply);
+        setAppLogoInput(data.appLogo || "");
         setAutoReply2Enabled(data.autoReply2Enabled);
         setAutoReply2Input(data.autoReply2);
         setAutoReply2DelayInput(data.autoReply2Delay || 1);
@@ -1220,7 +1380,7 @@ export default function App() {
         if (!phone) setPhone(data.defaultPhone);
         
         if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
-          setAuthStep('phone');
+          setAuthStep(prev => prev === 'credentials' ? 'phone' : prev);
         }
       } catch (e) {
         console.error("Failed to parse stats JSON:", text);
@@ -1668,11 +1828,12 @@ export default function App() {
     fetchAnalytics();
     fetchMissedCount();
 
-    // Auto-refresh stats and missed count every 15 seconds globally to ensure connections are tracked
+    // Auto-refresh stats, keywords and missed count every 10 seconds globally
     const globalInterval = setInterval(() => {
       fetchStats();
       fetchMissedCount();
-    }, 15000);
+      fetchKeywords();
+    }, 10000);
 
     return () => clearInterval(globalInterval);
   }, []);
@@ -1945,6 +2106,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           autoReply: autoReplyInput,
+          appLogo: appLogoInput,
           autoReply2Enabled,
           autoReply2: autoReply2Input,
           autoReply2Delay: autoReply2DelayInput,
@@ -2081,6 +2243,59 @@ export default function App() {
       }
     } catch (err) {
       showNotification('error', 'Verification failed: Network error');
+    }
+  };
+
+  const handleDuplicateKeyword = async (kw: Keyword) => {
+    const validKeywords = kw.keywords && kw.keywords.length > 0 ? kw.keywords : (kw.keyword ? [kw.keyword] : []);
+    if (validKeywords.length === 0) {
+      showNotification('error', "Cannot copy empty keyword rule");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        keyword: validKeywords[0],
+        keywords: validKeywords,
+        reply: kw.reply || "",
+        photo: kw.photo || "",
+        match_mode: kw.match_mode || 'exact',
+        message_link: kw.message_link || "",
+        message_links: kw.message_links || [],
+        max_replies: typeof kw.max_replies === 'number' ? kw.max_replies : 0,
+        ai_reply_enabled: !!kw.ai_reply_enabled,
+        approval_mode: !!kw.approval_mode,
+        notify_on_hit: !!kw.notify_on_hit,
+        target_groups: kw.target_groups || []
+      };
+
+      const res = await fetch("/api/keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        showNotification('success', 'Keyword rule copied! Duplicate added.');
+        fetchKeywords();
+      } else {
+        const newKeywordObj: Keyword = {
+          ...kw,
+          _id: Date.now().toString() + "_" + Math.random().toString(36).substring(2, 6)
+        };
+        setKeywords(prev => [newKeywordObj, ...prev]);
+        showNotification('success', 'Keyword rule copied!');
+      }
+    } catch (error) {
+      const newKeywordObj: Keyword = {
+        ...kw,
+        _id: Date.now().toString() + "_" + Math.random().toString(36).substring(2, 6)
+      };
+      setKeywords(prev => [newKeywordObj, ...prev]);
+      showNotification('success', 'Keyword rule copied!');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -2405,64 +2620,29 @@ export default function App() {
     }
   };
 
-  const SWIPEABLE_TABS = ['dashboard', 'keywords', 'broadcast', 'settings', 'logs'];
-
-  const navigateTab = (newDirection: number) => {
-    const currentIndex = SWIPEABLE_TABS.indexOf(activeTab as any);
-    if (currentIndex === -1) return; // Do not swipe if currently on a hidden tab
-
-    let newIndex = currentIndex + newDirection;
-    if (newIndex < 0) newIndex = 0;
-    if (newIndex >= SWIPEABLE_TABS.length) newIndex = SWIPEABLE_TABS.length - 1;
-    
-    if (newIndex !== currentIndex) {
-      setDirection(newDirection);
-      setActiveTab(SWIPEABLE_TABS[newIndex] as TabType);
-    }
-  };
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    setTouchStart({ x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY });
-    setTouchEnd({ x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY });
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    setTouchEnd({ x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY });
-  };
-
-  const handleTouchEnd = () => {
-    const distanceX = touchStart.x - touchEnd.x;
-    const distanceY = touchStart.y - touchEnd.y;
-    
-    // Only trigger swipe if horizontal movement is greater than vertical movement
-    // and the distance is at least 50px
-    if (Math.abs(distanceX) > Math.abs(distanceY) && Math.abs(distanceX) > 50) {
-      if (distanceX > 0) navigateTab(1); // Swipe left
-      else navigateTab(-1); // Swipe right
-    }
-  };
-
+  // Swift simultaneous sliding page transition animation
   const slideVariants = {
-    initial: (direction: number) => ({
-      x: direction > 0 ? '20%' : '-20%',
+    initial: (dir: number) => ({
+      x: (dir || 1) > 0 ? '100%' : '-100%',
       opacity: 0,
+      zIndex: 10,
     }),
     animate: {
       x: 0,
       opacity: 1,
+      zIndex: 10,
       transition: { 
-        type: 'tween', 
-        duration: 0.001, 
-        ease: 'easeIn'
+        duration: 0.35,
+        ease: [0.22, 1, 0.36, 1],
       }
     },
-    exit: (direction: number) => ({
-      x: direction > 0 ? '-20%' : '20%',
+    exit: (dir: number) => ({
+      x: (dir || 1) > 0 ? '-30%' : '30%',
       opacity: 0,
+      zIndex: 0,
       transition: { 
-        type: 'tween', 
-        duration: 0.05, 
-        ease: 'easeIn'
+        duration: 0.35,
+        ease: [0.22, 1, 0.36, 1],
       }
     })
   };
@@ -2493,7 +2673,7 @@ export default function App() {
             <div className="relative w-24 h-24 mb-8">
               <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-2xl rotate-6 opacity-40 animate-pulse"></div>
               <div className="relative w-full h-full rounded-2xl overflow-hidden flex items-center justify-center border border-white/20 bg-neutral-900 shadow-2xl">
-                <img src="/logo.svg" alt="Logo" className="w-14 h-14 object-contain" />
+                <img src={stats?.appLogo || "/logo.jpg"} alt="Logo" className="w-14 h-14 object-contain rounded-xl" />
               </div>
               {/* Spinning Ring */}
               <div className="absolute -inset-4 border-2 border-white/5 border-t-emerald-500 rounded-full animate-spin"></div>
@@ -2556,12 +2736,6 @@ export default function App() {
         <div className={`absolute top-[20%] -right-[10%] w-[35%] h-[35%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-blue-500' : 'bg-blue-300'}`} />
         <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
       </div>
-      {/* Offline Warning */}
-      {!stats?.isUserBotConnected && (
-        <div className="bg-rose-600 text-white text-[10px] font-black uppercase tracking-[0.2em] py-2 text-center sticky top-0 z-[60] shadow-lg">
-          ⚠️ Please login Telegram ID to enable auto-replies
-        </div>
-      )}
 
       {/* Header */}
       <header className={`px-3 sm:px-6 py-2 flex items-center justify-between fixed top-0 left-0 right-0 z-50 border-b transition-all duration-500 bg-black border-white/10 text-white shadow-2xl ${activeTab === 'logs' ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
@@ -2598,11 +2772,15 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <div className="relative w-8 h-8 group cursor-pointer">
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            <div 
+              onClick={() => setIsLogoModalOpen(true)}
+              className="relative w-8 h-8 group cursor-pointer shrink-0" 
+              title="Click to choose or upload app logo"
+            >
               <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40 group-hover:rotate-6 transition-transform duration-500"></div>
-              <div className="relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border transition-colors duration-500 bg-neutral-900 border-white/10">
-                <img src="/logo.svg" alt="Logo" className="w-5 h-5 object-contain" />
+              <div className="relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border transition-colors duration-500 bg-neutral-900 border-white/10 group-hover:border-emerald-500/50">
+                <img src={appLogoInput || stats?.appLogo || "/pwa-192x192.png"} alt="Logo" className="w-5 h-5 object-contain rounded-md" />
               </div>
             </div>
             <div className="flex flex-col">
@@ -2620,10 +2798,14 @@ export default function App() {
           </div>
         </div>
         
-        <div className="flex items-center space-x-2 relative z-10 shrink-0">
+        {/* Right Side Controls: Account Switcher & Notifications */}
+        <div className="flex items-center space-x-1.5 sm:space-x-2 relative z-10 shrink-0">
+          <ProfileSelector isConnected={stats?.isUserBotConnected} />
+
           <button 
             onClick={() => setIsNotificationOpen(true)}
-            className="p-2 rounded-xl transition relative group text-rose-400 hover:text-white hover:bg-white/10"
+            className="p-2 rounded-xl transition relative group text-rose-400 hover:text-white hover:bg-white/10 shrink-0"
+            aria-label="Notifications"
           >
             <motion.div
               animate={unreadCount > 0 ? {
@@ -2676,7 +2858,7 @@ export default function App() {
                     <div className="relative w-7 h-7">
                       <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40"></div>
                       <div className={`relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-black/5'}`}>
-                        <img src="/logo.svg" alt="Logo" className="w-4 h-4 object-contain" />
+                        <img src={stats?.appLogo || "/logo.jpg"} alt="Logo" className="w-4 h-4 object-contain rounded-sm" />
                       </div>
                     </div>
                     <div className="flex flex-col">
@@ -2801,6 +2983,46 @@ export default function App() {
                   <span className="text-[11px] font-bold uppercase tracking-wide">Profile</span>
                 </button>
 
+                <button
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    handleInstallApp();
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition border font-bold text-[11px] uppercase tracking-wide ${
+                    darkMode 
+                      ? 'bg-gradient-to-r from-emerald-500/20 to-blue-500/20 text-emerald-300 border-emerald-500/40 hover:brightness-110 shadow-lg shadow-emerald-500/10' 
+                      : 'bg-gradient-to-r from-emerald-50 to-blue-50 text-emerald-800 border-emerald-300 hover:brightness-105'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <Download size={15} className="text-emerald-400 shrink-0 animate-bounce" />
+                    <span>Download App / APK</span>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-500 text-white font-mono font-black">
+                    INSTALL
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    handleForceUpdateAndPurge();
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition border font-bold text-[11px] uppercase tracking-wide ${
+                    darkMode 
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20' 
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <RefreshCw size={15} className="text-emerald-500 shrink-0" />
+                    <span>Update & Flush Cache</span>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 font-mono font-black">
+                    LATEST
+                  </span>
+                </button>
+
                 <div className={`h-px my-1 ${darkMode ? 'bg-white/5' : 'bg-slate-100'}`} />
 
                 <button
@@ -2855,50 +3077,80 @@ export default function App() {
         darkMode={darkMode} 
       />
 
-      {/* Floating Dark Mode Button */}
-      <button 
+      {/* Floating Dark Mode Button (Floating FAB with MoonStar / SunMedium icons) */}
+      <motion.button 
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.9 }}
         onClick={() => setDarkMode(!darkMode)}
-        className={`fixed bottom-24 right-4 z-50 p-3 rounded-full shadow-lg transition-all duration-500 ${activeTab === 'logs' ? 'opacity-0 pointer-events-none' : 'opacity-100'} ${darkMode ? 'bg-neutral-900 text-yellow-400 hover:bg-neutral-800 border border-neutral-800' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'}`}
+        className={`fixed bottom-20 left-4 sm:left-6 z-40 p-3 rounded-full shadow-2xl transition-all duration-300 backdrop-blur-xl flex items-center justify-center border active:scale-95 ${
+          activeTab === 'logs' ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        } ${
+          darkMode 
+            ? 'bg-neutral-900/90 text-amber-400 hover:bg-neutral-800 border-amber-400/30 shadow-[0_4px_25px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/20' 
+            : 'bg-white/95 text-indigo-600 hover:bg-slate-50 border-indigo-200/80 shadow-[0_4px_25px_rgba(99,102,241,0.25)] ring-1 ring-indigo-500/15'
+        }`}
+        title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
       >
-        {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-      </button>
+        {darkMode ? <SunMedium size={18} className="animate-spin-slow" /> : <MoonStar size={18} />}
+      </motion.button>
 
       <main 
-        className={`mx-auto relative z-10 transition-all duration-500 ${activeTab === 'logs' ? 'max-w-none w-full p-0 pt-0 pb-0' : 'max-w-md p-4 pt-24 pb-28'}`}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
+        className={`mx-auto relative z-10 overflow-x-hidden ${
+          activeTab === 'logs' 
+            ? 'max-w-none w-full p-0 pt-0 pb-0' 
+            : 'max-w-md p-4 pt-20 pb-28'
+        }`}
       >
-        <AnimatePresence mode="wait" custom={direction}>
+        <AnimatePresence mode="popLayout" custom={direction} initial={false}>
           {activeTab === 'dashboard' && (
-            <Dashboard 
-              darkMode={darkMode}
-              stats={stats}
-              setActiveTab={setActiveTab}
-              handleScanMissed={handleScanMissed}
-              isScanningMissed={isScanningMissed}
-              missedCount={missedCount}
-              isCatchingUp={isCatchingUp}
-              handleCancelCatchUp={handleCancelCatchUp}
-              handleTogglePause={handleTogglePause}
-              loading={loading}
-              deferredPrompt={deferredPrompt}
-              handleInstallApp={handleInstallApp}
-              logs={logs}
-            />
+            <motion.div
+              key="dashboard"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="w-full"
+            >
+              <Dashboard 
+                darkMode={darkMode}
+                stats={stats}
+                setActiveTab={setActiveTab}
+                handleScanMissed={handleScanMissed}
+                isScanningMissed={isScanningMissed}
+                missedCount={missedCount}
+                isCatchingUp={isCatchingUp}
+                handleCancelCatchUp={handleCancelCatchUp}
+                handleTogglePause={handleTogglePause}
+                loading={loading}
+                deferredPrompt={deferredPrompt}
+                handleInstallApp={handleInstallApp}
+                logs={logs}
+              />
+            </motion.div>
           )}
 
           {activeTab === 'catchup' && (
-            <CatchUpPage 
-              darkMode={darkMode} 
-              setActiveTab={setActiveTab} 
-              scannedItems={scannedItems} 
-              handleClearAllMissed={handleClearAllMissed} 
-              handleReplyToSingleMissed={handleReplyToSingleMissed} 
-              replyingIds={replyingIds}
-              handleScanMissed={handleScanMissed}
-              isScanningMissed={isScanningMissed}
-            />
+            <motion.div
+              key="catchup"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="w-full"
+            >
+              <CatchUpPage 
+                darkMode={darkMode} 
+                setActiveTab={setActiveTab} 
+                scannedItems={scannedItems} 
+                handleClearAllMissed={handleClearAllMissed} 
+                handleReplyToSingleMissed={handleReplyToSingleMissed} 
+                replyingIds={replyingIds}
+                handleScanMissed={handleScanMissed}
+                isScanningMissed={isScanningMissed}
+              />
+            </motion.div>
           )}
 
           {activeTab === 'settings' && (
@@ -2909,6 +3161,12 @@ export default function App() {
               telegramBotToken={telegramBotToken}
               setTelegramBotToken={setTelegramBotToken}
               autoReplyInput={autoReplyInput}
+              deferredPrompt={deferredPrompt}
+              handleInstallApp={handleInstallApp}
+              onOpenLogoSelector={() => setIsLogoModalOpen(true)}
+              onOpenInstallGuide={() => setIsInstallModalOpen(true)}
+              appLogoInput={appLogoInput}
+              setAppLogoInput={setAppLogoInput}
               setAutoReplyInput={setAutoReplyInput}
               autoReply2Enabled={autoReply2Enabled}
               setAutoReply2Enabled={setAutoReply2Enabled}
@@ -2961,6 +3219,7 @@ export default function App() {
               fileInputRef={fileInputRef}
               importing={importing}
               handleUpdateSettings={handleUpdateSettings}
+              handleForceUpdateAndPurge={handleForceUpdateAndPurge}
               saving={saving}
               direction={direction}
               slideVariants={slideVariants}
@@ -3002,6 +3261,8 @@ export default function App() {
               handleToggleKeyword={handleToggleKeyword}
               handleToggleApprovalMode={handleToggleApprovalMode}
               handleToggleNotifyOnHit={handleToggleNotifyOnHit}
+              handleDuplicateKeyword={handleDuplicateKeyword}
+              fetchKeywords={fetchKeywords}
               cancelEdit={cancelEdit}
               visibleKeywordsCount={visibleKeywordsCount}
               handleKeywordsScroll={handleKeywordsScroll}
@@ -3019,33 +3280,58 @@ export default function App() {
           )}
 
           {activeTab === 'broadcast' && (
-            <div
+            <motion.div
               key="broadcast"
-              className="space-y-6 w-full"
+              custom={direction}
+              variants={slideVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="space-y-3.5 w-full pb-8"
             >
               <div ref={castTopRef} />
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
-                <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
-                <div className="relative z-10 space-y-4 pointer-events-auto">
+
+              {/* CARD 1: Block Topics (No Auto-Reply) */}
+              <div className={`border p-4 sm:p-4.5 rounded-2xl space-y-3 transition-colors duration-300 relative overflow-hidden ${
+                darkMode ? 'bg-neutral-900/90 border-rose-500/25 shadow-black/40' : 'bg-white border-rose-200/80 shadow-xs'
+              }`}>
+                <div className="relative z-10 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <div>
-                      <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Block Topics (No Auto-Reply)</label>
-                      <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Paste topic link below, or send it directly to your Telegram Bot in chat</p>
+                    <div className="flex items-center gap-1.5">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-rose-500/15 text-rose-400' : 'bg-rose-50 text-rose-600'}`}>
+                        <ShieldAlert size={14} />
+                      </div>
+                      <div>
+                        <h3 className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                          Block Topics
+                        </h3>
+                        <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          Disable auto-replies for specific topic link
+                        </p>
+                      </div>
                     </div>
-                    <ShieldAlert size={16} className="text-rose-500" />
+                    {blockedTopics.length > 0 && (
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                        darkMode ? 'bg-rose-500/15 text-rose-300' : 'bg-rose-50 text-rose-700'
+                      }`}>
+                        {blockedTopics.length} blocked
+                      </span>
+                    )}
                   </div>
                   
-                  <div className="flex space-x-2">
+                  <div className="flex items-center gap-2">
                     <div className="relative flex-1">
-                      <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                        <Link size={14} />
+                      <div className={`absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none ${darkMode ? 'text-slate-400' : 'text-slate-400'}`}>
+                        <Link size={13} />
                       </div>
                       <input
                         type="text"
                         value={newBlockedTopicLink}
                         onChange={(e) => setNewBlockedTopicLink(e.target.value)}
-                        placeholder="Paste topic link here..."
-                        className={`w-full pl-9 p-3 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                        placeholder="Paste topic link..."
+                        className={`w-full h-8.5 pl-8 pr-2.5 border rounded-xl focus:ring-2 focus:ring-rose-500/30 outline-none text-xs transition font-medium ${
+                          darkMode ? 'bg-neutral-800/80 border-white/10 text-white placeholder-slate-400' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
+                        }`}
                       />
                     </div>
                     <motion.button
@@ -3053,183 +3339,234 @@ export default function App() {
                       whileTap={{ scale: 0.98 }}
                       onClick={handleBlockTopic}
                       disabled={blockingTopic || !newBlockedTopicLink.trim()}
-                      className={`px-6 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors flex items-center space-x-2 ${blockingTopic || !newBlockedTopicLink.trim() ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                      className={`h-8.5 px-3 rounded-xl font-bold uppercase tracking-wider text-[11px] transition flex items-center gap-1.5 flex-shrink-0 ${
+                        blockingTopic || !newBlockedTopicLink.trim()
+                          ? 'opacity-50 cursor-not-allowed bg-slate-400 text-white'
+                          : 'bg-rose-600 text-white hover:bg-rose-500 shadow-xs'
+                      }`}
                     >
-                      {blockingTopic ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
+                      {blockingTopic ? <RefreshCw size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
                       <span>{blockedTopics.some(t => t.link === newBlockedTopicLink) ? 'Unblock' : 'Block'}</span>
                     </motion.button>
                   </div>
 
                   {blockedTopics.length > 0 && (
-                    <div className="space-y-4 pt-2">
+                    <div className="space-y-2 pt-1 border-t border-dashed border-slate-200 dark:border-white/10">
                       <div className="relative">
-                        <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                          <Search size={14} />
+                        <div className={`absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none ${darkMode ? 'text-slate-400' : 'text-slate-400'}`}>
+                          <Search size={12} />
                         </div>
                         <input
                           type="text"
                           value={blockedTopicSearch}
                           onChange={(e) => setBlockedTopicSearch(e.target.value)}
                           placeholder="Search blocked topics..."
-                          className={`w-full pl-9 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-[10px] transition ${darkMode ? 'bg-neutral-900/50 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 shadow-sm'}`}
+                          className={`w-full h-7.5 pl-7 pr-2 border rounded-lg outline-none text-[11px] transition ${
+                            darkMode ? 'bg-neutral-800/60 border-white/10 text-white placeholder-slate-400' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                          }`}
                         />
                       </div>
 
-                      <div className="space-y-2">
-                        <label className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Blocked Topics List</label>
-                        <div className="grid gap-2 max-h-60 overflow-y-auto pr-2 no-scrollbar">
-                          {blockedTopics.filter(t => 
-                            t.name?.toLowerCase().includes(blockedTopicSearch.toLowerCase()) || 
-                            t.telegram_topic_id.toString().includes(blockedTopicSearch) ||
-                            t.link?.toLowerCase().includes(blockedTopicSearch.toLowerCase())
-                          ).map((topic) => (
-                            <div key={topic._id} className={`flex items-center justify-between p-3 rounded-xl border ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
-                              <div className="flex items-center space-x-3 min-w-0">
-                                <div className={`p-2 rounded-lg ${darkMode ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-500'}`}>
-                                  <ShieldAlert size={14} />
-                                </div>
-                                <div className="min-w-0">
-                                  <p className={`text-xs font-bold truncate ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>{topic.name && topic.name !== "Unknown Topic" ? topic.name : `Topic ID: ${topic.telegram_topic_id}`}</p>
-                                  <p className={`text-[10px] truncate opacity-50 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{topic.link}</p>
-                                </div>
+                      <div className="grid gap-1.5 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                        {blockedTopics.filter(t => 
+                          t.name?.toLowerCase().includes(blockedTopicSearch.toLowerCase()) || 
+                          t.telegram_topic_id.toString().includes(blockedTopicSearch) ||
+                          t.link?.toLowerCase().includes(blockedTopicSearch.toLowerCase())
+                        ).map((topic) => (
+                          <div key={topic._id} className={`flex items-center justify-between p-2 rounded-lg border transition ${
+                            darkMode ? 'bg-neutral-800/40 border-white/5 hover:border-white/10' : 'bg-slate-50 border-slate-200/70 hover:bg-slate-100/80'
+                          }`}>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className={`p-1 rounded ${darkMode ? 'bg-rose-500/15 text-rose-400' : 'bg-rose-100 text-rose-600'}`}>
+                                <ShieldAlert size={12} />
                               </div>
-                              <button
-                                onClick={() => handleUnblockTopic(topic._id, topic.name)}
-                                className={`p-2 rounded-lg transition ${darkMode ? 'hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400' : 'hover:bg-emerald-50 text-slate-400 hover:text-emerald-600'}`}
-                                title="Unblock Topic"
-                              >
-                                <ShieldCheck size={16} />
-                              </button>
+                              <div className="min-w-0">
+                                <p className={`text-[11px] font-semibold truncate ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                                  {topic.name && topic.name !== "Unknown Topic" ? topic.name : `Topic ID: ${topic.telegram_topic_id}`}
+                                </p>
+                                <p className={`text-[9.5px] truncate ${darkMode ? 'text-slate-400' : 'text-slate-400'}`}>
+                                  {topic.link}
+                                </p>
+                              </div>
                             </div>
-                          ))}
-                        </div>
+                            <button
+                              onClick={() => handleUnblockTopic(topic._id, topic.name)}
+                              className={`p-1 rounded-md transition ${darkMode ? 'hover:bg-emerald-500/20 text-slate-400 hover:text-emerald-400' : 'hover:bg-emerald-50 text-slate-400 hover:text-emerald-600'}`}
+                              title="Unblock Topic"
+                            >
+                              <ShieldCheck size={14} />
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-purple relative overflow-hidden group ${darkMode ? 'bg-purple-950/40 border-purple-500/30' : 'bg-purple-50 border-purple-200 shadow-xl shadow-purple-500/10'}`}>
-                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
-                <div className="relative z-10 space-y-3 pointer-events-auto">
-                  <div className="flex items-center justify-between ml-1">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Message</label>
-                    <span className={`text-[10px] font-bold ${broadcastMessage.length > 500 ? 'text-rose-500' : darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                      {broadcastMessage.length} / 500
+              {/* CARD 2: Broadcast Announcement */}
+              <div className={`border p-4 sm:p-4.5 rounded-2xl space-y-3 transition-colors duration-300 relative overflow-hidden ${
+                darkMode ? 'bg-neutral-900/90 border-purple-500/25 shadow-black/40' : 'bg-white border-purple-200/80 shadow-xs'
+              }`}>
+                <div className="relative z-10 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-purple-500/15 text-purple-400' : 'bg-purple-50 text-purple-600'}`}>
+                        <Megaphone size={14} />
+                      </div>
+                      <div>
+                        <h3 className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                          Broadcast Message
+                        </h3>
+                        <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          Send instant announcement to topics
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`text-[10px] font-mono font-semibold ${broadcastMessage.length > 500 ? 'text-rose-500' : darkMode ? 'text-slate-400' : 'text-slate-400'}`}>
+                      {broadcastMessage.length}/500
                     </span>
                   </div>
+
                   <textarea
                     value={broadcastMessage}
                     onChange={(e) => setBroadcastMessage(e.target.value)}
-                    placeholder="Type your announcement here..."
+                    placeholder="Type broadcast message here..."
                     disabled={broadcasting}
-                    className={`w-full h-32 p-5 border rounded-3xl focus:ring-4 focus:ring-purple-500/20 outline-none text-sm transition ${darkMode ? 'bg-purple-950/20 border-purple-500/20 text-white placeholder-white/20' : 'bg-white border-purple-100 text-slate-900 placeholder-slate-400 shadow-inner'} ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`w-full h-24 p-2.5 border rounded-xl focus:ring-2 focus:ring-purple-500/30 outline-none text-xs transition resize-none font-medium ${
+                      darkMode ? 'bg-neutral-800/80 border-white/10 text-white placeholder-slate-400' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
+                    } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
-                </div>
 
-                <div className="space-y-3 px-1">
-                  <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Broadcast Target</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      onClick={() => setBroadcastTarget('all')}
-                      disabled={broadcasting}
-                      className={`py-3 px-4 rounded-2xl text-xs font-bold transition border-2 flex items-center justify-center space-x-2 ${
-                        broadcastTarget === 'all'
-                          ? (darkMode ? 'bg-purple-500/20 border-purple-500 text-purple-400' : 'bg-purple-100 border-purple-500 text-purple-700')
-                          : (darkMode ? 'bg-neutral-900/40 border-white/5 text-slate-500 hover:border-white/10' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200')
-                      } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <LayoutGrid size={14} />
-                      <span>All Topics</span>
-                    </button>
-                    <button
-                      onClick={() => setBroadcastTarget('general')}
-                      disabled={broadcasting}
-                      className={`py-3 px-4 rounded-2xl text-xs font-bold transition border-2 flex items-center justify-center space-x-2 ${
-                        broadcastTarget === 'general'
-                          ? (darkMode ? 'bg-purple-500/20 border-purple-500 text-purple-400' : 'bg-purple-100 border-purple-500 text-purple-700')
-                          : (darkMode ? 'bg-neutral-900/40 border-white/5 text-slate-500 hover:border-white/10' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200')
-                      } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <MessageSquare size={14} />
-                      <span>General Section</span>
-                    </button>
+                  {/* Broadcast Target Toggle */}
+                  <div className="space-y-1">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Target
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setBroadcastTarget('all')}
+                        disabled={broadcasting}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 border ${
+                          broadcastTarget === 'all'
+                            ? (darkMode ? 'bg-purple-600/30 border-purple-500 text-purple-300' : 'bg-purple-50 border-purple-400 text-purple-700')
+                            : (darkMode ? 'bg-neutral-800/60 border-white/5 text-slate-400 hover:text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100')
+                        } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <LayoutGrid size={13} />
+                        <span>All Topics</span>
+                      </button>
+                      <button
+                        onClick={() => setBroadcastTarget('general')}
+                        disabled={broadcasting}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 border ${
+                          broadcastTarget === 'general'
+                            ? (darkMode ? 'bg-purple-600/30 border-purple-500 text-purple-300' : 'bg-purple-50 border-purple-400 text-purple-700')
+                            : (darkMode ? 'bg-neutral-800/60 border-white/5 text-slate-400 hover:text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100')
+                        } ${broadcasting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <MessageSquare size={13} />
+                        <span>General Only</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                {broadcasting && broadcastProgress.status === 'running' && broadcastTarget === 'all' && (
-                  <div className="space-y-3 px-1">
-                    <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
-                      <span className={darkMode ? 'text-purple-400' : 'text-purple-600'}>Processing Broadcast</span>
-                      <span className={darkMode ? 'text-slate-400' : 'text-slate-500'}>
-                        {broadcastProgress.current} / {broadcastProgress.total} Topics
-                      </span>
-                    </div>
-                    <div className={`h-3 w-full rounded-full overflow-hidden ${darkMode ? 'bg-purple-950/40' : 'bg-purple-100'}`}>
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${(broadcastProgress.current / (broadcastProgress.total || 1)) * 100}%` }}
-                        className="h-full bg-gradient-to-r from-purple-500 to-blue-500 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
-                      />
-                    </div>
-                    <div className="flex justify-center">
+                  {broadcasting && broadcastProgress.status === 'running' && broadcastTarget === 'all' && (
+                    <div className="space-y-2 p-2.5 rounded-xl border border-purple-500/20 bg-purple-500/5">
+                      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
+                        <span className={darkMode ? 'text-purple-300' : 'text-purple-700'}>Sending Broadcast</span>
+                        <span className={darkMode ? 'text-slate-400' : 'text-slate-500'}>
+                          {broadcastProgress.current} / {broadcastProgress.total}
+                        </span>
+                      </div>
+                      <div className={`h-2 w-full rounded-full overflow-hidden ${darkMode ? 'bg-purple-950/60' : 'bg-purple-100'}`}>
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${(broadcastProgress.current / (broadcastProgress.total || 1)) * 100}%` }}
+                          className="h-full bg-gradient-to-r from-purple-500 to-blue-500"
+                        />
+                      </div>
+                      <div className="flex justify-end">
                         <button
-                      onClick={handleCancelBroadcast}
-                      className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'}`}
-                    >
-                      Cancel Broadcast
-                    </button>
-                  </div>
-                </div>
-              )}
+                          onClick={handleCancelBroadcast}
+                          className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider transition ${
+                            darkMode ? 'bg-rose-500/20 text-rose-300 hover:bg-rose-500/30' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                          }`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-              <button
-                onClick={handleBroadcast}
-                disabled={broadcasting || !broadcastMessage.trim() || broadcastMessage.length > 500}
-                className={`w-full py-5 rounded-3xl font-black uppercase tracking-widest text-sm transition-colors disabled:opacity-50 flex items-center justify-center space-x-3 shadow-xl ${darkMode ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-500 hover:to-blue-500' : 'bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 shadow-purple-500/20'}`}
-              >
-                <Send size={18} />
-                <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
-              </button>
-            </div>
-
-            <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-rose relative overflow-hidden group ${darkMode ? 'bg-rose-950/40 border-rose-500/30' : 'bg-rose-50 border-rose-200 shadow-xl shadow-rose-500/10'}`}>
-              <div className={`absolute inset-0 pattern-dots opacity-[0.05] pointer-events-none ${darkMode ? 'text-rose-400' : 'text-rose-600'}`} />
-              <div className="relative z-10 space-y-4 pointer-events-auto">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <label className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Auto-Block Keywords</label>
-                    <ShieldAlert size={16} className="text-rose-500" />
-                  </div>
                   <button
-                    onClick={() => setAutoBlockKeywordsExpanded(!autoBlockKeywordsExpanded)}
-                    className={`p-2 rounded-xl transition ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-black/5 text-slate-500'}`}
+                    onClick={handleBroadcast}
+                    disabled={broadcasting || !broadcastMessage.trim() || broadcastMessage.length > 500}
+                    className={`w-full py-2.5 rounded-xl font-bold uppercase tracking-wider text-xs transition flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 ${
+                      darkMode 
+                        ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-500 hover:to-indigo-500' 
+                        : 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-700 hover:to-indigo-700'
+                    }`}
                   >
-                    {autoBlockKeywordsExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                    <Send size={14} />
+                    <span>{broadcasting ? 'Sending Announcement...' : 'Broadcast Now'}</span>
                   </button>
                 </div>
-                
-                <div className="space-y-4">
-                  <div className="flex flex-col space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
+              </div>
+
+              {/* CARD 3: Auto-Block Keywords */}
+              <div className={`border p-4 sm:p-4.5 rounded-2xl space-y-3 transition-colors duration-300 relative overflow-hidden ${
+                darkMode ? 'bg-neutral-900/90 border-teal-500/25 shadow-black/40' : 'bg-white border-teal-200/80 shadow-xs'
+              }`}>
+                <div className="relative z-10 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-teal-500/15 text-teal-400' : 'bg-teal-50 text-teal-600'}`}>
+                        <ShieldAlert size={14} />
+                      </div>
+                      <div>
+                        <h3 className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                          Auto-Block Keywords
+                        </h3>
+                        <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          Auto-block topics containing matched keywords
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setAutoBlockKeywordsExpanded(!autoBlockKeywordsExpanded)}
+                      className={`p-1.5 rounded-lg border text-xs transition ${
+                        darkMode ? 'border-white/10 hover:bg-white/10 text-slate-300' : 'border-slate-200 hover:bg-slate-100 text-slate-600'
+                      }`}
+                      title={autoBlockKeywordsExpanded ? "Collapse" : "Expand"}
+                    >
+                      {autoBlockKeywordsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2.5">
+                    <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={addAutoBlockKeyword}
-                        className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500' : 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600 shadow-emerald-500/20'}`}
+                        className="py-1.5 px-3 rounded-lg font-bold uppercase tracking-wider text-[11px] transition flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs"
                       >
-                        <Plus size={14} />
+                        <Plus size={13} />
                         <span>Add Keyword</span>
                       </button>
 
                       <button
                         onClick={handleUpdateAutoBlockKeywords}
                         disabled={saving}
-                        className={`py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] transition-colors disabled:opacity-50 flex items-center justify-center space-x-2 shadow-lg ${saving ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-500/20'}`}
+                        className={`py-1.5 px-3 rounded-lg font-bold uppercase tracking-wider text-[11px] transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-xs ${
+                          saving 
+                            ? 'bg-slate-400 text-white cursor-not-allowed' 
+                            : 'bg-teal-600 hover:bg-teal-500 text-white'
+                        }`}
                       >
-                        {saving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                        {saving ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
                         <span>Save Rules</span>
                       </button>
                     </div>
-                  </div>
 
                     <AnimatePresence>
                       {autoBlockKeywordsExpanded && (
@@ -3237,42 +3574,56 @@ export default function App() {
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: 'auto', opacity: 1 }}
                           exit={{ height: 0, opacity: 0 }}
-                          className="space-y-4 overflow-hidden"
+                          className="space-y-2 overflow-hidden pt-1"
                         >
-                          <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>If these keywords are found in a topic, the bot will automatically block it.</p>
-                          
-                          <div className="space-y-3">
+                          <div className="space-y-2 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
                             {autoBlockKeywords.map((item, index) => (
-                              <div key={index} className={`p-4 rounded-2xl border space-y-3 ${darkMode ? 'bg-neutral-900/50 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                <div className="flex items-center space-x-2 w-full">
+                              <div key={index} className={`p-2.5 rounded-xl border space-y-2 ${
+                                darkMode ? 'bg-neutral-800/50 border-white/5' : 'bg-slate-50 border-slate-200/80 shadow-xs'
+                              }`}>
+                                <div className="flex items-center gap-2 w-full">
                                   <input
                                     type="text"
                                     value={item.keyword}
                                     onChange={(e) => updateAutoBlockKeyword(index, 'keyword', e.target.value)}
-                                    placeholder="Keyword..."
-                                    className={`flex-1 min-w-0 p-2 border rounded-xl focus:ring-2 focus:ring-rose-500 outline-none text-sm transition ${darkMode ? 'bg-rose-500/5 border-rose-500/20 text-white placeholder-white/20' : 'bg-rose-50 border-rose-200 text-slate-900 placeholder-slate-400'}`}
+                                    placeholder="Enter block keyword..."
+                                    className={`flex-1 min-w-0 h-8 px-2.5 border rounded-lg focus:ring-2 focus:ring-teal-500/30 outline-none text-xs transition font-medium ${
+                                      darkMode ? 'bg-neutral-900 border-white/10 text-white placeholder-slate-400' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                                    }`}
                                   />
                                   <button
                                     onClick={() => removeAutoBlockKeyword(index)}
-                                    className={`flex-shrink-0 p-2.5 rounded-xl transition ${darkMode ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-600 hover:bg-rose-200'}`}
+                                    className={`p-1.5 rounded-lg transition ${
+                                      darkMode ? 'bg-rose-500/15 text-rose-400 hover:bg-rose-500/25' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'
+                                    }`}
                                     title="Delete Keyword"
                                   >
-                                    <Trash2 size={16} />
+                                    <Trash2 size={13} />
                                   </button>
                                 </div>
                                 
-                                <div className="flex items-center space-x-2">
-                                  <span className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Match:</span>
-                                  <div className="flex bg-slate-100 dark:bg-neutral-900 rounded-lg p-1">
+                                <div className="flex items-center justify-between">
+                                  <span className={`text-[10px] font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                                    Match Mode
+                                  </span>
+                                  <div className="flex bg-slate-200/70 dark:bg-neutral-900 rounded-md p-0.5 border dark:border-white/5 border-slate-200">
                                     <button
                                       onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'exact')}
-                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition ${item.matchMode === 'exact' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                      className={`px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider transition ${
+                                        item.matchMode === 'exact' 
+                                          ? (darkMode ? 'bg-teal-600 text-white' : 'bg-white shadow-xs text-slate-900 font-extrabold') 
+                                          : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
+                                      }`}
                                     >
                                       Exact
                                     </button>
                                     <button
                                       onClick={() => updateAutoBlockKeyword(index, 'matchMode', 'partial')}
-                                      className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition ${item.matchMode === 'partial' ? (darkMode ? 'bg-rose-500 text-white' : 'bg-white shadow-sm text-slate-900') : (darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}`}
+                                      className={`px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider transition ${
+                                        item.matchMode === 'partial' 
+                                          ? (darkMode ? 'bg-teal-600 text-white' : 'bg-white shadow-xs text-slate-900 font-extrabold') 
+                                          : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
+                                      }`}
                                     >
                                       Partial
                                     </button>
@@ -3289,222 +3640,62 @@ export default function App() {
               </div>
               <div ref={castBottomRef} />
 
-              <div className={`fixed bottom-24 left-4 flex flex-col rounded-full shadow-xl border overflow-hidden z-40 ${darkMode ? 'bg-neutral-900 border-white/10' : 'bg-white border-slate-200'}`}>
+              {/* Floating Quick Scroll Buttons for Cast */}
+              <div className={`fixed bottom-20 left-4 flex flex-col rounded-full shadow-lg border overflow-hidden z-40 backdrop-blur-md ${
+                darkMode ? 'bg-neutral-900/90 border-white/10 shadow-black/60' : 'bg-white/95 border-slate-200 shadow-slate-300/80'
+              }`}>
                 <motion.button
                   whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastTop}
-                  className={`p-3 transition ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
+                  className={`p-2 transition ${darkMode ? 'text-purple-300' : 'text-purple-600'}`}
+                  title="Scroll to top"
                 >
-                  <ArrowUp size={20} />
+                  <ArrowUp size={16} />
                 </motion.button>
                 <div className={`h-px w-full ${darkMode ? 'bg-white/10' : 'bg-slate-200'}`} />
                 <motion.button
                   whileHover={{ backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }}
                   whileTap={{ scale: 0.9 }}
                   onClick={scrollToCastBottom}
-                  className={`p-3 transition ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
+                  className={`p-2 transition ${darkMode ? 'text-purple-300' : 'text-purple-600'}`}
+                  title="Scroll to bottom"
                 >
-                  <ArrowDown size={20} />
+                  <ArrowDown size={16} />
                 </motion.button>
               </div>
-            </div>
+            </motion.div>
           )}
 
           {activeTab === 'user' && (
-            <motion.div
-              key="user"
-              custom={direction}
-              variants={slideVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="space-y-6 w-full"
-            >
-              <div className={`border p-8 rounded-[2.5rem] space-y-6 transition-colors duration-500 glow-pink relative overflow-hidden group ${darkMode ? 'bg-pink-950/40 border-pink-500/30' : 'bg-pink-50 border-pink-200 shadow-xl shadow-pink-500/10'}`}>
-                <div className={`absolute inset-0 pattern-lines opacity-[0.05] pointer-events-none ${darkMode ? 'text-pink-400' : 'text-pink-600'}`} />
-                <div className="relative z-10 pointer-events-auto">
-                  {stats?.isUserBotConnected ? (
-                    <div className="text-center py-8 space-y-6">
-                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center mx-auto border transition ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-600'}`}>
-                      <CheckCircle2 size={48} />
-                    </div>
-                    <div>
-                      <h3 className={`text-xl font-bold tracking-tight mb-2 transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>System Connected</h3>
-                      <p className={`text-sm max-w-[200px] mx-auto ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Your Telegram session is active and ready for auto-replies.</p>
-                    </div>
-                    
-                    <div className="pt-4 flex flex-col space-y-3">
-                      <div className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                        Session Running:
-                        <motion.div 
-                          className="flex items-center space-x-3 mt-2"
-                          animate={{ opacity: [0.8, 1, 0.8] }}
-                          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                        >
-                          <motion.div 
-                            key={timer.days}
-                            initial={{ scale: 0.8, color: "#10b981" }}
-                            animate={{ scale: 1, color: "#059669" }}
-                            className="font-black text-4xl text-emerald-500"
-                          >
-                            {timer.days}d
-                          </motion.div>
-                          <motion.span 
-                            className="text-2xl font-mono font-bold text-slate-700 dark:text-slate-300"
-                            animate={{ scale: [1, 1.05, 1] }}
-                            transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
-                          >
-                            {timer.time}
-                          </motion.span>
-                        </motion.div>
-                      </div>
-
-                      {stats?.lastLoginTime && (
-                        <div className="flex flex-col items-center pt-2">
-                          <span className={`text-[9px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                            Last Login:
-                          </span>
-                          <span className={`text-[10px] font-mono font-bold mt-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-                            {stats?.lastLoginTime ? new Date(stats.lastLoginTime).toLocaleString('en-IN', {
-                              day: '2-digit',
-                              month: 'short',
-                              year: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              hour12: true
-                            }) : 'Never'}
-                          </span>
-                        </div>
-                      )}
-
-                      <button 
-                        onClick={fetchStats}
-                        className="text-emerald-500 text-[10px] font-bold uppercase tracking-widest hover:underline"
-                      >
-                        Refresh Status
-                      </button>
-                      <button 
-                        onClick={() => setShowLogoutConfirm(true)}
-                        className={`text-[9px] font-bold uppercase tracking-widest transition-colors pt-4 opacity-40 hover:opacity-100 ${darkMode ? 'text-slate-500 hover:text-rose-400' : 'text-slate-400 hover:text-rose-600'}`}
-                      >
-                        Logout Session
-                      </button>
-                    </div>
-                    
-                    {deferredPrompt && (
-                      <div className={`pt-8 border-t transition-colors duration-500 ${darkMode ? 'border-neutral-800' : 'border-slate-100'}`}>
-                        <button
-                          onClick={handleInstallApp}
-                          className={`w-full py-4 rounded-2xl font-bold uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 border ${darkMode ? 'bg-neutral-950 border-neutral-800 text-slate-300 hover:bg-neutral-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-                        >
-                          <Smartphone size={16} />
-                          <span>Install Application</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {authStep === 'credentials' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API ID</label>
-                          <input
-                            type="text"
-                            value={apiIdInput}
-                            onChange={(e) => setApiIdInput(e.target.value)}
-                            placeholder="Enter API ID"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>API Hash</label>
-                          <input
-                            type="text"
-                            value={apiHashInput}
-                            onChange={(e) => setApiHashInput(e.target.value)}
-                            placeholder="Enter API Hash"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={() => { handleUpdateSettings(); setAuthStep('phone'); }}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          Continue
-                        </motion.button>
-                      </div>
-                    )}
-
-                    {authStep === 'phone' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phone Number</label>
-                          <input
-                            type="text"
-                            value={phone}
-                            onChange={(e) => setPhone(e.target.value)}
-                            placeholder="+1 234 567 8900"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={handleSendCode}
-                          disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
-                          <span>Request Code</span>
-                        </motion.button>
-                        <button onClick={() => setAuthStep('credentials')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back to API Info</button>
-                      </div>
-                    )}
-
-                    {authStep === 'code' && (
-                      <div className="space-y-5">
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Login Code</label>
-                          <input
-                            type="text"
-                            value={code}
-                            onChange={(e) => setCode(e.target.value)}
-                            placeholder="Enter 5-digit code"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className={`text-[10px] font-black uppercase tracking-widest ml-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>2FA Password (Optional)</label>
-                          <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="If enabled"
-                            className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-sm transition ${darkMode ? 'bg-pink-500/5 border-pink-500/20 text-white placeholder-white/20' : 'bg-pink-50 border-pink-200 text-slate-900 placeholder-slate-400'}`}
-                          />
-                        </div>
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={handleSignIn}
-                          disabled={authLoading}
-                          className={`w-full py-4 rounded-2xl font-black uppercase tracking-widest text-xs transition flex items-center justify-center space-x-2 shadow-lg ${darkMode ? 'bg-pink-600 text-white shadow-pink-900/20 hover:bg-pink-500' : 'bg-pink-500 text-white shadow-pink-500/20 hover:bg-pink-600'}`}
-                        >
-                          {authLoading ? <RefreshCw className="animate-spin" size={16} /> : null}
-                          <span>Verify & Connect</span>
-                        </motion.button>
-                        <button onClick={() => setAuthStep('phone')} className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:underline">Back</button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
+            <UserManager
+              darkMode={darkMode}
+              stats={stats}
+              timer={timer}
+              fetchStats={fetchStats}
+              setShowLogoutConfirm={setShowLogoutConfirm}
+              deferredPrompt={deferredPrompt}
+              handleInstallApp={handleInstallApp}
+              authStep={authStep as any}
+              setAuthStep={setAuthStep as any}
+              apiIdInput={apiIdInput}
+              setApiIdInput={setApiIdInput}
+              apiHashInput={apiHashInput}
+              setApiHashInput={setApiHashInput}
+              phoneNumberInput={phone}
+              setPhoneNumberInput={setPhone}
+              handleSendCode={handleSendCode}
+              isSendingCode={authLoading}
+              phoneCodeInput={code}
+              setPhoneCodeInput={setCode}
+              handleVerifyCode={handleSignIn}
+              isVerifyingCode={authLoading}
+              twoFactorInput={password}
+              setTwoFactorInput={setPassword}
+              direction={direction}
+              slideVariants={slideVariants}
+              handleSaveApiCredentials={handleUpdateSettings}
+            />
           )}
 
           {activeTab === 'analytics' && (
@@ -3942,16 +4133,16 @@ export default function App() {
 
       {/* Floating Bottom Navigation Bar */}
       <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-sm sm:max-w-md z-50 transition-all duration-300">
-        <nav className={`rounded-full border px-2.5 py-1 flex items-center justify-between transition-all duration-300 shadow-2xl backdrop-blur-xl ${
+        <nav className={`rounded-2xl sm:rounded-full border px-2 py-1.5 flex items-center justify-around transition-all duration-300 shadow-2xl backdrop-blur-xl ${
           darkMode 
-            ? 'bg-slate-950/90 border-white/15 shadow-[0_10px_35px_rgba(0,0,0,0.8)]' 
-            : 'bg-white/95 border-slate-200/90 shadow-[0_10px_35px_rgba(0,0,0,0.12)]'
+            ? 'bg-slate-950/90 border-white/15 shadow-[0_12px_40px_rgba(0,0,0,0.85)]' 
+            : 'bg-white/95 border-slate-200/90 shadow-[0_12px_40px_rgba(0,0,0,0.14)]'
         }`}>
-          <TabButton id="dashboard" icon={LayoutGrid} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="keywords" icon={MessageCircle} label="Rules" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="approvals" icon={Zap} label="Check" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="broadcast" icon={Radio} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
-          <TabButton id="settings" icon={Settings} label="Settings" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="dashboard" icon={Home} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="keywords" icon={Key} label="Rules" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="approvals" icon={ShieldCheck} label="Check" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="broadcast" icon={Megaphone} label="Cast" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
+          <TabButton id="settings" icon={SlidersHorizontal} label="Settings" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
         </nav>
       </div>
 
@@ -4442,6 +4633,25 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Logo Selector Modal */}
+      <LogoSelectorModal
+        isOpen={isLogoModalOpen}
+        onClose={() => setIsLogoModalOpen(false)}
+        currentLogo={appLogoInput || stats?.appLogo || ''}
+        onSaveLogo={handleSaveLogo}
+        darkMode={darkMode}
+      />
+
+      {/* Install App / WebAPK Download Modal */}
+      <InstallAppModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        deferredPrompt={deferredPrompt}
+        onTriggerInstall={handleInstallApp}
+        darkMode={darkMode}
+        appLogo={appLogoInput || stats?.appLogo}
+      />
     </motion.div>
       )}
     </AnimatePresence>

@@ -1,0 +1,19 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="p2_bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+    <linearGradient id="p2_plane" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e0f2fe" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="28" fill="url(#p2_bg)" />
+  <!-- Speed Lines -->
+  <path d="M16 35H28M12 50H24M18 65H32" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" opacity="0.6" />
+  <!-- Telegram Plane -->
+  <path d="M25 50L75 26L63 74L48 58L42 67L40 54L25 50Z" fill="url(#p2_plane)" />
+  <path d="M48 58L75 26L40 54L48 58Z" fill="#bae6fd" opacity="0.8" />
+  <path d="M42 67L48 58L40 54L42 67Z" fill="#7dd3fc" />
+</svg>

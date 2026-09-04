@@ -11,8 +11,13 @@ import { GoogleGenAI } from "@google/genai";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Path resolution safe for both ESM (dev tsx) and bundled CommonJS (production)
+const _dirname = typeof __dirname !== "undefined"
+  ? __dirname
+  : process.cwd();
+const _filename = typeof __filename !== "undefined"
+  ? __filename
+  : path.join(_dirname, "server.ts");
 
 // Initialize Gemini
 // const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -71,11 +76,14 @@ if (!MONGODB_URI) {
 
 // Schemas
 const SettingSchema = new mongoose.Schema({
-  key: { type: String, required: true, unique: true },
-  value: { type: String, required: true }
+  key: { type: String, required: true },
+  value: { type: String, required: true },
+  account_id: { type: String, default: 'default', index: true }
 });
+SettingSchema.index({ key: 1, account_id: 1 }, { unique: true });
 const Setting = mongoose.model("Setting", SettingSchema);
 let bot: TelegramBot | null = null;
+let currentBotInfo: { id: number; firstName: string; username: string } | null = null;
 
 const escapeHtml = (text: string) => {
   if (!text) return "";
@@ -331,7 +339,7 @@ async function executeApprovedReply(approvalDoc: any) {
         const topMsgId = (topicId === 1 || !topicId) ? undefined : topicId;
 
         try {
-          let inputPeer = await userClient.getInputEntity(fromPeer);
+          let inputPeer = await userClient.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
           await userClient.invoke(
             new Api.messages.ForwardMessages({
               fromPeer: inputPeer,
@@ -346,7 +354,7 @@ async function executeApprovedReply(approvalDoc: any) {
           try {
             await userClient.forwardMessages(toPeerInput, {
               messages: [messageId],
-              fromPeer: fromPeer,
+              fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
               topMsgId: replyInGeneral ? undefined : topMsgId,
             } as any);
             replySent = true;
@@ -359,11 +367,8 @@ async function executeApprovedReply(approvalDoc: any) {
   }
 
   if (topicId && kw._id) {
-    await ReplyHistory.findOneAndUpdate(
-      { topic_id: topicId, chat_id: chatId, keyword_id: kw._id },
-      { $inc: { count: 1 }, $set: { last_updated: new Date() } },
-      { upsert: true }
-    ).catch(() => {});
+    const accId = approvalDoc.account_id || "default";
+    await incrementKeywordReplyCount(topicId, chatId, kw._id, accId);
   }
 
   const successLog = `✅ Approved Keyword Reply Sent: "${matchedWord}" in ${approvalDoc.chat_title || chatId} > ${approvalDoc.topic_name || topicId}`;
@@ -386,6 +391,18 @@ async function initBot(token: string) {
   console.log("Initializing Telegram Bot...");
   bot = new TelegramBot(token, { polling: true });
   saveLog("Telegram Bot initialized and polling started.", "info", "SYSTEM");
+  
+  try {
+    const me = await bot.getMe();
+    currentBotInfo = {
+      id: me.id,
+      firstName: me.first_name || "Bot",
+      username: me.username || "",
+    };
+    console.log(`Telegram Bot @${me.username} (${me.first_name}) info loaded successfully.`);
+  } catch (meErr: any) {
+    console.warn("Could not fetch bot getMe() info:", meErr.message);
+  }
   
   bot.on("polling_error", (error: any) => {
     if (error.message && error.message.includes("409 Conflict")) return;
@@ -417,17 +434,30 @@ async function initBot(token: string) {
 
       if (!text) return;
 
-      const groupIdsSetting = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
-      const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim().replace("-100", "")).filter(id => id);
-      const currentChatId = chatId.toString().replace("-100", "");
+      const registered = parseRegisteredGroups();
+      const allowedGroupIds = registered.map(r => r.normalizedId);
+      const currentChatId = chatId.toString().replace(/^-100|^ -100|^-/, "").trim();
       const isAllowedGroup = allowedGroupIds.includes(currentChatId);
 
-      // Only respond to private messages or bot commands in allowed groups
+      // Only respond to private messages or bot commands in explicitly allowed groups from Settings
+      if (!isPrivate && !isAllowedGroup) {
+        return;
+      }
+
       if (!isPrivate && !text.startsWith("/") && !text.toLowerCase().startsWith("block") && !text.toLowerCase().startsWith("unblock")) {
         return;
       }
 
       const lowerText = text.toLowerCase();
+
+      if (isPrivate) {
+        // Automatically save the user's private Telegram chat ID as admin for notifications
+        await Setting.findOneAndUpdate(
+          { key: `bot_admin_${chatId}`, account_id: "default" },
+          { key: `bot_admin_${chatId}`, value: chatId.toString(), account_id: "default" },
+          { upsert: true }
+        ).catch(() => {});
+      }
 
       // --- COMMAND: /start or /help ---
       if (lowerText === "/start" || lowerText.startsWith("/start ") || lowerText === "/help" || lowerText.startsWith("/help ")) {
@@ -501,7 +531,7 @@ async function initBot(token: string) {
         if (existing) {
           const topicName = existing.name || topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
           await BlockedTopic.findByIdAndDelete(existing._id);
-          blockedTopicsCache.delete(topicInfo.topicId);
+          removeBlockedTopicFromCache(topicInfo.topicId);
 
           const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
           await saveLog(`Topic ${topicInfo.topicId} unblocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { topicName, topicId: topicInfo.topicId });
@@ -562,7 +592,7 @@ async function initBot(token: string) {
           name,
           link: normalizedLink
         });
-        blockedTopicsCache.add(topicId);
+        addBlockedTopicToCache(topicId);
 
         const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
         await saveLog(`Topic ${topicId} blocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { link: normalizedLink, topicName: name, topicId });
@@ -635,7 +665,7 @@ async function initBot(token: string) {
               name,
               link: `Topic ID ${topicId}`
             });
-            blockedTopicsCache.add(topicId);
+            addBlockedTopicToCache(topicId);
             sendSseEvent('topic_blocked', { message: `Topic "${name}" blocked`, topicName: name, timestamp: new Date() });
             await saveLog(`Topic ${topicId} blocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
           }
@@ -660,7 +690,7 @@ async function initBot(token: string) {
           if (existing) {
             name = existing.name || name;
             await BlockedTopic.findByIdAndDelete(existing._id);
-            blockedTopicsCache.delete(topicId);
+            removeBlockedTopicFromCache(topicId);
             sendSseEvent('topic_unblocked', { topicId, timestamp: new Date() });
             await saveLog(`Topic ${topicId} unblocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
           }
@@ -696,8 +726,27 @@ async function initBot(token: string) {
       
       try {
         const approval = await PendingApproval.findById(approvalId).populate('rule_id');
-        if (!approval || approval.status !== 'pending') {
-          await bot?.answerCallbackQuery(query.id, { text: "Approval already processed or not found." });
+        const is24hExpired = approval && approval.created_at && (Date.now() - new Date(approval.created_at).getTime() > 24 * 60 * 60 * 1000);
+
+        if (!approval || approval.status !== 'pending' || is24hExpired) {
+          if (approval && approval.status === 'pending' && is24hExpired) {
+            approval.status = 'expired';
+            await approval.save().catch(() => {});
+            sendSseEvent('approval_processed', { id: approvalId, status: 'expired' });
+          }
+
+          const responseMsg = is24hExpired ? "⏳ Approval request has expired (24h passed)." : "Approval already processed or not found.";
+          await bot?.answerCallbackQuery(query.id, { text: responseMsg });
+          if (query.message) {
+            await bot?.editMessageText(
+              `⏳ <b>Approval Request Expired</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval?.matched_keyword || 'Keyword')}</code>\n<i>This request is older than 24 hours and is no longer valid.</i>`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML'
+              }
+            ).catch(() => {});
+          }
           return;
         }
         
@@ -753,9 +802,10 @@ const TopicSchema = new mongoose.Schema({
   telegram_topic_id: { type: Number, required: true },
   chat_id: { type: String, required: true, default: "" },
   name: { type: String },
+  account_id: { type: String, default: "default", index: true },
   created_at: { type: Date, default: Date.now }
 });
-TopicSchema.index({ telegram_topic_id: 1, chat_id: 1 }, { unique: true });
+TopicSchema.index({ telegram_topic_id: 1, chat_id: 1, account_id: 1 }, { unique: true });
 const Topic = mongoose.model("Topic", TopicSchema);
 
 const KeywordSchema = new mongoose.Schema({
@@ -771,9 +821,38 @@ const KeywordSchema = new mongoose.Schema({
   approval_mode: { type: Boolean, default: false },
   target_groups: { type: [String], default: [] }, // Target group IDs or titles
   enabled: { type: Boolean, default: true },
-  notify_on_hit: { type: Boolean, default: false }
+  notify_on_hit: { type: Boolean, default: false },
+  account_id: { type: String, default: "default", index: true }
 });
 const Keyword = mongoose.model("Keyword", KeywordSchema);
+
+const SessionHistorySchema = new mongoose.Schema({
+  account_id: { type: String, default: "default", index: true },
+  start_time: { type: Number, required: true },
+  end_time: { type: Number, required: true },
+  duration_seconds: { type: Number, required: true },
+});
+const SessionHistory = mongoose.model("SessionHistory", SessionHistorySchema);
+
+async function recordSessionEnd(accountId, sessionStartTime) {
+  if (sessionStartTime) {
+    const duration = Math.floor((Date.now() - sessionStartTime) / 1000);
+    if (duration > 60) { // Only record sessions longer than a minute
+      try {
+        await SessionHistory.create({
+          account_id: accountId,
+          start_time: sessionStartTime,
+          end_time: Date.now(),
+          duration_seconds: duration
+        });
+      } catch (e) {
+        console.error("Error saving session history:", e);
+      }
+    }
+  }
+}
+
+
 
 const PendingApprovalSchema = new mongoose.Schema({
   matched_keyword: { type: String, required: true },
@@ -786,7 +865,8 @@ const PendingApprovalSchema = new mongoose.Schema({
   original_text: { type: String },
   bot_chat_id: { type: String },
   bot_message_id: { type: Number },
-  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  status: { type: String, enum: ['pending', 'approved', 'rejected', 'expired'], default: 'pending' },
+  account_id: { type: String, default: "default", index: true },
   created_at: { type: Date, default: Date.now },
   processed_at: { type: Date }
 });
@@ -798,6 +878,7 @@ const LogSchema = new mongoose.Schema({
   message: { type: String, required: true },
   details: { type: String },
   route: { type: String },
+  account_id: { type: String, default: "default", index: true },
   timestamp: { type: Date, default: Date.now }
 });
 const Log = mongoose.model("Log", LogSchema);
@@ -807,34 +888,39 @@ const ReplyHistorySchema = new mongoose.Schema({
   chat_id: { type: String, required: true, default: "" },
   keyword_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword', required: true },
   count: { type: Number, default: 0 },
+  account_id: { type: String, default: "default", index: true },
   last_updated: { type: Date, default: Date.now }
 });
-ReplyHistorySchema.index({ topic_id: 1, chat_id: 1, keyword_id: 1 }, { unique: true });
+ReplyHistorySchema.index({ topic_id: 1, chat_id: 1, keyword_id: 1, account_id: 1 }, { unique: true });
 const ReplyHistory = mongoose.model("ReplyHistory", ReplyHistorySchema);
 
 const PhotoReplyHistorySchema = new mongoose.Schema({
   topic_id: { type: Number, required: true },
   chat_id: { type: String, required: true, default: "" },
   count: { type: Number, default: 0 },
+  account_id: { type: String, default: "default", index: true },
   last_updated: { type: Date, default: Date.now }
 });
-PhotoReplyHistorySchema.index({ topic_id: 1, chat_id: 1 }, { unique: true });
+PhotoReplyHistorySchema.index({ topic_id: 1, chat_id: 1, account_id: 1 }, { unique: true });
 const PhotoReplyHistory = mongoose.model("PhotoReplyHistory", PhotoReplyHistorySchema);
 
 const PhotoSentLogSchema = new mongoose.Schema({
   topic_id: { type: Number, required: true },
   topic_name: { type: String },
   topic_link: { type: String },
+  account_id: { type: String, default: "default", index: true },
   sent_at: { type: Date, default: Date.now }
 });
 const PhotoSentLog = mongoose.model("PhotoSentLog", PhotoSentLogSchema);
 
 const BlockedTopicSchema = new mongoose.Schema({
-  telegram_topic_id: { type: Number, required: true, unique: true },
+  telegram_topic_id: { type: Number, required: true },
   name: { type: String },
   link: { type: String },
+  account_id: { type: String, default: "default", index: true },
   created_at: { type: Date, default: Date.now }
 });
+BlockedTopicSchema.index({ telegram_topic_id: 1, account_id: 1 }, { unique: true });
 const BlockedTopic = mongoose.model("BlockedTopic", BlockedTopicSchema);
 
 const MissedTriggerSchema = new mongoose.Schema({
@@ -844,6 +930,7 @@ const MissedTriggerSchema = new mongoose.Schema({
   text: { type: String },
   matched_keyword: { type: String },
   rule_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword' },
+  account_id: { type: String, default: "default", index: true },
   timestamp: { type: Date, default: Date.now },
   processed: { type: Boolean, default: false }
 });
@@ -855,6 +942,7 @@ const PushSubscriptionSchema = new mongoose.Schema({
     p256dh: { type: String, required: true },
     auth: { type: String, required: true }
   },
+  account_id: { type: String, default: "default", index: true },
   created_at: { type: Date, default: Date.now }
 });
 const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSchema);
@@ -862,58 +950,232 @@ const PushSubscription = mongoose.model("PushSubscription", PushSubscriptionSche
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-let settingsCache: Record<string, string | null> = {};
-let blockedTopicsCache: Set<number> = new Set();
+export function getAccountId(req?: any): string {
+  if (!req) return 'default';
+  const headerId = req.headers?.['x-account-id'] as string;
+  const queryId = req.query?.account_id as string;
+  const bodyId = req.body?.account_id as string;
+  const id = headerId || queryId || bodyId || 'default';
+  return String(id).trim() || 'default';
+}
+
+export function getAccountFilter(accountId: string = 'default') {
+  const acc = accountId || 'default';
+  if (acc === 'default') {
+    return { $or: [{ account_id: 'default' }, { account_id: { $exists: false } }, { account_id: '' }, { account_id: null }] };
+  }
+  return { account_id: acc };
+}
+
+let settingsCache: Record<string, Record<string, string | null>> = {};
+let blockedTopicsCache: Map<string, Set<number>> = new Map();
 let topicNamesCache: Record<number, string> = {};
 
-async function refreshSettingsCache() {
+export function isTopicBlocked(topicId: number, accountId: string = 'default'): boolean {
+  const acc = accountId || 'default';
+  const set = blockedTopicsCache.get(acc);
+  if (set && set.has(topicId)) return true;
+  if (acc !== 'default') {
+    const defaultSet = blockedTopicsCache.get('default');
+    if (defaultSet && defaultSet.has(topicId)) return true;
+  }
+  return false;
+}
+
+export function addBlockedTopicToCache(topicId: number, accountId: string = 'default') {
+  const acc = accountId || 'default';
+  if (!blockedTopicsCache.has(acc)) blockedTopicsCache.set(acc, new Set());
+  blockedTopicsCache.get(acc)!.add(topicId);
+}
+
+export function removeBlockedTopicFromCache(topicId: number, accountId: string = 'default') {
+  const acc = accountId || 'default';
+  const set = blockedTopicsCache.get(acc);
+  if (set) set.delete(topicId);
+}
+
+export function getCachedSetting(key: string, accountId: string = 'default'): string {
+  const acc = accountId || 'default';
+  const val = settingsCache[acc]?.[key] || "";
+  return typeof val === 'string' ? val : "";
+}
+
+export interface AccountSession {
+  accountId: string;
+  client: TelegramClient;
+  sessionStartTime: number;
+  phoneCodeHash?: string;
+  phoneNumber?: string;
+  loginUser?: any;
+}
+
+export const accountClients: Map<string, AccountSession> = new Map();
+export const accountAuthStates: Map<string, { phoneCodeHash?: string; phoneNumber?: string; isConnecting?: boolean; client?: TelegramClient }> = new Map();
+
+export function getAccountClient(accountId: string = 'default'): TelegramClient | null {
+  const acc = accountId || 'default';
+  const session = accountClients.get(acc);
+  if (session?.client) return session.client;
+  if (acc === 'default' && userClient) return userClient;
+  return null;
+}
+
+async function refreshSettingsCache(targetAccountId?: string) {
   try {
     const settings = await Setting.find();
     settingsCache = {};
     for (const s of settings) {
-      settingsCache[s.key] = s.value;
+      const acc = s.account_id || 'default';
+      if (!settingsCache[acc]) settingsCache[acc] = {};
+      settingsCache[acc][s.key] = s.value;
     }
     
     const blockedTopics = await BlockedTopic.find();
-    blockedTopicsCache = new Set(blockedTopics.map(t => t.telegram_topic_id));
-    console.log(`Blocked topics cache refreshed: ${blockedTopicsCache.size} topics. IDs: ${Array.from(blockedTopicsCache).join(", ")}`);
+    blockedTopicsCache.clear();
+    for (const bt of blockedTopics) {
+      const acc = bt.account_id || 'default';
+      if (!blockedTopicsCache.has(acc)) blockedTopicsCache.set(acc, new Set());
+      blockedTopicsCache.get(acc)!.add(bt.telegram_topic_id);
+    }
     
     const topics = await Topic.find();
     topicNamesCache = {};
     for (const t of topics) {
-      topicNamesCache[t.telegram_topic_id] = t.name;
+      topicNamesCache[t.telegram_topic_id] = t.name || '';
     }
   } catch (err) {
     console.error("Failed to refresh settings cache:", err);
   }
 }
 
-const getSetting = async (key: string) => {
-  if (settingsCache.hasOwnProperty(key)) {
-    return settingsCache[key] === null ? null : { value: settingsCache[key] };
+const getSetting = async (key: string, accountId: string = "default") => {
+  const acc = accountId || "default";
+  if (!settingsCache[acc]) settingsCache[acc] = {};
+  if (settingsCache[acc].hasOwnProperty(key)) {
+    return settingsCache[acc][key] === null ? null : { value: settingsCache[acc][key] };
   }
-  const setting = await Setting.findOne({ key });
-  if (setting) {
-    settingsCache[key] = setting.value;
+  let setting = null;
+  if (acc === "default") {
+    setting = await Setting.findOne({ key, ...getAccountFilter('default') });
   } else {
-    settingsCache[key] = null;
+    setting = await Setting.findOne({ key, account_id: acc });
+  }
+  if (setting) {
+    settingsCache[acc][key] = setting.value;
+  } else {
+    settingsCache[acc][key] = null;
   }
   return setting;
 };
 
-const setSetting = async (key: string, value: string) => {
-  console.log(`Updating setting cache: ${key} = ${value}`);
-  settingsCache[key] = value;
-  return await Setting.findOneAndUpdate({ key }, { value }, { upsert: true, new: true });
+const setSetting = async (key: string, value: string, accountId: string = "default") => {
+  const acc = accountId || "default";
+  if (!settingsCache[acc]) settingsCache[acc] = {};
+  settingsCache[acc][key] = value;
+  
+  if (acc === "default") {
+    return await Setting.findOneAndUpdate(
+      { key, ...getAccountFilter('default') },
+      { key, value, account_id: 'default' },
+      { upsert: true, new: true }
+    );
+  } else {
+    return await Setting.findOneAndUpdate(
+      { key, account_id: acc },
+      { key, value, account_id: acc },
+      { upsert: true, new: true }
+    );
+  }
 };
 
-const deleteSetting = async (key: string) => {
-  delete settingsCache[key];
-  return await Setting.deleteOne({ key });
+const deleteSetting = async (key: string, accountId: string = "default") => {
+  const acc = accountId || "default";
+  if (settingsCache[acc]) {
+    delete settingsCache[acc][key];
+  }
+  if (acc === "default") {
+    return await Setting.deleteMany({ key, ...getAccountFilter('default') });
+  } else {
+    return await Setting.deleteMany({ key, account_id: acc });
+  }
 };
 
-const getTopicCount = async () => await Topic.countDocuments();
-const getTodayTopicCount = async () => {
+// Helper: Parse and normalize target group IDs configured in Settings
+export function parseRegisteredGroups(settingValue?: string, accountId: string = "default"): { id: string; normalizedId: string; title: string }[] {
+  const acc = accountId || "default";
+  const raw = settingValue !== undefined ? settingValue : (settingsCache[acc]?.["telegram_group_ids"] || settingsCache[acc]?.["target_group_id"] || (acc === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "");
+  if (!raw || !raw.trim()) return [];
+
+  const items = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  const result: { id: string; normalizedId: string; title: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    let id = "";
+    let title = "";
+
+    if (item.includes(":")) {
+      const parts = item.split(":").map(p => p.trim());
+      if (/-?\d+/.test(parts[1])) {
+        title = parts[0];
+        id = parts[1];
+      } else if (/-?\d+/.test(parts[0])) {
+        id = parts[0];
+        title = parts[1];
+      } else {
+        id = parts[0];
+        title = parts[1];
+      }
+    } else if (item.includes("(") && item.includes(")")) {
+      const match = item.match(/(.+)\((.+)\)/);
+      if (match) {
+        const p1 = match[1].trim();
+        const p2 = match[2].trim();
+        if (/-?\d+/.test(p2)) {
+          title = p1;
+          id = p2;
+        } else {
+          title = p2;
+          id = p1;
+        }
+      } else {
+        id = item;
+      }
+    } else {
+      id = item;
+    }
+
+    id = id.trim();
+    if (!id) continue;
+
+    // Handle Telegram link formats e.g. https://t.me/c/3672030592/1
+    const linkMatch = id.match(/t\.me\/c\/(\d+)/);
+    if (linkMatch) {
+      id = "-100" + linkMatch[1];
+    }
+
+    // Normalized ID (digits only without leading minus or 100)
+    const normalizedId = id.replace(/^-100|^ -100|^-/, "").trim();
+    if (!normalizedId) continue;
+
+    // Standardized full ID with -100 prefix if supergroup or - for chat
+    const standardId = id.startsWith("-") ? id : (id.length >= 9 ? `-100${id}` : `-${id}`);
+
+    if (!seen.has(normalizedId)) {
+      seen.add(normalizedId);
+      result.push({
+        id: standardId,
+        normalizedId,
+        title: title && title !== standardId && title !== normalizedId ? title : standardId
+      });
+    }
+  }
+
+  return result;
+}
+
+const getTopicCount = async (accountId: string = "default") => await Topic.countDocuments(getAccountFilter(accountId));
+const getTodayTopicCount = async (accountId: string = "default") => {
   const now = new Date();
   // Get start of today in IST (Asia/Kolkata)
   const istOffset = 5.5 * 60 * 60 * 1000;
@@ -921,10 +1183,10 @@ const getTodayTopicCount = async () => {
   const startOfTodayIST_ms = Math.floor(nowIST / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
   const startOfTodayUTC = new Date(startOfTodayIST_ms - istOffset);
   
-  return await Topic.countDocuments({ created_at: { $gte: startOfTodayUTC } });
+  return await Topic.countDocuments({ created_at: { $gte: startOfTodayUTC }, ...getAccountFilter(accountId) });
 };
 
-const getTodayPhotoSentStats = async () => {
+const getTodayPhotoSentStats = async (accountId: string = "default") => {
   const now = new Date();
   // Get start of today in IST (Asia/Kolkata)
   const istOffset = 5.5 * 60 * 60 * 1000;
@@ -932,7 +1194,7 @@ const getTodayPhotoSentStats = async () => {
   const startOfTodayIST_ms = Math.floor(nowIST / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
   const startOfTodayUTC = new Date(startOfTodayIST_ms - istOffset);
   
-  const logs = await PhotoSentLog.find({ sent_at: { $gte: startOfTodayUTC } }).sort({ sent_at: -1 });
+  const logs = await PhotoSentLog.find({ sent_at: { $gte: startOfTodayUTC }, ...getAccountFilter(accountId) }).sort({ sent_at: -1 });
   return {
     count: logs.length,
     topics: logs.map(log => ({
@@ -943,12 +1205,12 @@ const getTodayPhotoSentStats = async () => {
   };
 };
 
-const getPast24hPhotoSentStats = async () => {
+const getPast24hPhotoSentStats = async (accountId: string = "default") => {
   const now = new Date();
   const past24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const istOffset = 5.5 * 60 * 60 * 1000;
   
-  const logs = await PhotoSentLog.find({ sent_at: { $gte: past24h } }).sort({ sent_at: -1 });
+  const logs = await PhotoSentLog.find({ sent_at: { $gte: past24h }, ...getAccountFilter(accountId) }).sort({ sent_at: -1 });
   return {
     count: logs.length,
     topics: logs.map(log => ({
@@ -958,9 +1220,10 @@ const getPast24hPhotoSentStats = async () => {
     }))
   };
 };
-const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | Date, date?: Date) => {
+
+const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | Date, date?: Date, accountId: string = "default") => {
   try {
-    let finalChatId = process.env.TELEGRAM_GROUP_ID || "";
+    let finalChatId = (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
     let finalDate = date || new Date();
 
     if (chatIdOrDate) {
@@ -973,9 +1236,9 @@ const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | D
 
     topicNamesCache[topicId] = name;
     await Topic.findOneAndUpdate(
-      { telegram_topic_id: topicId, chat_id: finalChatId },
+      { telegram_topic_id: topicId, chat_id: finalChatId, ...getAccountFilter(accountId) },
       { 
-        $set: { name },
+        $set: { name, account_id: accountId || 'default' },
         $setOnInsert: { created_at: finalDate }
       },
       { upsert: true }
@@ -983,13 +1246,14 @@ const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | D
   } catch (err) {}
 };
 
-const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info', category: string = 'SYSTEM', route?: string, details?: any) => {
+const saveLog = async (message: string, level: 'info' | 'error' | 'warn' = 'info', category: string = 'SYSTEM', route?: string, details?: any, accountId: string = "default") => {
   try {
     await Log.create({
       message,
       level,
       category,
       route,
+      account_id: accountId || 'default',
       details: details ? (typeof details === 'string' ? details : JSON.stringify(details, null, 2)) : undefined
     });
   } catch (err) {
@@ -1311,20 +1575,26 @@ function sendSseEvent(type: string, data: any) {
       return false;
     }
   });
-
-  // Send push notification for photo_received or other important events
-  if (type === 'photo_received') {
-    sendPushNotification("New Photo Received", data.message || "A new photo has been received.", { url: data.url || '/' });
-  }
 }
 
 // Helper to send push notifications to all subscribers
 async function sendPushNotification(title: string, body: string, data: any = {}) {
   try {
     const subscriptions = await PushSubscription.find();
+    if (subscriptions.length === 0) {
+      console.log(`[Push] No subscribers registered yet.`);
+      return;
+    }
     console.log(`Sending push notification to ${subscriptions.length} subscribers.`);
     subscriptions.forEach(sub => console.log(`- Subscriber endpoint: ${sub.endpoint.substring(0, 30)}...`));
-    const payload = JSON.stringify({ title, body, ...data });
+    const payload = JSON.stringify({ 
+      title, 
+      body, 
+      url: data.url || '/',
+      tag: data.tag || `botflow-${Date.now()}`,
+      timestamp: Date.now(),
+      data 
+    });
     
     const promises = subscriptions.map(sub => {
       const subscription = {
@@ -1335,7 +1605,11 @@ async function sendPushNotification(title: string, body: string, data: any = {})
         }
       };
       
-      return webpush.sendNotification(subscription, payload).catch(async (err) => {
+      return webpush.sendNotification(subscription, payload, {
+        TTL: 86400,
+        urgency: 'high',
+        topic: 'botflow-alerts'
+      }).catch(async (err: any) => {
         if (err.statusCode === 404 || err.statusCode === 410) {
           // Subscription expired or no longer valid
           await PushSubscription.deleteOne({ endpoint: sub.endpoint });
@@ -1352,9 +1626,247 @@ async function sendPushNotification(title: string, body: string, data: any = {})
   }
 }
 
+async function getBotAdminChatIds(): Promise<string[]> {
+  try {
+    const adminDocs = await Setting.find({ key: { $regex: /^bot_admin_/ } });
+    const chatIds = adminDocs.map(d => d.value).filter(Boolean);
+    const customAdmin = (await getSetting("telegram_admin_id"))?.value || (await getSetting("admin_chat_id"))?.value;
+    if (customAdmin && !chatIds.includes(customAdmin)) {
+      chatIds.push(customAdmin);
+    }
+    return Array.from(new Set(chatIds));
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function sendPhotoReceivedNotification(params: {
+  chatTitle: string;
+  topicName: string;
+  topicId: number | string;
+  chatId: string;
+  link: string;
+  client?: any;
+  accountId?: string;
+}) {
+  const { chatTitle, topicName, topicId, chatId, link, accountId = "default" } = params;
+  const messageText = `📸 ${chatTitle} - ${topicName} sent a photo`;
+
+  // 1. Web Push Notification to background app/browser
+  sendPushNotification("Photo Received 📷", messageText, { 
+    url: link || '/',
+    tag: `photo-${Date.now()}`
+  }).catch(e => console.error("WebPush photo error:", e));
+
+  // 2. Real-time SSE event for dashboard UI and sound alert
+  sendSseEvent('photo_received', {
+    message: messageText,
+    topicName,
+    groupName: chatTitle,
+    chatId,
+    topicId,
+    accountId,
+    timestamp: new Date(),
+    url: link
+  });
+
+  // 3. Telegram Bot alert to admin chats ONLY with inline button system
+  if (bot) {
+    try {
+      const adminChats = await getBotAdminChatIds();
+      const cleanChatId = (chatId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
+      const topicLink = link || (topicId ? `https://t.me/c/${cleanChatId}/${topicId}` : `https://t.me/c/${cleanChatId}`);
+      const botAlertText = `📸 <b>New Photo Received!</b>\n\n` +
+        `• <b>Group:</b> ${escapeHtml(chatTitle)}\n` +
+        `• <b>Topic:</b> ${escapeHtml(topicName)} (ID: <code>${topicId || 'General'}</code>)`;
+
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: "🔗 Open Topic", url: topicLink },
+            ...(topicId ? [{ text: "🚫 Block Topic", callback_data: `block_topic_${topicId}` }] : [])
+          ]
+        ]
+      };
+
+      for (const adminChat of adminChats) {
+        bot.sendMessage(adminChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
+      }
+    } catch (botErr: any) {
+      console.error("[NOTIFY] Failed to send Bot admin photo notification:", botErr.message);
+    }
+  }
+
+  // 4. Save log
+  saveLog(`Photo received from ${chatTitle} - ${topicName}`, 'info', 'USERBOT', undefined, { topicId, url: link }, accountId).catch(() => {});
+}
+
+export async function sendKeywordHitNotification(params: {
+  matchedWord: string;
+  topicName: string;
+  topicId: string;
+  chatTitle: string;
+  chatId: string;
+  userMessage: string;
+  client?: any;
+  accountId?: string;
+}) {
+  const { matchedWord, topicName, topicId, chatTitle, chatId, userMessage, accountId = "default" } = params;
+  const cleanChatId = (chatId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
+  const topicLink = topicId ? `https://t.me/c/${cleanChatId}/${topicId}` : `https://t.me/c/${cleanChatId}`;
+  const notifyBody = `Matched "${matchedWord}" in "${topicName}" (${chatTitle})`;
+
+  // 1. Web Push Notification to background app/browser
+  sendPushNotification("Keyword Triggered! 🎯", notifyBody, { 
+    url: topicLink || '/',
+    tag: `keyword-${Date.now()}`
+  }).catch(e => console.error("WebPush error:", e));
+
+  // 2. Real-time SSE event for dashboard UI
+  sendSseEvent('keyword_hit_notify', {
+    message: notifyBody,
+    topicName,
+    topicId,
+    groupName: chatTitle,
+    chatId,
+    keyword: matchedWord,
+    userMessage,
+    accountId
+  });
+
+  // 3. Telegram Bot alert to admin chats ONLY with inline button system
+  if (bot) {
+    try {
+      const adminChats = await getBotAdminChatIds();
+      const botAlertText = `🎯 <b>Keyword Hit Alert!</b>\n\n` +
+        `• <b>Keyword:</b> <code>${escapeHtml(matchedWord)}</code>\n` +
+        `• <b>Topic:</b> ${escapeHtml(topicName)} (ID: <code>${topicId || 'General'}</code>)\n` +
+        `• <b>Group:</b> ${escapeHtml(chatTitle)}\n` +
+        `• <b>Message:</b> "${escapeHtml(userMessage || '')}"`;
+
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: "🔗 Open Topic / Message", url: topicLink },
+            ...(topicId ? [{ text: "🚫 Block Topic", callback_data: `block_topic_${topicId}` }] : [])
+          ]
+        ]
+      };
+
+      for (const adminChat of adminChats) {
+        bot.sendMessage(adminChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
+      }
+    } catch (botErr: any) {
+      console.error("[NOTIFY] Failed to send Bot admin notification:", botErr.message);
+    }
+  }
+
+  // 4. Save persistent log
+  saveLog(`🔔 Keyword Trigger Notification: "${matchedWord}" in ${chatTitle} > ${topicName}`, 'info', 'USERBOT', undefined, {
+    matchedWord,
+    topicName,
+    topicId,
+    group: chatTitle,
+    chatId,
+    userMessage
+  }, accountId).catch(() => {});
+}
+
+// Helper to check keyword reply count per topic per rule
+export async function getKeywordReplyCount(
+  topicId: number | string,
+  chatId: string,
+  keywordId: any,
+  accountId: string = "default",
+  autoResetEnabled: boolean = true
+): Promise<number> {
+  try {
+    const numTopicId = Number(topicId);
+    if (!numTopicId || isNaN(numTopicId)) return 0;
+    
+    const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
+    const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
+
+    const history = await ReplyHistory.findOne({
+      topic_id: numTopicId,
+      chat_id: chatFilter,
+      keyword_id: keywordId,
+      ...getAccountFilter(accountId)
+    });
+
+    if (!history) return 0;
+
+    const lastUpdated = new Date(history.last_updated);
+    const today = new Date();
+    const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+    const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+
+    if (lastUpdatedIST === todayIST || !autoResetEnabled) {
+      return history.count || 0;
+    } else {
+      return 0; // New day, count resets to 0
+    }
+  } catch (err: any) {
+    console.error("Error in getKeywordReplyCount:", err.message);
+    return 0;
+  }
+}
+
+// Helper to increment keyword reply count per topic per rule
+export async function incrementKeywordReplyCount(
+  topicId: number | string,
+  chatId: string,
+  keywordId: any,
+  accountId: string = "default",
+  autoResetEnabled: boolean = true
+): Promise<void> {
+  try {
+    const numTopicId = Number(topicId);
+    if (!numTopicId || isNaN(numTopicId)) return;
+
+    const today = new Date();
+    const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
+    const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
+
+    const history = await ReplyHistory.findOne({
+      topic_id: numTopicId,
+      chat_id: chatFilter,
+      keyword_id: keywordId,
+      ...getAccountFilter(accountId)
+    });
+
+    if (!history) {
+      await ReplyHistory.create({
+        topic_id: numTopicId,
+        chat_id: chatId || "",
+        keyword_id: keywordId,
+        count: 1,
+        last_updated: today,
+        account_id: accountId || 'default'
+      });
+    } else {
+      const lastUpdated = new Date(history.last_updated);
+      const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+      const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+
+      if (lastUpdatedIST === todayIST || !autoResetEnabled) {
+        history.count = (history.count || 0) + 1;
+      } else {
+        history.count = 1;
+      }
+      history.last_updated = today;
+      history.chat_id = chatId || history.chat_id;
+      await history.save();
+    }
+  } catch (err: any) {
+    console.error("Error in incrementKeywordReplyCount:", err.message);
+  }
+}
+
 
 // Initialize default settings
 async function initSettings() {
+  const appLogo = (await getSetting("app_logo"))?.value || "";
   const autoReply = await getSetting("auto_reply");
   if (!autoReply) await setSetting("auto_reply", "Welcome to the new topic!");
   
@@ -1468,6 +1980,9 @@ async function initSettings() {
 }
 
 let userClient: TelegramClient | null = null;
+let lastAuthCheck = 0;
+let cachedAuthStatus = false;
+let sessionStartTime: number | null = null;
 let isConnecting = false;
 let cancelCatchupFlag = false;
 let phoneCodeHash: string | null = null;
@@ -1477,12 +1992,21 @@ let lastKeywordRefresh = 0;
 
 async function refreshKeywordCache() {
   try {
-    cachedKeywords = await Keyword.find();
+    cachedKeywords = await Keyword.find({ enabled: { $ne: false } });
     lastKeywordRefresh = Date.now();
-    console.log(`Keyword cache refreshed: ${cachedKeywords.length} keywords.`);
+    console.log(`Keyword cache refreshed: ${cachedKeywords.length} active keywords.`);
   } catch (err) {
     console.error("Failed to refresh keyword cache:", err);
   }
+}
+
+async function getCachedAccountKeywords(accountId: string = "default") {
+  const now = Date.now();
+  if (cachedKeywords.length === 0 || now - lastKeywordRefresh > 15000) {
+    await refreshKeywordCache();
+  }
+  const acc = accountId || "default";
+  return cachedKeywords.filter(k => (k.account_id || "default") === acc && k.enabled !== false);
 }
 
 async function startServer() {
@@ -1547,7 +2071,7 @@ async function startServer() {
               console.log("UserBot connected successfully.");
               sessionStartTime = Date.now();
               setupUserBotHandlers(userClient, groupId);
-              await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
+              cachedAuthStatus = true; accountClients.set("default", { accountId: "default", client: userClient, sessionStartTime: sessionStartTime }); await saveLog("UserBot connected automatically on startup", "info", "SYSTEM");
             } else {
               console.log("UserBot connected but session is invalid/expired.");
               await userClient.disconnect();
@@ -1604,7 +2128,7 @@ async function startServer() {
       startApp();
     });
 
-  function setupUserBotHandlers(client: TelegramClient, targetGroupId: string) {
+  function setupUserBotHandlers(client: TelegramClient, targetGroupId: string, accountId: string = "default") {
     client.addEventHandler(async (event: any) => {
       try {
         const message = event.message;
@@ -1621,22 +2145,27 @@ async function startServer() {
         else if (message.peerId.userId) chatId = message.peerId.userId.toString();
       }
 
-      // Check multiple target group IDs
-      const groupIdsSetting = settingsCache["telegram_group_ids"] || targetGroupId || "";
-      const normalizeId = (id: string) => id.toString().trim().replace(/^-100|^ -100|^-/, "");
+      // Check target group IDs - strictly restricted to Settings
+      const registered = parseRegisteredGroups(undefined, accountId);
+      const allowedGroupIds = registered.map(r => r.normalizedId);
+      if (targetGroupId && targetGroupId.trim()) {
+        const normTarget = targetGroupId.toString().trim().replace(/^-100|^ -100|^-/, "");
+        if (normTarget && !allowedGroupIds.includes(normTarget)) {
+          allowedGroupIds.push(normTarget);
+        }
+      }
+      const normalizedChatId = chatId.toString().trim().replace(/^-100|^ -100|^-/, "");
       
-      const allowedGroupIds = groupIdsSetting.split(",").map(normalizeId).filter(id => id);
-      const normalizedChatId = normalizeId(chatId);
-      
-      if (!allowedGroupIds.includes(normalizedChatId)) {
+      if (allowedGroupIds.length === 0 || !allowedGroupIds.includes(normalizedChatId)) {
         if (!message.out) {
-          console.log(`UserBot ignoring message from unauthorized chat ${chatId} (Normalized: ${normalizedChatId}). Allowed: ${allowedGroupIds.join(", ")}`);
-          // Save a log once to help the user identify the group ID
+          console.log(`UserBot (${accountId}) ignoring message from unregistered chat ${chatId} (Normalized: ${normalizedChatId}). Allowed registered groups:`, allowedGroupIds);
+          // Save a log once to notify the user that this group is unregistered
           if (message.message) {
              const cacheKey = `ignored_${normalizedChatId}`;
-             if (!settingsCache[cacheKey]) {
-                saveLog(`Message ignored from unauthorized chat: ${chatId}. If you want the bot to reply here, add ${normalizedChatId} to Target Group IDs in settings.`, "warn", "USERBOT");
-                settingsCache[cacheKey] = "true";
+             if (!settingsCache[accountId]) settingsCache[accountId] = {};
+             if (!settingsCache[accountId][cacheKey]) {
+                saveLog(`Message ignored from unregistered chat: ${chatId}. Bot replies are strictly restricted to registered Target Group IDs in Settings.`, "warn", "USERBOT", undefined, undefined, accountId);
+                settingsCache[accountId][cacheKey] = "true";
              }
           }
         }
@@ -1644,22 +2173,15 @@ async function startServer() {
       }
 
       // Check if system is paused
-      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
       
-      console.log(`UserBot processing message in ${chatId}: "${message.message || '[No text]'}"`);
+      console.log(`UserBot (${accountId}) processing message in ${chatId}: "${message.message || '[No text]'}"`);
 
       // Check if topic is blocked
-      // Important: For forum topics, the 'topicId' is usually the ID of the first message in the thread (the "create topic" message).
-      // Incoming messages in a topic have a 'replyTo.replyToMsgId' pointing to that topic ID.
-      // However, sometimes (rarely) or for the topic creation message itself, message.id is the topic ID.
-      // We must check BOTH to be safe, because sometimes `replyToMsgId` might be missing or different in edge cases.
-      
       const replyToId = message.replyTo?.replyToMsgId;
       const replyToTopId = message.replyTo?.replyToTopId;
       const messageId = message.id;
       
-      // The forumTopicId is the root of the thread/topic. 
-      // In forums, replyToTopId is the topic's starting message ID.
       let forumTopicId: number;
       if (message.action instanceof Api.MessageActionTopicCreate) {
         forumTopicId = Number(messageId);
@@ -1672,35 +2194,32 @@ async function startServer() {
           forumTopicId = 1;
         }
       } else {
-        // General topic or non-forum group
         forumTopicId = 1;
       }
 
       // Check if the topic ID is blocked
       if (forumTopicId) {
-        const isBlocked = blockedTopicsCache.has(forumTopicId);
+        const isBlocked = isTopicBlocked(forumTopicId, accountId);
         if (isBlocked) {
-          console.log(`Topic ${forumTopicId} is blocked. Skipping processing.`);
-          await saveLog(`Message ignored: Topic ${forumTopicId} is blocked.`, 'info', 'SYSTEM', undefined, { topicId: forumTopicId });
+          console.log(`Topic ${forumTopicId} is blocked for account ${accountId}. Skipping processing.`);
+          await saveLog(`Message ignored: Topic ${forumTopicId} is blocked.`, 'info', 'SYSTEM', undefined, { topicId: forumTopicId }, accountId);
           return;
         }
       }
 
-      // Use forumTopicId for grouping/logic, but replyTo should be the message itself to stay in context
       const topicId = forumTopicId;
-      const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+      const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
       const replyTo = replyInGeneral ? undefined : messageId;
 
       // Check keyword reset logic
-      const autoResetEnabled = (await getSetting("auto_reset_keywords"))?.value === "true";
+      const autoResetEnabled = (await getSetting("auto_reset_keywords", accountId))?.value === "true";
 
       // Auto-Block Keywords Logic
-      const autoBlockKeywordsStr = (await getSetting("auto_block_keywords"))?.value || "[]";
+      const autoBlockKeywordsStr = (await getSetting("auto_block_keywords", accountId))?.value || "[]";
       let blockKeywords: { keyword: string, matchMode: 'exact' | 'partial' }[] = [];
       try {
         blockKeywords = JSON.parse(autoBlockKeywordsStr);
       } catch (e) {
-        // Fallback for old comma-separated format
         if (autoBlockKeywordsStr.trim()) {
           blockKeywords = autoBlockKeywordsStr.split(",").map(k => ({ keyword: k.trim(), matchMode: 'partial' as const })).filter(k => k.keyword);
         }
@@ -1714,14 +2233,12 @@ async function startServer() {
         for (const item of blockKeywords) {
           const kw = item.keyword.toLowerCase();
           if (item.matchMode === 'exact') {
-            // Exact match (case insensitive)
             if (msgText === kw) {
               shouldBlock = true;
               matchedKeyword = item.keyword;
               break;
             }
           } else {
-            // Partial match
             if (msgText.includes(kw)) {
               shouldBlock = true;
               matchedKeyword = item.keyword;
@@ -1731,91 +2248,124 @@ async function startServer() {
         }
 
         if (shouldBlock) {
-          console.log(`Auto-blocking topic ${topicId} due to keyword match: "${matchedKeyword}"`);
+          console.log(`Auto-blocking topic ${topicId} due to keyword match: "${matchedKeyword}" for account ${accountId}`);
           
-          // Get topic name
           const name = topicNamesCache[topicId] || "Unknown Topic";
           const link = `https://t.me/c/${targetGroupId.replace("-100", "")}/${topicId}`;
 
           await BlockedTopic.findOneAndUpdate(
-            { telegram_topic_id: topicId },
-            { name, link },
+            { telegram_topic_id: topicId, ...getAccountFilter(accountId) },
+            { name, link, account_id: accountId || 'default' },
             { upsert: true }
           );
-          blockedTopicsCache.add(topicId);
+          addBlockedTopicToCache(topicId, accountId);
 
-          await saveLog(`Topic ${topicId} auto-blocked due to keyword match: "${matchedKeyword}"`, 'warn', 'USERBOT', undefined, { topicName: name, link, keyword: matchedKeyword });
+          await saveLog(`Topic ${topicId} auto-blocked due to keyword match: "${matchedKeyword}"`, 'warn', 'USERBOT', undefined, { topicName: name, link, keyword: matchedKeyword }, accountId);
           
-          // Notify frontend
           sendSseEvent('topic_blocked', {
             message: `Topic "${name}" auto-blocked (Keyword: ${matchedKeyword})`,
             topicName: name,
             keyword: matchedKeyword,
+            accountId,
             timestamp: new Date()
           });
 
-          return; // Stop processing this message
+          sendPushNotification("Topic Auto-Blocked 🛑", `Topic "${name}" was auto-blocked by keyword "${matchedKeyword}"`, {
+            url: link || '/',
+            tag: `block-${topicId}`
+          }).catch(e => console.error("WebPush block error:", e));
+
+          if (bot) {
+            getBotAdminChatIds().then(adminChats => {
+              const blockMsg = `🛑 <b>Topic Auto-Blocked Alert!</b>\n\n• <b>Topic:</b> ${escapeHtml(name)}\n• <b>Trigger Keyword:</b> <code>${escapeHtml(matchedKeyword)}</code>`;
+              const replyMarkup = {
+                inline_keyboard: [
+                  [{ text: "🔓 Unblock Topic", callback_data: `unblock_topic_${topicId}` }]
+                ]
+              };
+              for (const adminChat of adminChats) {
+                bot.sendMessage(adminChat, blockMsg, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
+              }
+            }).catch(() => {});
+          }
+
+          return;
         }
       }
 
       // 0. Photo Handler
-      if (!message.out && message.media && (message.media.photo || (message.media.document && message.media.document.mimeType && message.media.document.mimeType.startsWith('image/')))) {
-        const photoReplyEnabledSetting = (await getSetting("photo_reply_enabled"))?.value === "true";
-        
-        // Always handle topic renaming for photos, even if auto-reply is disabled
-        try {
-          // Fetch Topic Name & Rename if needed
-          const topicIcon = (await getSetting("topic_icon"))?.value || "✅";
-          const topicRenameEmoji = (await getSetting("topic_rename_emoji"))?.value || "🛑";
-          const renameKeywordsStr = (await getSetting("topic_rename_keywords"))?.value || "";
-          const renameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
+      const isPhotoMedia = Boolean(
+        !message.out &&
+        message.media && (
+          message.media.photo || 
+          message.photo ||
+          message.media.className === 'MessageMediaPhoto' ||
+          message.media.className === 'MessageMediaDocument' ||
+          (message.media.document && message.media.document.mimeType && message.media.document.mimeType.startsWith('image/')) ||
+          (message.document && message.document.mimeType && message.document.mimeType.startsWith('image/')) ||
+          (message.media.constructor && message.media.constructor.name && message.media.constructor.name.includes('Photo'))
+        )
+      );
 
-          // Pass true to bypass keyword check for photos
-          const topicName = await handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true);
+      if (isPhotoMedia) {
+        const photoReplyEnabledSetting = (await getSetting("photo_reply_enabled", accountId))?.value === "true";
+        
+        try {
+          const topicIcon = (await getSetting("topic_icon", accountId))?.value || "✅";
+          const topicRenameEmoji = (await getSetting("topic_rename_emoji", accountId))?.value || "🛑";
+          const renameKeywordsStr = (await getSetting("topic_rename_keywords", accountId))?.value || "";
+          const renameMatchMode = (await getSetting("topic_rename_match_mode", accountId))?.value || "exact";
+
+          let topicName = topicNamesCache[topicId] || `Topic #${topicId || 'General'}`;
+          try {
+            topicName = await handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true);
+          } catch (renErr) {
+            console.warn("Topic renaming non-fatal warning in photo handler:", renErr);
+          }
           
-          const chat = await client.getEntity(message.peerId) as any;
-          const chatTitle = chat.title || "Unknown Group";
+          let chatTitle = topicNamesCache[chatId] || topicNamesCache[targetGroupId] || "Telegram Group";
+          try {
+            const chat = await client.getEntity(message.peerId) as any;
+            if (chat && chat.title) chatTitle = chat.title;
+          } catch (e) {}
           
-          const cleanGroupId = targetGroupId.toString().replace("-100", "");
-          // Telegram deep link for topic
+          const cleanGroupId = (chatId || targetGroupId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
           const link = topicId 
             ? `https://t.me/c/${cleanGroupId}/${topicId}`
             : `https://t.me/c/${cleanGroupId}`;
           
-          console.log(`Photo detected in group: ${chatTitle}, topic: ${topicName} (${topicId}), link: ${link}`);
+          console.log(`[PHOTO] Photo detected in group: ${chatTitle}, topic: ${topicName} (${topicId}), link: ${link}`);
           
-          // Notify frontend
-          sendSseEvent('photo_received', {
-            message: `${chatTitle} - ${topicName} sent a photo`,
-            topicName: topicName,
-            groupName: chatTitle,
-            timestamp: new Date(),
-            url: link
-          });
+          // Send all multi-channel notifications (Push, SSE, Telegram Saved Messages "me", Bot Admin alert)
+          sendPhotoReceivedNotification({
+            chatTitle,
+            topicName,
+            topicId,
+            chatId: String(chatId),
+            link,
+            client,
+            accountId
+          }).catch(err => console.error("Error in sendPhotoReceivedNotification:", err));
 
-          await saveLog(`Photo received from ${chatTitle} - ${topicName}`, 'info', 'USERBOT', undefined, { topicId, url: link });
-
-          // Log the photo sent event for today's stats (count all photos sent by users)
-          await PhotoSentLog.create({
+          PhotoSentLog.create({
             topic_id: topicId,
             topic_name: topicName,
             topic_link: link,
-            sent_at: new Date()
-          });
+            sent_at: new Date(),
+            account_id: accountId || 'default'
+          }).catch(() => {});
           
-          // Notify frontend to update stats
           sendSseEvent('photo_sent', {
             topicName: topicName,
+            accountId,
             timestamp: new Date()
           });
 
           if (photoReplyEnabledSetting) {
-            const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
+            const photoReplyMax = parseInt((await getSetting("photo_reply_max", accountId))?.value || "2", 10);
 
-            // Check photo reply history for this topic
-            let history = await PhotoReplyHistory.findOne({ topic_id: topicId, chat_id: chatId });
+            let history = await PhotoReplyHistory.findOne({ topic_id: topicId, chat_id: chatId, ...getAccountFilter(accountId) });
             
-            // Daily reset logic for photo replies
             if (history && autoResetEnabled) {
               const lastUpdated = new Date(history.last_updated);
               const today = new Date();
@@ -1833,9 +2383,9 @@ async function startServer() {
             if (history && history.count >= photoReplyMax) {
               console.log(`Photo reply limit reached for topic ${topicId} in chat ${chatId} (${history.count}/${photoReplyMax}). Skipping.`);
             } else {
-              const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
-              const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
-              const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
+              const photoReplyMessage = (await getSetting("photo_reply_message", accountId))?.value || "ok wait";
+              const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled", accountId))?.value === "true";
+              const photoReplyMessage2 = (await getSetting("photo_reply_message_2", accountId))?.value || "second message";
               
               console.log(`[PHOTO REPLY] Sending Global Photo Auto-Reply: "${photoReplyMessage}" to topic ${topicId} inside chat ${chatId}`);
               
@@ -1845,8 +2395,8 @@ async function startServer() {
               });
 
               if (photoReplyMessage2Enabled && photoReplyMessage2) {
-                const startTime = (await getSetting("photo_reply_message_2_start_time"))?.value || "";
-                const endTime = (await getSetting("photo_reply_message_2_end_time"))?.value || "";
+                const startTime = (await getSetting("photo_reply_message_2_start_time", accountId))?.value || "";
+                const endTime = (await getSetting("photo_reply_message_2_end_time", accountId))?.value || "";
                 
                 let shouldSend = true;
                 if (startTime && endTime) {
@@ -1873,10 +2423,9 @@ async function startServer() {
                 }
               }
 
-              // Update history
               if (!history) {
                 try {
-                  await PhotoReplyHistory.create({ topic_id: topicId, chat_id: chatId, count: 1, last_updated: new Date() });
+                  await PhotoReplyHistory.create({ topic_id: topicId, chat_id: chatId, count: 1, last_updated: new Date(), account_id: accountId || 'default' });
                 } catch (e: any) {
                   if (e.code !== 11000) throw e;
                   console.warn("Duplicate key error for PhotoReplyHistory, ignoring.");
@@ -1887,12 +2436,12 @@ async function startServer() {
                 await history.save();
               }
               
-              await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT');
+              await saveLog(`Photo auto-reply sent to ${topicName}: "${photoReplyMessage}" (Count: ${history ? history.count : 1}/${photoReplyMax})`, 'info', 'USERBOT', undefined, undefined, accountId);
             }
           }
         } catch (err: any) {
           console.error("Failed to process photo message:", err);
-          await saveLog(`Failed to process photo message: ${err.message}`, 'error', 'USERBOT');
+          await saveLog(`Failed to process photo message: ${err.message}`, 'error', 'USERBOT', undefined, undefined, accountId);
         }
       }
 
@@ -1900,38 +2449,34 @@ async function startServer() {
       if (message.action instanceof Api.MessageActionTopicCreate) {
         const topicName = message.action.title;
         const topicId = message.id;
-        await logTopic(topicId, topicName);
+        await logTopic(topicId, topicName, chatId, undefined, accountId);
         
-        const autoReply = (await getSetting("auto_reply"))?.value || "Welcome!";
-        console.log(`DEBUG: autoReply value: '${autoReply}'`);
-        const autoReply2Enabled = (await getSetting("auto_reply_2_enabled"))?.value === "true";
-        const autoReply2 = (await getSetting("auto_reply_2"))?.value || "";
-        console.log(`DEBUG: autoReply2Enabled: ${autoReply2Enabled}, autoReply2: '${autoReply2}'`);
-        const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay"))?.value || "1", 10);
-        const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
+      const appLogo = (await getSetting("app_logo", accountId))?.value || "";
+        const autoReply = (await getSetting("auto_reply", accountId))?.value || "Welcome!";
+        const autoReply2Enabled = (await getSetting("auto_reply_2_enabled", accountId))?.value === "true";
+        const autoReply2 = (await getSetting("auto_reply_2", accountId))?.value || "";
+        const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay", accountId))?.value || "1", 10);
+        const delaySeconds = parseInt((await getSetting("delay_seconds", accountId))?.value || "0", 10);
         
         setTimeout(async () => {
           try {
-            if (blockedTopicsCache.has(topicId)) {
+            if (isTopicBlocked(topicId, accountId)) {
               console.log(`Topic ${topicId} was blocked during auto-reply delay. Skipping.`);
               return;
             }
-            const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
-            console.log(`DEBUG: Sending autoReply: '${autoReply}'`);
+            const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
             await client.sendMessage(message.peerId, {
               message: autoReply,
               replyTo: replyInGeneral ? undefined : topicId,
             });
 
             if (autoReply2Enabled && autoReply2) {
-              // Configurable delay between messages
               setTimeout(async () => {
                 try {
-                  if (blockedTopicsCache.has(topicId)) {
+                  if (isTopicBlocked(topicId, accountId)) {
                     console.log(`Topic ${topicId} was blocked during auto-reply-2 delay. Skipping.`);
                     return;
                   }
-                  console.log(`DEBUG: Sending autoReply2: '${autoReply2}'`);
                   await client.sendMessage(message.peerId, {
                     message: autoReply2,
                     replyTo: replyInGeneral ? undefined : topicId,
@@ -1947,19 +2492,17 @@ async function startServer() {
         }, delaySeconds * 1000);
       }
 
-      // 2. Keyword Handler
-      if (Date.now() - lastKeywordRefresh > 5000) {
-        await refreshKeywordCache();
-      }
+      // 2. Keyword Handler (Lightning-fast cached lookup)
+      const accountKeywords = await getCachedAccountKeywords(accountId);
       
       let keywordMatched = false;
       if (message.message && !message.out) {
         const text = message.message.toLowerCase().trim();
         const matches: { kw: any, index: number, matchedWord: string }[] = [];
         
-        console.log(`Checking ${cachedKeywords.length} keywords for message: "${text}" from ${chatId}`);
+        console.log(`Checking ${accountKeywords.length} keywords for message: "${text}" from ${chatId} in account ${accountId}`);
         
-        for (const kw of cachedKeywords) {
+        for (const kw of accountKeywords) {
           if (kw.enabled === false) continue;
 
           // Check target_groups restriction if defined
@@ -1976,13 +2519,11 @@ async function startServer() {
             }
           }
 
-          // Collect all trigger words for this rule (legacy + new array)
           const triggerWords = [...(kw.keywords || [])];
           if (kw.keyword && !triggerWords.includes(kw.keyword)) {
             triggerWords.push(kw.keyword);
           }
 
-          // Check each trigger word
           for (const word of triggerWords) {
             const wordLower = word.toLowerCase().trim();
             if (!wordLower) continue;
@@ -1993,83 +2534,67 @@ async function startServer() {
             if (kw.match_mode === 'partial') {
               regex = new RegExp(escapedWord, 'gi');
             } else {
-              // Unicode-friendly boundary check: matches if surrounded by non-letters/numbers or at start/end
-              // Improved regex to handle non-word characters better
               regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedWord}($|[^\\p{L}\\p{N}])`, 'gui');
             }
             
             let match;
-            let found = false;
-
-            // Regex match
             while ((match = regex.exec(text)) !== null) {
-              console.log(`Keyword "${wordLower}" matched via regex (${kw.match_mode || 'exact'}) at index ${match.index}`);
               matches.push({ kw, index: match.index, matchedWord: wordLower });
-              found = true;
-              break; // Only match this specific word once per message
+              break;
             }
           }
         }
 
-        // Sort matches by their appearance in the message
         matches.sort((a, b) => a.index - b.index);
 
         if (matches.length > 0) {
           keywordMatched = true;
-          console.log(`Found ${matches.length} keyword matches in message. Processing sequentially...`);
+          const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds", accountId))?.value || "0", 10);
           
-          const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds"))?.value || "0", 10);
-          
-          // Log detection immediately for UI/Monitoring
           const matchedWordsList = matches.map(m => m.matchedWord).join(", ");
-          await saveLog(`Keyword(s) detected: ${matchedWordsList}`, 'info', 'USERBOT', undefined, { 
+          const topicName = topicNamesCache[topicId] || "General";
+          const chatTitle = topicNamesCache[chatId] || "Telegram Group";
+
+          // Log in background non-blocking
+          saveLog(`Keyword(s) detected: "${matchedWordsList}" in ${chatTitle} > ${topicName}`, 'info', 'USERBOT', undefined, { 
             message: message.message,
             topicId,
+            chatId,
+            group: chatTitle,
+            topic: topicName,
             matchedWords: matches.map(m => m.matchedWord)
-          });
+          }, accountId).catch(() => {});
 
+          // Only delay if user specifically configured keyword_delay_seconds > 0
           if (keywordDelaySeconds > 0) {
-            console.log(`Delaying keyword processing by ${keywordDelaySeconds} seconds...`);
             await new Promise(resolve => setTimeout(resolve, keywordDelaySeconds * 1000));
           }
 
-          
-          let chatTitle = "Unknown Group";
-          try {
-            const chatEntity = await client.getEntity(message.peerId) as any;
-            if (chatEntity && chatEntity.title) {
-              chatTitle = chatEntity.title;
-            }
-          } catch(e) {}
-          const topicName = topicNamesCache[topicId] || "General";
           const processedRuleIds = new Set<string>();
-          let isFirstMatch = true;
 
           for (const match of matches) {
             const kw = match.kw;
             
             if (processedRuleIds.has(kw._id.toString())) {
-              console.log(`Skipping duplicate match for rule ${kw._id} (word: ${match.matchedWord})`);
               continue;
             }
-            
-            if (!isFirstMatch) {
-              await new Promise(resolve => setTimeout(resolve, 500)); // only delay for subsequent keywords
-            }
-            isFirstMatch = false;
-            
             processedRuleIds.add(kw._id.toString());
             
-            console.log(`DEBUG: Processing matched keyword: ${match.matchedWord} (Rule ID: ${kw._id}) at index ${match.index}`);
-
-            if (kw.notify_on_hit) {
-              const notifyBody = `Matched "${match.matchedWord}" in topic "${topicName}" (${chatTitle})`;
-              sendPushNotification("Keyword Triggered! 🎯", notifyBody, { url: '/' });
-              sendSseEvent('keyword_hit_notify', { message: notifyBody, topicName, groupName: chatTitle, keyword: match.matchedWord });
+            // Fire keyword hit notification concurrently in background (non-blocking)
+            const notifyGlobalSetting = (await getSetting("notify_on_all_keywords", accountId))?.value === "true";
+            if (notifyGlobalSetting || kw.notify_on_hit === true || kw.notify_on_hit === "true" || kw.notify_on_hit === 1) {
+              sendKeywordHitNotification({
+                matchedWord: match.matchedWord,
+                topicName,
+                topicId: topicId ? String(topicId) : "",
+                chatTitle,
+                chatId: chatId ? String(chatId) : "",
+                userMessage: message.message || "",
+                client,
+                accountId
+              }).catch(err => console.error("Error sending keyword hit notification:", err));
             }
 
-            
-            // Normalize links
             const linksToProcess = [...(kw.message_links || [])];
             if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
               linksToProcess.push(kw.message_link);
@@ -2077,17 +2602,10 @@ async function startServer() {
             const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
 
             try {
-              const replyToMsgId = message.id;
-              let replySent = false;
-              
-              console.log(`DEBUG: Attempting to send reply for keyword: ${match.matchedWord}. replyInGeneral: ${replyInGeneral}, topicId: ${topicId}, replyTo: ${replyTo}`);
-              
-              // Check Approval Mode (Global setting or Rule-specific)
-              const isGlobalApproval = settingsCache["global_approval_mode"] === "true";
+              const isGlobalApproval = (await getSetting("global_approval_mode", accountId))?.value === "true";
               const requiresApproval = isGlobalApproval || !!kw.approval_mode;
 
               if (requiresApproval) {
-                
                 const approval = await PendingApproval.create({
                   matched_keyword: match.matchedWord,
                   rule_id: kw._id,
@@ -2097,26 +2615,39 @@ async function startServer() {
                   topic_id: topicId,
                   topic_name: topicName,
                   original_text: message.message,
-                  status: 'pending'
+                  status: 'pending',
+                  account_id: accountId || 'default'
                 });
 
                 const logMsg = `Approval Required: Keyword "${match.matchedWord}" matched in ${chatTitle} > ${topicName}`;
-                console.log(logMsg);
-                await saveLog(logMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, approvalId: approval._id });
+                saveLog(logMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, approvalId: approval._id }, accountId).catch(() => {});
                 
-                // Notify via Telegram Bot with inline keyboard (Approve / Not Approved)
+                const cleanChatId = (chatId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
+                const topicLink = topicId ? `https://t.me/c/${cleanChatId}/${topicId}` : `https://t.me/c/${cleanChatId}`;
+                sendPushNotification("Approval Required ⚠️", `Keyword "${match.matchedWord}" in "${topicName}" (${chatTitle})`, {
+                  url: topicLink || '/',
+                  tag: `approval-${approval._id}`
+                }).catch(e => console.error("WebPush approval error:", e));
+                
                 if (bot) {
-                  const notificationText = `🔔 <b>Approval Required</b>\n\n<b>Keyword:</b> <code>${escapeHtml(match.matchedWord)}</code>\n<b>Group:</b> ${escapeHtml(chatTitle)}\n<b>Topic:</b> ${escapeHtml(topicName)}\n<b>User Message:</b> "${escapeHtml(message.message)}"`;
+                  const notificationText = `🔔 <b>Approval Required</b>\n\n` +
+                    `• <b>Keyword:</b> <code>${escapeHtml(match.matchedWord)}</code>\n` +
+                    `• <b>Group:</b> ${escapeHtml(chatTitle)}\n` +
+                    `• <b>Topic:</b> ${escapeHtml(topicName)}\n` +
+                    `• <b>User Message:</b> "${escapeHtml(message.message)}"`;
+
                   const replyMarkup = {
                     inline_keyboard: [
                       [
                         { text: "✅ Approve", callback_data: `approve_${approval._id}` },
-                        { text: "❌ Not Approved", callback_data: `reject_${approval._id}` }
+                        { text: "❌ Reject", callback_data: `reject_${approval._id}` }
+                      ],
+                      [
+                        { text: "🔗 Open Topic", url: topicLink }
                       ]
                     ]
                   };
 
-                  // Send inside that topic in Telegram where the keyword was matched
                   if (chatId) {
                     const targetTopicId = topicId ? Number(topicId) : undefined;
                     bot.sendMessage(chatId, notificationText, {
@@ -2127,94 +2658,67 @@ async function startServer() {
                       approval.bot_chat_id = chatId;
                       approval.bot_message_id = msg.message_id;
                       await approval.save().catch(() => {});
-
-                      if (bot) {
-                        bot.pinChatMessage(chatId, msg.message_id).catch(e => console.error("Failed to pin message:", e.message));
-                      }
                     }).catch(e => console.error("Failed to send approval message into topic:", e.message));
                   }
 
-                  // Also send to the configured notification group if different
-                  const groupIdsSetting = settingsCache["telegram_group_ids"] || "";
-                  const firstGroupId = groupIdsSetting.split(",")[0].trim();
-                  if (firstGroupId && firstGroupId !== chatId) {
-                    bot.sendMessage(firstGroupId, notificationText, {
-                      parse_mode: 'HTML',
-                      reply_markup: replyMarkup
-                    }).catch(e => console.error("Failed to send approval message to log group:", e.message));
-                  }
+                  getBotAdminChatIds().then(adminChats => {
+                    for (const adminChat of adminChats) {
+                      if (adminChat !== chatId) {
+                        bot.sendMessage(adminChat, notificationText, {
+                          parse_mode: 'HTML',
+                          reply_markup: replyMarkup
+                        }).catch(() => {});
+                      }
+                    }
+                  }).catch(() => {});
                 }
 
-                // Notify via SSE
                 sendSseEvent('approval_needed', {
                   id: approval._id,
                   keyword: match.matchedWord,
                   group: chatTitle,
                   topic: topicName,
                   message: message.message,
+                  accountId,
                   timestamp: new Date()
                 });
 
-                continue; // Skip automatic sending
+                continue;
               }
 
-              // If system is paused, save as missed trigger and skip reply
               if (isSystemPaused) {
-                await MissedTrigger.create({
+                MissedTrigger.create({
                   message_id: message.id,
                   chat_id: chatId,
                   topic_id: topicId,
                   text: message.message,
                   matched_keyword: match.matchedWord,
-                  rule_id: kw._id
-                });
+                  rule_id: kw._id,
+                  account_id: accountId || 'default'
+                }).catch(() => {});
                 const pauseMsg = `Keyword "${match.matchedWord}" matched but system is PAUSED. Saved as missed trigger.`;
-                console.log(pauseMsg);
-                await saveLog(pauseMsg, 'warn', 'USERBOT', undefined, { topicId, keyword: match.matchedWord });
+                saveLog(pauseMsg, 'warn', 'USERBOT', undefined, { topicId, keyword: match.matchedWord }, accountId).catch(() => {});
                 continue;
               }
 
-              // Rate limiting check: Max replies per keyword rule per topic
               if (topicId) {
-                const history = await ReplyHistory.findOne({ topic_id: topicId, chat_id: chatId, keyword_id: kw._id });
-                const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
-                
-                let currentCount = 0;
-                if (history) {
-                  const lastUpdated = new Date(history.last_updated);
-                  const today = new Date();
-                  
-                  // Check if same day in IST (Indian Standard Time)
-                  const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                  const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                  
-                  if (lastUpdatedIST === todayIST || !autoResetEnabled) {
-                    currentCount = history.count;
-                  } else {
-                    // It's a new day and reset is enabled
-                    currentCount = 0;
-                  }
-                }
+                const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 0;
+                const currentCount = await getKeywordReplyCount(topicId, chatId, kw._id, accountId, autoResetEnabled);
 
                 if (maxReplies > 0 && currentCount >= maxReplies) {
-                  const skipMsg = `Skipping reply for keyword "${match.matchedWord}" in topic ${topicId}: daily limit reached (${currentCount}/${maxReplies}).`;
-                  console.log(skipMsg);
-                  await saveLog(skipMsg, 'warn', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, count: currentCount, limit: maxReplies });
+                  const skipMsg = `Keyword "${match.matchedWord}" reached limit (${currentCount}/${maxReplies}) in topic ${topicId}. Skipping this rule.`;
+                  console.log(`[LIMIT] ${skipMsg}`);
+                  saveLog(skipMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, count: currentCount, limit: maxReplies }, accountId).catch(() => {});
                   continue;
                 }
               }
 
               // 1. AI Reply (if enabled)
               if (kw.ai_reply_enabled) {
-                console.log(`Triggering AI reply for keyword: ${match.matchedWord}`);
-                const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+                const aiModeEnabled = (await getSetting("ai_mode_enabled", accountId))?.value === "true";
                 
-                // Only proceed if global AI mode is also enabled? 
-                // The user request implies this is a specific override/feature.
-                // Let's assume it works even if global AI mode is disabled, OR we check global mode.
-                // Usually "AI Mode" toggle is a master switch. Let's respect it.
                 if (aiModeEnabled) {
-                   const geminiApiKeysSetting = await getSetting("gemini_api_keys");
+                   const geminiApiKeysSetting = await getSetting("gemini_api_keys", accountId);
                    let apiKeys: string[] = [];
                    try {
                      apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]");
@@ -2224,7 +2728,7 @@ async function startServer() {
                    if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
                    
                    if (apiKeys.length > 0) {
-                     const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
+                     const aiPersona = (await getSetting("ai_persona", accountId))?.value || DEFAULT_AI_PERSONA;
                      const conversationContext = await getRecentConversationContext(client, message.peerId, topicId);
                      
                      for (const apiKey of apiKeys) {
@@ -2247,14 +2751,12 @@ async function startServer() {
                          
                          const aiReply = response.text.trim();
                          if (aiReply && aiReply !== "NO_REPLY") {
-                           console.log(`AI Reply (Keyword Triggered): "${aiReply}"`);
                            await client.sendMessage(message.peerId, {
                              message: aiReply,
                              replyTo: replyTo,
                            });
-                           await saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
-                           replySent = true;
-                           break; // Success
+                           saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT', undefined, undefined, accountId).catch(() => {});
+                           break;
                          }
                        } catch (e) {
                          console.error("AI Keyword Reply failed:", e);
@@ -2264,8 +2766,13 @@ async function startServer() {
                 }
               }
 
-              if (kw.photo) {
-                console.log(`[KEYWORD REPLY] Sending photo reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
+              // Instant Dispatch: Send Text or Photo
+              if (kw.reply && !kw.photo) {
+                await client.sendMessage(message.peerId, {
+                  message: kw.reply,
+                  replyTo: replyTo,
+                });
+              } else if (kw.photo) {
                 const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
                 const buffer = Buffer.from(base64Data, "base64");
                 
@@ -2281,19 +2788,10 @@ async function startServer() {
                   replyTo: replyTo,
                   forceDocument: false,
                 });
-                replySent = true;
-              } else if (kw.reply) {
-                console.log(`[KEYWORD REPLY] Sending text reply for Keyword Rule: "${match.matchedWord}" (Rule ID: ${kw._id})`);
-                await client.sendMessage(message.peerId, {
-                  message: kw.reply,
-                  replyTo: replyTo,
-                });
-                replySent = true;
               }
 
+              // Instant Forwarding: Forward saved message links
               if (normalizedLinks.length > 0) {
-                console.log(`Handling ${normalizedLinks.length} message links for keyword: ${match.matchedWord}`);
-
                 for (const link of normalizedLinks) {
                   const parts = link.split("/").filter(p => p.length > 0);
                   const messageId = parseInt(parts[parts.length - 1], 10);
@@ -2318,14 +2816,7 @@ async function startServer() {
                     const topMsgId = topicId === 1 ? undefined : topicId;
                     
                     try {
-                      let inputPeer;
-                      try {
-                        inputPeer = await client.getInputEntity(fromPeer);
-                      } catch (e: any) {
-                        console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
-                        throw e;
-                      }
-
+                      let inputPeer = await client.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
                       const toPeerInput = await client.getInputEntity(message.peerId);
 
                       await client.invoke(
@@ -2337,65 +2828,30 @@ async function startServer() {
                           topMsgId: replyInGeneral ? undefined : topMsgId,
                         }) as any
                       );
-                      console.log(`Forwarded message ${messageId} for keyword: ${kw.keyword}`);
-                      replySent = true;
                     } catch (forwardErr: any) {
-                      console.error("Forwarding failed, trying fallback:", forwardErr.message);
                       try {
                         await client.forwardMessages(message.peerId, {
                           messages: [messageId],
-                          fromPeer: fromPeer,
+                          fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
                           topMsgId: replyInGeneral ? undefined : topMsgId,
                         } as any);
-                        replySent = true;
                       } catch (fallbackErr: any) {
-                         console.error("Fallback forwarding also failed:", fallbackErr.message);
+                         console.error("Fallback forwarding failed:", fallbackErr.message);
                       }
                     }
                   }
-                  await new Promise(resolve => setTimeout(resolve, 500));
                 }
               }
               
-              // Update reply history count and save log asynchronously (fire-and-forget)
-              (async () => {
-                try {
-                  if (topicId) {
-                    const today = new Date();
-                    const history = await ReplyHistory.findOne({ topic_id: topicId, chat_id: chatId, keyword_id: kw._id });
-                    let isSameDay = false;
-                    
-                    if (history) {
-                      const lastUpdated = new Date(history.last_updated);
-                      const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                      const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-                      
-                      if (lastUpdatedIST === todayIST) {
-                        isSameDay = true;
-                      }
-                    }
+              saveLog(`Auto-reply sent for keyword "${match.matchedWord}" in ${chatTitle} > ${topicName}`, 'info', 'USERBOT', undefined, { topicId, chatId, ruleId: kw._id }, accountId).catch(() => {});
 
-                    if (history && isSameDay) {
-                       await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
-                    } else {
-                       await ReplyHistory.findOneAndUpdate(
-                          { topic_id: topicId, chat_id: chatId, keyword_id: kw._id },
-                          { count: 1, last_updated: today },
-                          { upsert: true }
-                       );
-                    }
-                  }
-                } catch (err) {
-                  console.error("Async log/history update failed:", err);
-                }
-              })();
-              
-              if (replySent) {
-                console.log("Reply sent for keyword. Continuing to next match.");
+              // Update Reply History for this keyword in topic
+              if (topicId) {
+                incrementKeywordReplyCount(topicId, chatId, kw._id, accountId, autoResetEnabled).catch(() => {});
               }
             } catch (err: any) {
               console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
-              await saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT');
+              saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT', undefined, undefined, accountId).catch(() => {});
             }
           }
         }
@@ -2550,7 +3006,8 @@ async function startServer() {
 
   app.delete("/api/missed-triggers", async (req, res) => {
     try {
-      await MissedTrigger.deleteMany({});
+      const accountId = getAccountId(req);
+      await MissedTrigger.deleteMany(getAccountFilter(accountId));
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2560,13 +3017,14 @@ async function startServer() {
   // API Routes
   app.delete("/api/data/clear", async (req, res) => {
     try {
-      await Keyword.deleteMany({});
-      await Log.deleteMany({});
-      await BlockedTopic.deleteMany({});
-      await PhotoReplyHistory.deleteMany({});
-      await ReplyHistory.deleteMany({});
-      await MissedTrigger.deleteMany({});
-      blockedTopicsCache.clear();
+      const accountId = getAccountId(req);
+      await Keyword.deleteMany(getAccountFilter(accountId));
+      await Log.deleteMany(getAccountFilter(accountId));
+      await BlockedTopic.deleteMany(getAccountFilter(accountId));
+      await PhotoReplyHistory.deleteMany(getAccountFilter(accountId));
+      await ReplyHistory.deleteMany(getAccountFilter(accountId));
+      await MissedTrigger.deleteMany(getAccountFilter(accountId));
+      blockedTopicsCache.delete(accountId);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2575,7 +3033,8 @@ async function startServer() {
 
   app.delete("/api/data/last-import", async (req, res) => {
     try {
-      const lastKeyword = await Keyword.findOne().sort({ _id: -1 });
+      const accountId = getAccountId(req);
+      const lastKeyword = await Keyword.findOne(getAccountFilter(accountId)).sort({ _id: -1 });
       if (lastKeyword) {
         await Keyword.deleteOne({ _id: lastKeyword._id });
         res.json({ success: true });
@@ -2629,144 +3088,245 @@ async function startServer() {
     }
   });
 
-  let lastAuthCheck = 0;
-  let cachedAuthStatus = false;
-  let sessionStartTime: number | null = null;
+  app.post("/api/push/test-photo", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      await sendPhotoReceivedNotification({
+        chatTitle: "Test Group",
+        topicName: "Test Topic",
+        topicId: 12345,
+        chatId: "123456789",
+        link: "https://t.me",
+        accountId
+      });
+      res.json({ status: "success" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   async function checkAndReconnectUserBot() {
     if (isConnecting) return;
     
-    let isUserBotConnected = !!userClient && userClient.connected;
-    
-    // Check if actually authorized, not just connected (with 1-minute cache to avoid rate limits)
-    if (isUserBotConnected && userClient) {
-      const now = Date.now();
-      if (now - lastAuthCheck > 60000) {
-        try {
-          cachedAuthStatus = await userClient.isUserAuthorized();
-          lastAuthCheck = now;
-          if (!cachedAuthStatus) {
-            console.log("UserBot connected but not authorized. Marking as disconnected.");
-            isUserBotConnected = false;
-          }
-        } catch (e) {
-          console.error("Error checking authorization in background:", e);
-          isUserBotConnected = false;
-        }
-      } else {
-        isUserBotConnected = cachedAuthStatus;
-      }
-    }
-    
-    if (!isUserBotConnected) {
-      const sessionString = (await getSetting("session_string"))?.value;
-      const apiIdRaw = (await getSetting("api_id"))?.value || "";
-      const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
-      const apiId = parseInt(apiIdRaw.trim(), 10);
+    try {
+      const sessionDocs = await Setting.find({ key: "session_string" });
+      for (const doc of sessionDocs) {
+        const accId = doc.account_id || 'default';
+        const sessionString = doc.value;
+        if (!sessionString) continue;
 
-      if (sessionString && !isNaN(apiId) && apiId > 0 && apiHash) {
-        try {
-          isConnecting = true;
-          console.log("Auto-reconnecting UserBot in background...");
-          if (userClient) {
+        const currentSession = accountClients.get(accId);
+        let client = currentSession?.client || (accId === 'default' ? userClient : null);
+        let isConnectedAndAuthed = false;
+
+        if (client && client.connected) {
+          try {
+            isConnectedAndAuthed = await client.isUserAuthorized();
+          } catch (e) {
+            isConnectedAndAuthed = false;
+          }
+        }
+
+        if (!isConnectedAndAuthed) {
+          const apiIdRaw = (await getSetting("api_id", accId))?.value || "";
+          const apiHash = ((await getSetting("api_hash", accId))?.value || "").trim();
+          const apiId = parseInt(apiIdRaw.trim(), 10);
+
+          if (!isNaN(apiId) && apiId > 0 && apiHash) {
             try {
-              await userClient.disconnect();
-            } catch (e) {}
+              console.log(`Auto-reconnecting UserBot for account ${accId}...`);
+              if (client) {
+                try { await client.disconnect(); } catch (e) {}
+              }
+              const newClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+                connectionRetries: 5,
+                requestRetries: 5,
+                deviceModel: "Desktop",
+                systemVersion: "Windows 10",
+                appVersion: "1.0.0",
+              });
+              await newClient.connect();
+              
+              if (await newClient.isUserAuthorized()) {
+                const currentGroupId = getCachedSetting("telegram_group_ids", accId) || (accId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
+                setupUserBotHandlers(newClient, currentGroupId, accId);
+                accountClients.set(accId, { accountId: accId, client: newClient, sessionStartTime: Date.now() });
+                if (accId === 'default') {
+                  userClient = newClient;
+                  cachedAuthStatus = true;
+                  lastAuthCheck = Date.now();
+                  sessionStartTime = Date.now();
+                }
+                console.log(`UserBot for account ${accId} connected and authorized.`);
+                await saveLog(`UserBot auto-connected successfully`, "info", "SYSTEM", undefined, undefined, accId);
+              } else {
+                console.log(`UserBot session for account ${accId} unauthorized.`);
+                await newClient.disconnect();
+                if (accId === 'default') userClient = null;
+                if (accountClients.has(accId)) { await recordSessionEnd(accId, accountClients.get(accId)?.sessionStartTime); }
+                accountClients.delete(accId);
+              }
+            } catch (connErr: any) {
+              console.error(`Auto-reconnect failed for account ${accId}:`, connErr.message);
+            }
           }
-          userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-            connectionRetries: 5,
-            requestRetries: 5,
-            deviceModel: "Desktop",
-            systemVersion: "Windows 10",
-            appVersion: "1.0.0",
-          });
-          await userClient.connect();
-          
-          const authorized = await userClient.isUserAuthorized();
-          if (authorized) {
-            const currentGroupId = settingsCache["telegram_group_ids"] || process.env.TELEGRAM_GROUP_ID || "";
-            setupUserBotHandlers(userClient, currentGroupId);
-            cachedAuthStatus = true;
-            lastAuthCheck = Date.now();
-            sessionStartTime = Date.now();
-            await saveLog("UserBot background auto-reconnect successful", "info", "SYSTEM");
-          } else {
-            console.log("Background reconnect successful but session is unauthorized.");
-            await userClient.disconnect();
-            userClient = null;
-          }
-        } catch (connErr: any) {
-          console.error("Background auto-reconnect failed:", connErr.message);
-        } finally {
-          isConnecting = false;
         }
       }
+    } catch (err: any) {
+      console.error("Error in background checkAndReconnectUserBot:", err);
     }
   }
 
   // Start background connection check every 1 minute
   setInterval(checkAndReconnectUserBot, 60000);
 
+  // Serve dynamic active App Icon (supports Base64, preset URLs, and static fallbacks)
+  app.get("/api/app-icon.png", async (req, res) => {
+    try {
+      const appLogoSetting = await getSetting("app_logo", "default");
+      const appLogo = appLogoSetting?.value || "";
+      if (appLogo && appLogo.startsWith("data:")) {
+        const matches = appLogo.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const contentType = matches[1];
+          const buffer = Buffer.from(matches[2], "base64");
+          res.setHeader("Content-Type", contentType);
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          return res.send(buffer);
+        }
+      } else if (appLogo && (appLogo.startsWith("/") || appLogo.startsWith("http"))) {
+        return res.redirect(appLogo);
+      }
+      res.setHeader("Cache-Control", "no-cache");
+      return res.sendFile(path.join(process.cwd(), "public", "pwa-192x192.png"));
+    } catch (err) {
+      return res.sendFile(path.join(process.cwd(), "public", "pwa-192x192.png"));
+    }
+  });
+
+  app.get("/api/manifest.json", async (req, res) => {
+    try {
+      const appLogoSetting = await getSetting("app_logo", "default");
+      const appLogo = appLogoSetting?.value || "/pwa-192x192.png";
+      const iconUrl = appLogo.startsWith("data:") ? "/api/app-icon.png" : (appLogo || "/pwa-192x192.png");
+      
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+
+      res.json({
+        name: "BotFlow Premium",
+        short_name: "BotFlow",
+        description: "Professional Telegram Topic & Userbot Manager with AI",
+        id: "/",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        orientation: "portrait",
+        background_color: "#0a0d14",
+        theme_color: "#0a0d14",
+        icons: [
+          {
+            src: iconUrl,
+            sizes: "192x192 512x512",
+            type: iconUrl.endsWith(".svg") ? "image/svg+xml" : "image/png",
+            purpose: "any"
+          },
+          {
+            src: iconUrl,
+            sizes: "192x192 512x512",
+            type: iconUrl.endsWith(".svg") ? "image/svg+xml" : "image/png",
+            purpose: "maskable"
+          }
+        ],
+        prefer_related_applications: false,
+        categories: ["productivity", "utilities"]
+      });
+    } catch (e) {
+      res.status(500).json({ error: "Failed to generate manifest" });
+    }
+  });
   app.get("/api/stats", async (req, res) => {
     try {
-      const topicCount = await getTopicCount();
-      const todayTopicCount = await getTodayTopicCount();
-      const todayPhotoSentStats = await getTodayPhotoSentStats();
-      const past24hPhotoSentStats = await getPast24hPhotoSentStats();
-      const keywordCount = await Keyword.countDocuments();
-      const autoReply = (await getSetting("auto_reply"))?.value || "";
-      const autoReply2Enabled = (await getSetting("auto_reply_2_enabled"))?.value === "true";
-      const autoReply2 = (await getSetting("auto_reply_2"))?.value || "";
-      const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay"))?.value || "1", 10);
-      const delaySeconds = parseInt((await getSetting("delay_seconds"))?.value || "0", 10);
-      const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds"))?.value || "0", 10);
-      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
-      const photoReplyEnabled = (await getSetting("photo_reply_enabled"))?.value === "true";
-      const photoReplyMessage = (await getSetting("photo_reply_message"))?.value || "ok wait";
-      const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled"))?.value === "true";
-      const photoReplyMessage2 = (await getSetting("photo_reply_message_2"))?.value || "second message";
-      const photoReplyMessage2StartTime = (await getSetting("photo_reply_message_2_start_time"))?.value || "";
-      const photoReplyMessage2EndTime = (await getSetting("photo_reply_message_2_end_time"))?.value || "";
-      const photoReplyMax = parseInt((await getSetting("photo_reply_max"))?.value || "2", 10);
-      const notificationSoundEnabled = (await getSetting("notification_sound_enabled"))?.value === "true";
-      const notificationSoundType = (await getSetting("notification_sound_type"))?.value || "default";
-      const topicIcon = (await getSetting("topic_icon"))?.value || "✅";
-      const topicRenameEmoji = (await getSetting("topic_rename_emoji"))?.value || "🛑";
-      const topicRenameKeywords = (await getSetting("topic_rename_keywords"))?.value || "";
-      const topicRenameMatchMode = (await getSetting("topic_rename_match_mode"))?.value || "exact";
-      const autoResetKeywords = (await getSetting("auto_reset_keywords"))?.value === "true";
-      const autoBlockKeywords = (await getSetting("auto_block_keywords"))?.value || "";
-      const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
-      const aiPersona = (await getSetting("ai_persona"))?.value || "";
-      const geminiApiKeys = (await getSetting("gemini_api_keys"))?.value || "[]";
-      const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
-      const lastLoginTime = (await getSetting("last_login_time"))?.value || "";
-      const targetGroupId = (await getSetting("telegram_group_ids"))?.value || process.env.TELEGRAM_GROUP_ID || "";
+      const accountId = getAccountId(req);
+      const topicCount = await getTopicCount(accountId);
+      const todayTopicCount = await getTodayTopicCount(accountId);
+      const todayPhotoSentStats = await getTodayPhotoSentStats(accountId);
+      const past24hPhotoSentStats = await getPast24hPhotoSentStats(accountId);
+      const keywordCount = await Keyword.countDocuments(getAccountFilter(accountId));
+      const appLogo = (await getSetting("app_logo", accountId))?.value || "";
+      const autoReply = (await getSetting("auto_reply", accountId))?.value || "";
+      const autoReply2Enabled = (await getSetting("auto_reply_2_enabled", accountId))?.value === "true";
+      const autoReply2 = (await getSetting("auto_reply_2", accountId))?.value || "";
+      const autoReply2Delay = parseInt((await getSetting("auto_reply_2_delay", accountId))?.value || "1", 10);
+      const delaySeconds = parseInt((await getSetting("delay_seconds", accountId))?.value || "0", 10);
+      const keywordDelaySeconds = parseInt((await getSetting("keyword_delay_seconds", accountId))?.value || "0", 10);
+      const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
+      const photoReplyEnabled = (await getSetting("photo_reply_enabled", accountId))?.value === "true";
+      const photoReplyMessage = (await getSetting("photo_reply_message", accountId))?.value || "ok wait";
+      const photoReplyMessage2Enabled = (await getSetting("photo_reply_message_2_enabled", accountId))?.value === "true";
+      const photoReplyMessage2 = (await getSetting("photo_reply_message_2", accountId))?.value || "second message";
+      const photoReplyMessage2StartTime = (await getSetting("photo_reply_message_2_start_time", accountId))?.value || "";
+      const photoReplyMessage2EndTime = (await getSetting("photo_reply_message_2_end_time", accountId))?.value || "";
+      const photoReplyMax = parseInt((await getSetting("photo_reply_max", accountId))?.value || "2", 10);
+      const notificationSoundEnabled = (await getSetting("notification_sound_enabled", accountId))?.value === "true";
+      const notificationSoundType = (await getSetting("notification_sound_type", accountId))?.value || "default";
+      const topicIcon = (await getSetting("topic_icon", accountId))?.value || "✅";
+      const topicRenameEmoji = (await getSetting("topic_rename_emoji", accountId))?.value || "🛑";
+      const topicRenameKeywords = (await getSetting("topic_rename_keywords", accountId))?.value || "";
+      const topicRenameMatchMode = (await getSetting("topic_rename_match_mode", accountId))?.value || "exact";
+      const autoResetKeywords = (await getSetting("auto_reset_keywords", accountId))?.value === "true";
+      const autoBlockKeywords = (await getSetting("auto_block_keywords", accountId))?.value || "";
+      const aiModeEnabled = (await getSetting("ai_mode_enabled", accountId))?.value === "true";
+      const aiPersona = (await getSetting("ai_persona", accountId))?.value || "";
+      const geminiApiKeys = (await getSetting("gemini_api_keys", accountId))?.value || "[]";
+      const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
+      const lastLoginTime = (await getSetting("last_login_time", accountId))?.value || "";
+      const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
       
-      let isUserBotConnected = !!userClient && userClient.connected && cachedAuthStatus;
+      const session = accountClients.get(accountId);
+      const client = session?.client || (accountId === 'default' ? userClient : null);
+      let isUserBotConnected = !!client && (session ? true : cachedAuthStatus);
 
-      const apiId = (await getSetting("api_id"))?.value || "";
-      const apiHash = (await getSetting("api_hash"))?.value || "";
-      const defaultPhone = (await getSetting("default_phone"))?.value || "";
+      const apiId = (await getSetting("api_id", accountId))?.value || "";
+      const apiHash = (await getSetting("api_hash", accountId))?.value || "";
+      const defaultPhone = (await getSetting("default_phone", accountId))?.value || "";
 
       let loginUser = null;
-      if (isUserBotConnected && userClient) {
-        try {
-          const me = await userClient.getMe();
-          loginUser = {
-            id: me.id.toString(),
-            firstName: me.firstName,
-            lastName: me.lastName,
-            username: me.username,
-            phone: me.phone
-          };
-        } catch (e) {
-          console.error("Error getting user info:", e);
+      if (isUserBotConnected && client) {
+        if (session && session.loginUser) {
+          loginUser = session.loginUser;
+        } else {
+          try {
+            const me = await client.getMe();
+            loginUser = {
+              id: me.id.toString(),
+              firstName: me.firstName,
+              lastName: me.lastName,
+              username: me.username,
+              phone: me.phone
+            };
+            if (session) {
+              session.loginUser = loginUser;
+            }
+          } catch (e: any) {
+            console.error("Error getting user info for account:", accountId, e);
+            if (e.message?.includes("AUTH_KEY_UNREGISTERED") || e.message?.includes("AUTH_KEY_DUPLICATED")) {
+              if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
+              accountClients.delete(accountId);
+              if (accountId === 'default') {
+                await deleteSetting("session_string");
+                cachedAuthStatus = false;
+                userClient = null;
+              }
+            }
+          }
         }
       }
 
       res.json({
         topicCount,
+        appLogo,
         todayTopicCount,
         todayPhotoSentStats,
         past24hPhotoSentStats,
@@ -2798,13 +3358,15 @@ async function startServer() {
         geminiApiKeys,
         replyInGeneral,
         isUserBotConnected,
-        sessionStartTime,
+        sessionStartTime: session?.sessionStartTime || sessionStartTime,
         lastLoginTime,
         apiId,
         apiHash,
         defaultPhone,
         targetGroupId,
-        loginUser,
+        loginUser, sessionHistory: await SessionHistory.find({ account_id: accountId }).sort({ end_time: -1 }).limit(10),
+        telegramBotToken: (await getSetting("telegram_bot_token", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_BOT_TOKEN : "") || "",
+        botInfo: currentBotInfo,
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
@@ -2813,8 +3375,41 @@ async function startServer() {
     }
   });
 
+  app.get("/api/bot-info", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      const token = (await getSetting("telegram_bot_token", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_BOT_TOKEN : "") || "";
+      if (!token) {
+        return res.json({ token: "", bot: null });
+      }
+      if (currentBotInfo && bot) {
+        return res.json({ token, bot: currentBotInfo });
+      }
+      try {
+        const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+        const data = await response.json();
+        if (data.ok) {
+          const fetchedBot = {
+            id: data.result.id,
+            firstName: data.result.first_name || "Bot",
+            username: data.result.username || ""
+          };
+          currentBotInfo = fetchedBot;
+          return res.json({ token, bot: fetchedBot });
+        } else {
+          return res.json({ token, bot: null, error: data.description });
+        }
+      } catch (fErr: any) {
+        return res.json({ token, bot: null, error: fErr.message });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/settings", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const { 
         autoReply, 
         autoReply2Enabled,
@@ -2846,60 +3441,63 @@ async function startServer() {
         photoReplyMessage2EndTime,
         targetGroupId,
         telegramBotToken,
-        globalApprovalMode
-      } = req.body;
-      if (typeof autoReply === "string") await setSetting("auto_reply", autoReply);
-      if (typeof autoReply2Enabled !== "undefined") await setSetting("auto_reply_2_enabled", String(autoReply2Enabled));
-      if (typeof autoReply2 === "string") await setSetting("auto_reply_2", autoReply2);
-      if (typeof autoReply2Delay !== "undefined") await setSetting("auto_reply_2_delay", String(autoReply2Delay));
-      if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds));
-      if (typeof keywordDelaySeconds !== "undefined") await setSetting("keyword_delay_seconds", String(keywordDelaySeconds));
-      if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId));
-      if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash));
-      if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused));
-      if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled));
-      if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage));
-      if (typeof photoReplyMessage2Enabled !== "undefined") await setSetting("photo_reply_message_2_enabled", String(photoReplyMessage2Enabled));
-      if (typeof photoReplyMessage2 !== "undefined") await setSetting("photo_reply_message_2", String(photoReplyMessage2));
-      if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax));
-      if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled));
-      if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType));
-      if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon));
-      if (typeof topicRenameEmoji !== "undefined") await setSetting("topic_rename_emoji", String(topicRenameEmoji));
-      if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords));
-      if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode));
-      if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords));
-      if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords));
-      if (typeof aiModeEnabled !== "undefined") await setSetting("ai_mode_enabled", String(aiModeEnabled));
-      if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona));
-      if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys));
-      if (typeof replyInGeneral !== "undefined") await setSetting("reply_in_general", String(replyInGeneral));
-      if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime);
-      if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime);
-      if (typeof targetGroupId !== "undefined") await setSetting("telegram_group_ids", String(targetGroupId));
-      if (typeof globalApprovalMode !== "undefined") await setSetting("global_approval_mode", String(globalApprovalMode));
+        globalApprovalMode, appLogo } = req.body;
+      if (typeof autoReply === "string") await setSetting("auto_reply", autoReply, accountId);
+      if (typeof autoReply2Enabled !== "undefined") await setSetting("auto_reply_2_enabled", String(autoReply2Enabled), accountId);
+      if (typeof autoReply2 === "string") await setSetting("auto_reply_2", autoReply2, accountId);
+      if (typeof autoReply2Delay !== "undefined") await setSetting("auto_reply_2_delay", String(autoReply2Delay), accountId);
+      if (typeof delaySeconds !== "undefined") await setSetting("delay_seconds", String(delaySeconds), accountId);
+      if (typeof keywordDelaySeconds !== "undefined") await setSetting("keyword_delay_seconds", String(keywordDelaySeconds), accountId);
+      if (typeof apiId !== "undefined") await setSetting("api_id", String(apiId), accountId);
+      if (typeof apiHash !== "undefined") await setSetting("api_hash", String(apiHash), accountId);
+      if (typeof systemPaused !== "undefined") await setSetting("system_paused", String(systemPaused), accountId);
+      if (typeof photoReplyEnabled !== "undefined") await setSetting("photo_reply_enabled", String(photoReplyEnabled), accountId);
+      if (typeof photoReplyMessage !== "undefined") await setSetting("photo_reply_message", String(photoReplyMessage), accountId);
+      if (typeof photoReplyMessage2Enabled !== "undefined") await setSetting("photo_reply_message_2_enabled", String(photoReplyMessage2Enabled), accountId);
+      if (typeof photoReplyMessage2 !== "undefined") await setSetting("photo_reply_message_2", String(photoReplyMessage2), accountId);
+      if (typeof photoReplyMax !== "undefined") await setSetting("photo_reply_max", String(photoReplyMax), accountId);
+      if (typeof notificationSoundEnabled !== "undefined") await setSetting("notification_sound_enabled", String(notificationSoundEnabled), accountId);
+      if (typeof notificationSoundType !== "undefined") await setSetting("notification_sound_type", String(notificationSoundType), accountId);
+      if (typeof topicIcon !== "undefined") await setSetting("topic_icon", String(topicIcon), accountId);
+      if (typeof topicRenameEmoji !== "undefined") await setSetting("topic_rename_emoji", String(topicRenameEmoji), accountId);
+      if (typeof topicRenameKeywords !== "undefined") await setSetting("topic_rename_keywords", String(topicRenameKeywords), accountId);
+      if (typeof topicRenameMatchMode !== "undefined") await setSetting("topic_rename_match_mode", String(topicRenameMatchMode), accountId);
+      if (typeof autoResetKeywords !== "undefined") await setSetting("auto_reset_keywords", String(autoResetKeywords), accountId);
+      if (typeof autoBlockKeywords !== "undefined") await setSetting("auto_block_keywords", String(autoBlockKeywords), accountId);
+      if (typeof aiModeEnabled !== "undefined") await setSetting("ai_mode_enabled", String(aiModeEnabled), accountId);
+      if (typeof aiPersona !== "undefined") await setSetting("ai_persona", String(aiPersona), accountId);
+      if (typeof geminiApiKeys !== "undefined") await setSetting("gemini_api_keys", String(geminiApiKeys), accountId);
+      if (typeof replyInGeneral !== "undefined") await setSetting("reply_in_general", String(replyInGeneral), accountId);
+      if (typeof photoReplyMessage2StartTime === "string") await setSetting("photo_reply_message_2_start_time", photoReplyMessage2StartTime, accountId);
+      if (typeof photoReplyMessage2EndTime === "string") await setSetting("photo_reply_message_2_end_time", photoReplyMessage2EndTime, accountId);
+      if (typeof targetGroupId !== "undefined") await setSetting("telegram_group_ids", String(targetGroupId), accountId);
+      if (typeof globalApprovalMode !== "undefined") await setSetting("global_approval_mode", String(globalApprovalMode), accountId);
+      if (typeof appLogo !== "undefined") {
+        await setSetting("app_logo", String(appLogo), accountId);
+        if (accountId !== "default") {
+          await setSetting("app_logo", String(appLogo), "default");
+        }
+      }
       
       if (typeof telegramBotToken !== "undefined") {
-        const oldToken = (await getSetting("telegram_bot_token"))?.value;
+        const oldToken = (await getSetting("telegram_bot_token", accountId))?.value;
         if (telegramBotToken && telegramBotToken !== oldToken) {
-          await setSetting("telegram_bot_token", telegramBotToken);
+          await setSetting("telegram_bot_token", telegramBotToken, accountId);
           console.log("Telegram Bot Token updated. Restarting bot...");
-          // We'll restart after settings cache refresh
         }
       }
       
       await refreshSettingsCache();
 
       if (typeof telegramBotToken !== "undefined") {
-        const currentToken = (await getSetting("telegram_bot_token"))?.value;
-        const oldToken = settingsCache["telegram_bot_token"]; // This might be old if cache just refreshed but we want to compare with what's actually running
-        // If bot is not running or token changed, restart
+        const currentToken = (await getSetting("telegram_bot_token", accountId))?.value;
+        const oldToken = settingsCache[accountId]?.["telegram_bot_token"];
         if (telegramBotToken && (!bot || telegramBotToken !== oldToken)) {
            await initBot(telegramBotToken);
         }
       }
       
-      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, keywordDelaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime });
+      await saveLog("Settings updated", 'info', 'API', '/api/settings', { autoReply, delaySeconds, keywordDelaySeconds, apiId, systemPaused, photoReplyEnabled, photoReplyMessage2Enabled, photoReplyMax, notificationSoundEnabled, notificationSoundType, topicIcon, topicRenameEmoji, topicRenameKeywords, topicRenameMatchMode, autoResetKeywords, autoBlockKeywords, aiModeEnabled, replyInGeneral, photoReplyMessage2StartTime, photoReplyMessage2EndTime }, accountId);
       res.json({ success: true });
     } catch (err: any) {
       console.error("Error in /api/settings:", err);
@@ -2936,10 +3534,80 @@ async function startServer() {
     }
   });
 
+  // Get Available Telegram Groups - STRICTLY restricted to registered Target Groups from Settings
+  app.get("/api/groups", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      const rawSetting = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
+      const registeredGroups = parseRegisteredGroups(rawSetting, accountId);
+
+      if (registeredGroups.length === 0) {
+        return res.json({ groups: [] });
+      }
+
+      // Title resolvers ONLY for the explicitly registered groups
+      const titleMap = new Map<string, string>();
+
+      // 1. Check DB Topics ONLY for matching registered IDs
+      try {
+        const dbTopics = await Topic.find(getAccountFilter(accountId)).limit(200);
+        for (const t of dbTopics) {
+          if (t.chat_id && t.name) {
+            const norm = t.chat_id.replace(/^-100|^ -100|^-/, "").trim();
+            if (!titleMap.has(norm)) {
+              titleMap.set(norm, t.name);
+            }
+          }
+        }
+      } catch (e) {}
+
+      // 2. Check Telegram User Client dialogs ONLY for matching registered IDs
+      const session = accountClients.get(accountId);
+      const client = session?.client || (accountId === 'default' ? userClient : null);
+      if (client && client.connected) {
+        try {
+          const dialogs = await client.getDialogs({ limit: 100 });
+          for (const d of dialogs) {
+            const rawId = d.id?.toString() || "";
+            const norm = rawId.replace(/^-100|^ -100|^-/, "").trim();
+            const entityTitle = (d.entity as any)?.title || d.title;
+            if (norm && entityTitle && !titleMap.has(norm)) {
+              titleMap.set(norm, entityTitle);
+            }
+          }
+        } catch (e) {
+          console.error("Error fetching dialog titles for registered groups:", e);
+        }
+      }
+
+      // Build strictly filtered group list with human-readable titles
+      const groups = registeredGroups.map(reg => {
+        let bestTitle = reg.title;
+        // If title is just the ID or normalized ID, see if we resolved a friendly title
+        if (bestTitle === reg.id || bestTitle === reg.normalizedId) {
+          const resolved = titleMap.get(reg.normalizedId);
+          if (resolved) {
+            bestTitle = resolved;
+          }
+        }
+        return {
+          id: reg.id,
+          normalizedId: reg.normalizedId,
+          title: bestTitle && bestTitle !== reg.id ? bestTitle : `Group ${reg.id}`
+        };
+      });
+
+      res.json({ groups });
+    } catch (err: any) {
+      res.status(500).json({ error: `[GET /api/groups] ${err.message}` });
+    }
+  });
+
   // Keyword Routes
   app.get("/api/keywords", async (req, res) => {
     try {
-      const keywords = await Keyword.find();
+      const accountId = getAccountId(req);
+      const keywords = await Keyword.find(getAccountFilter(accountId));
       res.json(keywords);
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/keywords] ${err.message}` });
@@ -2947,6 +3615,7 @@ async function startServer() {
   });
 
   app.post("/api/keywords", async (req, res) => {
+    const accountId = getAccountId(req);
     const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled, approval_mode, notify_on_hit, target_groups } = req.body;
     try {
       // Ensure keywords is an array
@@ -2965,11 +3634,12 @@ async function startServer() {
         ai_reply_enabled: !!ai_reply_enabled,
         approval_mode: !!approval_mode,
         notify_on_hit: !!notify_on_hit,
-        target_groups: targetGroupsArray
+        target_groups: targetGroupsArray,
+        account_id: accountId || 'default'
       };
       
       if (id) {
-        await Keyword.findByIdAndUpdate(id, updateData);
+        await Keyword.findOneAndUpdate({ _id: id, ...getAccountFilter(accountId) }, updateData);
       } else {
         await Keyword.create(updateData);
       }
@@ -2985,8 +3655,9 @@ async function startServer() {
 
   app.put("/api/keywords/:id/approval", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const { approval_mode } = req.body;
-      await Keyword.findByIdAndUpdate(req.params.id, { approval_mode: !!approval_mode });
+      await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, { approval_mode: !!approval_mode });
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -2996,7 +3667,8 @@ async function startServer() {
 
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
-      await Keyword.findByIdAndDelete(req.params.id);
+      const accountId = getAccountId(req);
+      await Keyword.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) });
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -3006,11 +3678,12 @@ async function startServer() {
 
   app.put("/api/keywords/:id", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const updateData: any = {};
       if (typeof req.body.enabled !== 'undefined') updateData.enabled = req.body.enabled;
       if (typeof req.body.approval_mode !== 'undefined') updateData.approval_mode = !!req.body.approval_mode;
       if (typeof req.body.notify_on_hit !== 'undefined') updateData.notify_on_hit = !!req.body.notify_on_hit;
-      await Keyword.findByIdAndUpdate(req.params.id, updateData);
+      await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, updateData);
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -3021,7 +3694,21 @@ async function startServer() {
   // Approval Endpoints
   app.get("/api/approvals", async (req, res) => {
     try {
-      const approvals = await PendingApproval.find({ status: 'pending' }).sort({ created_at: -1 });
+      const accountId = getAccountId(req);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // Auto-expire older pending approvals in DB
+      await PendingApproval.updateMany(
+        { status: 'pending', created_at: { $lt: twentyFourHoursAgo } },
+        { $set: { status: 'expired', processed_at: new Date() } }
+      ).catch(() => {});
+
+      const approvals = await PendingApproval.find({
+        status: 'pending',
+        created_at: { $gte: twentyFourHoursAgo },
+        ...getAccountFilter(accountId)
+      }).sort({ created_at: -1 });
+
       res.json(approvals);
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/approvals] ${err.message}` });
@@ -3029,13 +3716,21 @@ async function startServer() {
   });
 
   app.post("/api/approvals/:id/decide", async (req, res) => {
+    const accountId = getAccountId(req);
     const { action } = req.body; // 'approve' or 'reject'
     const { id } = req.params;
     
     try {
-      const approval = await PendingApproval.findById(id).populate('rule_id');
-      if (!approval || approval.status !== 'pending') {
-        return res.status(404).json({ error: "Approval already processed or not found." });
+      const approval = await PendingApproval.findOne({ _id: id, ...getAccountFilter(accountId) }).populate('rule_id');
+      const is24hExpired = approval && approval.created_at && (Date.now() - new Date(approval.created_at).getTime() > 24 * 60 * 60 * 1000);
+
+      if (!approval || approval.status !== 'pending' || is24hExpired) {
+        if (approval && approval.status === 'pending' && is24hExpired) {
+          approval.status = 'expired';
+          await approval.save().catch(() => {});
+          sendSseEvent('approval_processed', { id, status: 'expired' });
+        }
+        return res.status(400).json({ error: "Approval request has expired (24 hours passed) or already processed." });
       }
       
       if (action === 'approve') {
@@ -3078,8 +3773,9 @@ async function startServer() {
   // Export/Import Routes
   app.get("/api/data/export", async (req, res) => {
     try {
-      const keywords = await Keyword.find();
-      const settings = await Setting.find({ key: { $ne: "session_string" } }); // Don't export session string
+      const accountId = getAccountId(req);
+      const keywords = await Keyword.find(getAccountFilter(accountId));
+      const settings = await Setting.find({ key: { $ne: "session_string" }, ...getAccountFilter(accountId) }); // Don't export session string
       res.json({ keywords, settings });
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/data/export] ${err.message}` });
@@ -3088,12 +3784,13 @@ async function startServer() {
 
   app.post("/api/data/import", express.json({ limit: '10mb' }), async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const { keywords, settings } = req.body;
       
       if (keywords && Array.isArray(keywords)) {
         for (const kw of keywords) {
           await Keyword.findOneAndUpdate(
-            { keyword: kw.keyword },
+            { keyword: kw.keyword, ...getAccountFilter(accountId) },
             { 
               keywords: kw.keywords || [kw.keyword],
               reply: kw.reply, 
@@ -3101,7 +3798,8 @@ async function startServer() {
               message_link: kw.message_link,
               message_links: kw.message_links || [],
               max_replies: kw.max_replies !== undefined ? kw.max_replies : 0,
-              match_mode: kw.match_mode || 'exact'
+              match_mode: kw.match_mode || 'exact',
+              account_id: accountId || 'default'
             },
             { upsert: true }
           );
@@ -3111,13 +3809,13 @@ async function startServer() {
       if (settings && Array.isArray(settings)) {
         for (const s of settings) {
           if (s.key !== "session_string") {
-            await setSetting(s.key, s.value);
+            await setSetting(s.key, s.value, accountId);
           }
         }
       }
 
       await refreshKeywordCache();
-      await saveLog("Data imported", 'info', 'API', '/api/data/import');
+      await saveLog("Data imported", 'info', 'API', '/api/data/import', undefined, accountId);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/data/import] ${err.message}` });
@@ -3126,9 +3824,10 @@ async function startServer() {
 
   // UserBot Auth Routes
   app.post("/api/auth/send-code", async (req, res) => {
+    const accountId = getAccountId(req);
     const { phone } = req.body;
-    let apiIdRaw = (await getSetting("api_id"))?.value || "";
-    let apiHash = (await getSetting("api_hash"))?.value || "";
+    let apiIdRaw = (await getSetting("api_id", accountId))?.value || "";
+    let apiHash = (await getSetting("api_hash", accountId))?.value || "";
 
     // Trim whitespace
     apiIdRaw = apiIdRaw.trim();
@@ -3140,46 +3839,79 @@ async function startServer() {
       return res.status(400).json({ error: "Valid API ID and Hash are required in settings." });
     }
 
-    console.log(`Attempting login with API ID: ${apiId} (Hash length: ${apiHash.length})`);
+    console.log(`Attempting login for account ${accountId} with API ID: ${apiId} (Hash length: ${apiHash.length})`);
 
-    if (isConnecting) return res.status(429).json({ error: "Connection already in progress. Please wait." });
+    const authState = accountAuthStates.get(accountId) || {};
+    if (authState.isConnecting || (accountId === 'default' && isConnecting)) {
+      return res.status(429).json({ error: "Connection already in progress. Please wait." });
+    }
 
     try {
-      isConnecting = true;
-      if (userClient) {
-        await userClient.disconnect();
+      accountAuthStates.set(accountId, { ...authState, isConnecting: true });
+      if (accountId === 'default') isConnecting = true;
+
+      // Disconnect existing client for this account if any
+      const existingSession = accountClients.get(accountId);
+      if (existingSession) {
+        try { await existingSession.client.disconnect(); } catch (e) {}
+        if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
+                accountClients.delete(accountId);
       }
-      userClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
+      if (accountId === 'default' && userClient) {
+        try { await userClient.disconnect(); } catch (e) {}
+        userClient = null;
+      }
+
+      const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 5,
         deviceModel: "Desktop",
         systemVersion: "Windows 10",
         appVersion: "1.0.0",
       });
-      await userClient.connect();
-      const result = await userClient.sendCode({ apiId, apiHash }, phone);
-      phoneCodeHash = result.phoneCodeHash;
-      phoneNumber = phone;
-      await saveLog(`Auth code sent to ${phone}`, 'info', 'API', '/api/auth/send-code');
+      await client.connect();
+      const result = await client.sendCode({ apiId, apiHash }, phone);
+      
+      accountAuthStates.set(accountId, {
+        phoneCodeHash: result.phoneCodeHash,
+        phoneNumber: phone,
+        isConnecting: false,
+        client: client
+      });
+      if (accountId === 'default') {
+        phoneCodeHash = result.phoneCodeHash;
+        phoneNumber = phone;
+      }
+
+      await saveLog(`Auth code sent to ${phone}`, 'info', 'API', '/api/auth/send-code', undefined, accountId);
       res.json({ success: true });
     } catch (err: any) {
       console.error("SendCode error:", err);
-      await saveLog(err.message, 'error', 'API', '/api/auth/send-code', { phone, apiId });
+      await saveLog(err.message, 'error', 'API', '/api/auth/send-code', { phone, apiId }, accountId);
       res.status(500).json({ error: `[POST /api/auth/send-code] ${err.message}` });
     } finally {
-      isConnecting = false;
+      const state = accountAuthStates.get(accountId);
+      if (state) state.isConnecting = false;
+      if (accountId === 'default') isConnecting = false;
     }
   });
 
   app.post("/api/auth/signin", async (req, res) => {
+    const accountId = getAccountId(req);
     const { code, password } = req.body;
-    if (!userClient || !phoneNumber || !phoneCodeHash) return res.status(400).json({ error: "Session not initialized" });
+    const session = accountClients.get(accountId);
+    const authState = accountAuthStates.get(accountId);
+    const client = session?.client || authState?.client || (accountId === 'default' ? userClient : null);
+    const currentPhone = session?.phoneNumber || authState?.phoneNumber || (accountId === 'default' ? phoneNumber : null);
+    const currentHash = session?.phoneCodeHash || authState?.phoneCodeHash || (accountId === 'default' ? phoneCodeHash : null);
+
+    if (!client || !currentPhone || !currentHash) return res.status(400).json({ error: "Session not initialized" });
 
     try {
       try {
-        await userClient.invoke(
+        await client.invoke(
           new Api.auth.SignIn({
-            phoneNumber: phoneNumber,
-            phoneCodeHash: phoneCodeHash,
+            phoneNumber: currentPhone,
+            phoneCodeHash: currentHash,
             phoneCode: code,
           })
         );
@@ -3188,11 +3920,11 @@ async function startServer() {
           if (!password) {
             return res.status(401).json({ error: "2FA Password required" });
           }
-          const apiIdRaw = (await getSetting("api_id"))?.value || "";
-          const apiHash = ((await getSetting("api_hash"))?.value || "").trim();
+          const apiIdRaw = (await getSetting("api_id", accountId))?.value || "";
+          const apiHash = ((await getSetting("api_hash", accountId))?.value || "").trim();
           const apiId = parseInt(apiIdRaw.trim(), 10);
           
-          await userClient.signInWithPassword({ apiId, apiHash }, {
+          await client.signInWithPassword({ apiId, apiHash }, {
             password: async () => password,
             onError: (err) => { throw err; }
           });
@@ -3201,28 +3933,49 @@ async function startServer() {
         }
       }
 
-      const sessionString = (userClient.session as StringSession).save();
-      await setSetting("session_string", sessionString);
+      const sessionString = (client.session as StringSession).save();
+      await setSetting("session_string", sessionString, accountId);
       const now = new Date().toISOString();
-      await setSetting("last_login_time", now);
-      sessionStartTime = Date.now();
-      setupUserBotHandlers(userClient, groupId);
-      await saveLog(`UserBot signed in: ${phoneNumber}`, 'info', 'API', '/api/auth/signin');
+      await setSetting("last_login_time", now, accountId);
+      
+      const startTime = Date.now();
+      if (accountId === 'default') {
+        sessionStartTime = startTime;
+        userClient = client;
+      }
+      accountClients.set(accountId, {
+        accountId,
+        client,
+        sessionStartTime: startTime,
+        phoneNumber: currentPhone
+      });
+
+      const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
+      setupUserBotHandlers(client, targetGroupId, accountId);
+      await saveLog(`UserBot signed in: ${currentPhone}`, 'info', 'API', '/api/auth/signin', undefined, accountId);
       res.json({ success: true });
     } catch (err: any) {
-      await saveLog(err.message, 'error', 'API', '/api/auth/signin', { phoneNumber });
+      await saveLog(err.message, 'error', 'API', '/api/auth/signin', { phoneNumber: currentPhone }, accountId);
       res.status(500).json({ error: `[POST /api/auth/signin] ${err.message}` });
     }
   });
 
   app.post("/api/auth/logout", async (req, res) => {
     try {
-      if (userClient) {
-        await userClient.disconnect();
-        userClient = null;
+      const accountId = getAccountId(req);
+      const session = accountClients.get(accountId);
+      if (session) {
+        try { await session.client.disconnect(); } catch (e) {}
+        if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
+                accountClients.delete(accountId);
       }
-      sessionStartTime = null;
-      await deleteSetting("session_string");
+      if (accountId === 'default' && userClient) {
+        try { await userClient.disconnect(); } catch (e) {}
+        userClient = null;
+        sessionStartTime = null;
+      }
+      await deleteSetting("session_string", accountId);
+      await saveLog(`UserBot logged out`, 'info', 'API', '/api/auth/logout', undefined, accountId);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: `[POST /api/auth/logout] ${err.message}` });
@@ -3231,7 +3984,8 @@ async function startServer() {
 
   app.get("/api/topics", async (req, res) => {
     try {
-      const topics = await Topic.find().sort({ created_at: -1 });
+      const accountId = getAccountId(req);
+      const topics = await Topic.find(getAccountFilter(accountId)).sort({ created_at: -1 });
       res.json(topics);
     } catch (err: any) {
       res.status(500).json({ error: `[GET /api/topics] ${err.message}` });
@@ -3303,39 +4057,40 @@ async function startServer() {
     }
 
     try {
-      if (userClient && userClient.connected) {
-        const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
+      const accountId = getAccountId(req);
+      const client = getAccountClient(accountId) || userClient;
+
+      if (client && client.connected) {
+        const groupIdsSetting = getCachedSetting("telegram_group_ids", accountId) || groupId || "";
         const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(id => id);
 
         if (target === 'general') {
-          // Send only to general section (no topic ID) across all permitted groups
           for (const gId of allowedGroupIds) {
             try {
-              await userClient.sendMessage(gId, { message });
+              await client.sendMessage(gId, { message });
             } catch (err: any) {
               console.error(`Broadcast failed for general section in group ${gId}:`, err.message);
-              await saveLog(`General broadcast failed for group ${gId}: ${err.message}`, 'error', 'API', '/api/broadcast');
+              await saveLog(`General broadcast failed for group ${gId}: ${err.message}`, 'error', 'API', '/api/broadcast', undefined, accountId);
             }
           }
-          await saveLog("Broadcast sent to general section of allowed groups", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          await saveLog("Broadcast sent to general section of allowed groups", 'info', 'API', '/api/broadcast', { messageLength: message.length }, accountId);
           return res.json({ success: true, message: "Broadcast sent to general section" });
         }
 
-        const topics = await Topic.find({});
-        console.log(`Broadcast: Found ${topics.length} total topics.`);
-        const filteredTopics = topics.filter(topic => !blockedTopicsCache.has(topic.telegram_topic_id));
+        const topics = await Topic.find(getAccountFilter(accountId));
+        console.log(`Broadcast: Found ${topics.length} total topics for account ${accountId}.`);
+        const filteredTopics = topics.filter(topic => !isTopicBlocked(topic.telegram_topic_id, accountId));
         console.log(`Broadcast: Found ${filteredTopics.length} topics after filtering blocked topics.`);
 
         if (filteredTopics.length === 0) {
-          // If no topics, just send to all main groups
           for (const gId of allowedGroupIds) {
             try {
-              await userClient.sendMessage(gId, { message });
+              await client.sendMessage(gId, { message });
             } catch (err: any) {
               console.error(`Broadcast failed for main group ${gId}:`, err.message);
             }
           }
-          await saveLog("Broadcast sent to main groups (no topics found)", 'info', 'API', '/api/broadcast', { messageLength: message.length });
+          await saveLog("Broadcast sent to main groups (no topics found)", 'info', 'API', '/api/broadcast', { messageLength: message.length }, accountId);
           return res.json({ success: true, message: "Sent to main groups (no topics found)" });
         }
 
@@ -3353,59 +4108,57 @@ async function startServer() {
             for (let i = 0; i < filteredTopics.length; i++) {
               if (broadcastCancelled) {
                 broadcastStatus.status = 'cancelled';
-                sendSseEvent('broadcast_update', broadcastStatus);
-                await saveLog("Broadcast cancelled", 'warn', 'API', '/api/broadcast', { processed: i, total: filteredTopics.length });
+                sendSseEvent('broadcast_update', { ...broadcastStatus, accountId });
+                await saveLog("Broadcast cancelled", 'warn', 'API', '/api/broadcast', { processed: i, total: filteredTopics.length }, accountId);
                 break;
               }
 
               const topic = filteredTopics[i];
               const destChatId = topic.chat_id || groupId;
               try {
-                await userClient.sendMessage(destChatId, {
+                await client.sendMessage(destChatId, {
                   message,
                   replyTo: topic.telegram_topic_id
                 });
                 broadcastStatus.current = i + 1;
-                sendSseEvent('broadcast_update', broadcastStatus);
+                sendSseEvent('broadcast_update', { ...broadcastStatus, accountId });
               } catch (err: any) {
                 const waitMatch = err.message.match(/A wait of (\d+) seconds is required/);
                 if (waitMatch) {
                   const waitTime = parseInt(waitMatch[1], 10);
                   console.warn(`Flood wait: Waiting for ${waitTime} seconds for topic ${topic.telegram_topic_id}...`);
-                  await saveLog(`Flood wait: Waiting for ${waitTime} seconds for topic ${topic.telegram_topic_id}`, 'warn', 'API', '/api/broadcast');
+                  await saveLog(`Flood wait: Waiting for ${waitTime} seconds for topic ${topic.telegram_topic_id}`, 'warn', 'API', '/api/broadcast', undefined, accountId);
                   await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
                   
-                  // Retry once after waiting
                   try {
-                    await userClient.sendMessage(destChatId, {
+                    await client.sendMessage(destChatId, {
                       message,
                       replyTo: topic.telegram_topic_id
                     });
                     broadcastStatus.current = i + 1;
-                    sendSseEvent('broadcast_update', broadcastStatus);
+                    sendSseEvent('broadcast_update', { ...broadcastStatus, accountId });
                   } catch (retryErr: any) {
                     console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} in ${destChatId} after retry:`, retryErr.message);
-                    await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId} after retry: ${retryErr.message}`, 'error', 'API', '/api/broadcast');
+                    await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId} after retry: ${retryErr.message}`, 'error', 'API', '/api/broadcast', undefined, accountId);
                   }
                 } else {
                   console.error(`Failed to send broadcast to topic ${topic.telegram_topic_id} in ${destChatId}:`, err.message);
-                  await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId}: ${err.message}`, 'error', 'API', '/api/broadcast');
+                  await saveLog(`Broadcast failed for topic ${topic.telegram_topic_id} in ${destChatId}: ${err.message}`, 'error', 'API', '/api/broadcast', undefined, accountId);
                 }
               }
 
-              // Rate limiting delay (reduced to 50ms for faster broadcast)
               await new Promise(resolve => setTimeout(resolve, 50));
             }
 
             if (!broadcastCancelled) {
               broadcastStatus.status = 'completed';
-              sendSseEvent('broadcast_update', broadcastStatus);
-              await saveLog("Broadcast completed", 'info', 'API', '/api/broadcast', { total: filteredTopics.length });
+              sendSseEvent('broadcast_update', { ...broadcastStatus, accountId });
+              await saveLog("Broadcast completed", 'info', 'API', '/api/broadcast', { total: filteredTopics.length }, accountId);
             }
           } catch (err: any) {
             console.error("Broadcast error:", err.message);
             broadcastStatus.status = 'error';
-            sendSseEvent('broadcast_update', broadcastStatus);
+            sendSseEvent('broadcast_update', { ...broadcastStatus, accountId });
           } finally {
             broadcastInProgress = false;
           }
@@ -3423,7 +4176,8 @@ async function startServer() {
 
   app.get("/api/missed-list", async (req, res) => {
     try {
-      const missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: -1 });
+      const accountId = getAccountId(req);
+      const missed = await MissedTrigger.find({ processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: -1 });
       res.json({ missed });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3432,9 +4186,10 @@ async function startServer() {
 
   app.post("/api/missed-skip", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const { id } = req.body;
       if (!id) return res.status(400).json({ error: "ID is required" });
-      await MissedTrigger.findByIdAndUpdate(id, { processed: true });
+      await MissedTrigger.findOneAndUpdate({ _id: id, ...getAccountFilter(accountId) }, { processed: true });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3443,7 +4198,8 @@ async function startServer() {
 
   app.post("/api/missed-skip-all", async (req, res) => {
     try {
-      await MissedTrigger.updateMany({ processed: false }, { processed: true });
+      const accountId = getAccountId(req);
+      await MissedTrigger.updateMany({ processed: false, ...getAccountFilter(accountId) }, { processed: true });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3452,7 +4208,8 @@ async function startServer() {
 
   app.get("/api/missed-count", async (req, res) => {
     try {
-      const count = await MissedTrigger.countDocuments({ processed: false });
+      const accountId = getAccountId(req);
+      const count = await MissedTrigger.countDocuments({ processed: false, ...getAccountFilter(accountId) });
       res.json({ count });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3466,27 +4223,31 @@ async function startServer() {
 
   app.post("/api/scan-missed", async (req, res) => {
     try {
-      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const accountId = getAccountId(req);
+      const client = getAccountClient(accountId) || userClient;
+
+      const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
       if (isSystemPaused) {
         return res.status(400).json({ error: "System is paused. Cannot scan for missed items." });
       }
 
-      if (!userClient || !userClient.connected) {
+      if (!client || !client.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
 
-      const groupIdsSetting = settingsCache["telegram_group_ids"] || groupId || "";
+      const groupIdsSetting = getCachedSetting("telegram_group_ids", accountId) || groupId || "";
       const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(id => id);
 
       const missedItems = [];
       let newMissedCount = 0;
+      const accountKeywords = await Keyword.find({ ...getAccountFilter(accountId), enabled: true });
 
       for (const currentGroupId of allowedGroupIds) {
-        console.log(`Scanning first 50 topics for missed keywords in group ${currentGroupId}...`);
+        console.log(`Scanning first 50 topics for missed keywords in group ${currentGroupId} (Account: ${accountId})...`);
         try {
-          const result = await userClient.invoke(
+          const result = await client.invoke(
             new Api.channels.GetForumTopics({
-              channel: await userClient.getInputEntity(currentGroupId),
+              channel: await client.getInputEntity(currentGroupId),
               q: "",
               offsetDate: 0,
               offsetId: 0,
@@ -3496,10 +4257,8 @@ async function startServer() {
           );
 
           const topics = (result as any).topics || [];
-          const blockedTopicIds = blockedTopicsCache;
-
           const normalizedGroupId = currentGroupId.replace("-100", "");
-          if (blockedTopicIds.has(Number(normalizedGroupId))) {
+          if (isTopicBlocked(Number(normalizedGroupId), accountId)) {
             console.log(`Skipping scan for blocked group: ${normalizedGroupId}`);
             continue;
           }
@@ -3509,16 +4268,14 @@ async function startServer() {
             const topicName = topic.title;
             const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
 
-            // Log topic with the correct group chat ID!
-            await logTopic(topicId, topicName, currentGroupId, topicDate);
+            await logTopic(topicId, topicName, currentGroupId, topicDate, accountId);
 
-            if (blockedTopicIds.has(topicId)) {
+            if (isTopicBlocked(topicId, accountId)) {
               console.log(`Skipping blocked topic: ${topicId}`);
               continue;
             }
 
-            // Fetch last 30 messages for this topic in this group
-            const messages = await userClient.getMessages(currentGroupId, {
+            const messages = await client.getMessages(currentGroupId, {
               replyTo: topicId,
               limit: 30,
             });
@@ -3537,14 +4294,14 @@ async function startServer() {
               const isRepliedGenerally = latestBotReplyDate > msg.date;
 
               if (isRepliedDirectly || isRepliedGenerally) {
-                continue; // Skip, already replied
+                continue;
               }
 
               if (msg.message) {
                 const text = msg.message.toLowerCase().trim();
                 const matches: { kw: any, index: number, matchedWord: string }[] = [];
 
-                for (const kw of cachedKeywords) {
+                for (const kw of accountKeywords) {
                   if (kw.enabled === false) continue;
                   const triggerWords = [...(kw.keywords || [])];
                   if (kw.keyword && !triggerWords.includes(kw.keyword)) {
@@ -3561,13 +4318,13 @@ async function startServer() {
                     if (kw.match_mode === 'partial') {
                       regex = new RegExp(escapedWord, 'gi');
                     } else {
-                      regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
+                      regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedWord}($|[^\\p{L}\\p{N}])`, 'gui');
                     }
                     
                     let match;
                     while ((match = regex.exec(text)) !== null) {
                       matches.push({ kw, index: match.index, matchedWord: wordLower });
-                      break; // Match once per keyword rule per message
+                      break;
                     }
                   }
                 }
@@ -3582,8 +4339,7 @@ async function startServer() {
                     if (processedRuleIds.has(kw._id.toString())) continue;
                     processedRuleIds.add(kw._id.toString());
 
-                    // Check if already in MissedTrigger for this rule and chat_id!
-                    const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: currentGroupId, rule_id: kw._id });
+                    const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: currentGroupId, rule_id: kw._id, ...getAccountFilter(accountId) });
                     if (!existing) {
                       const newTrigger = await MissedTrigger.create({
                         message_id: msg.id,
@@ -3593,7 +4349,8 @@ async function startServer() {
                         matched_keyword: match.matchedWord,
                         rule_id: kw._id,
                         timestamp: new Date(msg.date * 1000),
-                        processed: false
+                        processed: false,
+                        account_id: accountId || 'default'
                       });
                       newMissedCount++;
                       missedItems.push({
@@ -3610,32 +4367,27 @@ async function startServer() {
               }
             }
 
-            // Small delay per topic to safeguard against flood/rate limits
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         } catch (groupScanErr: any) {
           console.error(`Error scanning group ${currentGroupId}:`, groupScanErr.message);
-          await saveLog(`Scan failed for group ${currentGroupId}: ${groupScanErr.message}`, 'error', 'API', '/api/scan-missed');
+          await saveLog(`Scan failed for group ${currentGroupId}: ${groupScanErr.message}`, 'error', 'API', '/api/scan-missed', undefined, accountId);
         }
       }
 
       res.json({ success: true, count: newMissedCount, items: missedItems });
     } catch (err: any) {
       console.error("Scan missed error:", err);
-      if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await deleteSetting("session_string");
-        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
-        userClient = null;
-      } else if (err.message?.includes("TIMEOUT")) {
-        console.log("Connection timed out. Will retry later.");
-      }
       res.status(500).json({ error: err.message });
     }
   });
 
   app.post("/api/reply-single-missed", async (req, res) => {
     try {
-      if (!userClient || !userClient.connected) {
+      const accountId = getAccountId(req);
+      const client = getAccountClient(accountId) || userClient;
+
+      if (!client || !client.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
 
@@ -3644,33 +4396,32 @@ async function startServer() {
         return res.status(400).json({ error: "Trigger ID is required" });
       }
 
-      const trigger = await MissedTrigger.findById(triggerId);
+      const trigger = await MissedTrigger.findOne({ _id: triggerId, ...getAccountFilter(accountId) });
       if (!trigger || trigger.processed) {
         return res.status(404).json({ error: "Trigger not found or already processed" });
       }
 
-      const kw = await Keyword.findById(trigger.rule_id);
+      const kw = await Keyword.findOne({ _id: trigger.rule_id, ...getAccountFilter(accountId) });
       if (!kw) {
         trigger.processed = true;
         await trigger.save();
         return res.status(404).json({ error: "Keyword rule not found" });
       }
 
-      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
       if (isSystemPaused) {
         return res.status(400).json({ error: "Bot is paused. Unpause first to reply." });
       }
 
-      const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+      const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
       const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
       const replyToMsgId = trigger.message_id;
       const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
 
-      if (topMsgId && blockedTopicsCache.has(topMsgId)) {
+      if (topMsgId && isTopicBlocked(topMsgId, accountId)) {
         return res.status(400).json({ error: "Cannot reply to a blocked topic." });
       }
 
-      // Send reply
       const linksToProcess = [...(kw.message_links || [])];
       if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
         linksToProcess.push(kw.message_link);
@@ -3699,9 +4450,9 @@ async function startServer() {
                 }
               }
 
-              let inputPeer = await userClient.getInputEntity(fromPeer);
-              const toPeer = await userClient.getInputEntity(trigger.chat_id);
-              await userClient.invoke(new Api.messages.ForwardMessages({
+              let inputPeer = await client.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
+              const toPeer = await client.getInputEntity(trigger.chat_id);
+              await client.invoke(new Api.messages.ForwardMessages({
                 fromPeer: inputPeer,
                 id: [messageId],
                 toPeer: toPeer,
@@ -3727,9 +4478,9 @@ async function startServer() {
                   fromPeer = parts[tmeIndex + 1];
                 }
               }
-              await userClient.forwardMessages(trigger.chat_id, {
+              await client.forwardMessages(trigger.chat_id, {
                 messages: [messageId],
-                fromPeer: fromPeer,
+                fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
                 topMsgId: replyInGeneral ? undefined : topMsgId,
               } as any);
               replySent = true;
@@ -3740,7 +4491,7 @@ async function startServer() {
         }
       } else if (kw.reply) {
         try {
-          await userClient.sendMessage(trigger.chat_id, {
+          await client.sendMessage(trigger.chat_id, {
             message: kw.reply,
             replyTo: replyTo,
           });
@@ -3754,11 +4505,10 @@ async function startServer() {
         trigger.processed = true;
         await trigger.save();
         
-        // Update ReplyHistory
         if (topMsgId) {
-          let history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
+          let history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, ...getAccountFilter(accountId) });
           if (!history) {
-            await ReplyHistory.create({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, count: 1 });
+            await ReplyHistory.create({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, count: 1, account_id: accountId || 'default' });
           } else {
             history.count += 1;
             history.last_updated = new Date();
@@ -3766,7 +4516,7 @@ async function startServer() {
           }
         }
         
-        await saveLog(`Manual catchup reply sent to topic ${topMsgId} for keyword "${trigger.matched_keyword}"`, 'info', 'USERBOT');
+        await saveLog(`Manual catchup reply sent to topic ${topMsgId} for keyword "${trigger.matched_keyword}"`, 'info', 'USERBOT', undefined, undefined, accountId);
         return res.json({ success: true });
       } else {
         return res.status(500).json({ error: "Failed to send reply" });
@@ -3779,26 +4529,29 @@ async function startServer() {
 
   app.post("/api/catchup", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
+      const client = getAccountClient(accountId) || userClient;
+
       cancelCatchupFlag = false;
-      if (!userClient || !userClient.connected) {
+      if (!client || !client.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
 
-      const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
+      const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
       if (isSystemPaused) {
         return res.status(400).json({ error: "Bot is paused. Unpause first to catch up." });
       }
 
-      const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
-      const autoResetEnabled = (await getSetting("auto_reset_enabled"))?.value !== "false";
+      const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
+      const autoResetEnabled = (await getSetting("auto_reset_enabled", accountId))?.value !== "false";
 
       const { triggerIds } = req.body || {};
       let missed = [];
       
       if (triggerIds && Array.isArray(triggerIds) && triggerIds.length > 0) {
-        missed = await MissedTrigger.find({ _id: { $in: triggerIds }, processed: false }).sort({ timestamp: 1 });
+        missed = await MissedTrigger.find({ _id: { $in: triggerIds }, processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: 1 });
       } else {
-        missed = await MissedTrigger.find({ processed: false }).sort({ timestamp: 1 }).limit(20);
+        missed = await MissedTrigger.find({ processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: 1 }).limit(20);
       }
 
       if (missed.length === 0) {
@@ -3813,7 +4566,7 @@ async function startServer() {
         }
 
         try {
-          const kw = await Keyword.findById(trigger.rule_id);
+          const kw = await Keyword.findOne({ _id: trigger.rule_id, ...getAccountFilter(accountId) });
           if (!kw) {
             trigger.processed = true;
             await trigger.save();
@@ -3826,39 +4579,23 @@ async function startServer() {
           const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
           
           const normalizedPeerId = peerId.replace("-100", "");
-          if (blockedTopicsCache.has(Number(normalizedPeerId))) {
+          if (isTopicBlocked(Number(normalizedPeerId), accountId)) {
             console.log(`Skipping missed trigger for blocked group ${normalizedPeerId}`);
             trigger.processed = true;
             await trigger.save();
             continue;
           }
 
-          if (topMsgId && blockedTopicsCache.has(topMsgId)) {
+          if (topMsgId && isTopicBlocked(topMsgId, accountId)) {
             console.log(`Skipping missed trigger for blocked topic ${topMsgId}`);
             trigger.processed = true;
             await trigger.save();
             continue;
           }
 
-          // Rate limiting check: Max replies per keyword rule per topic
           if (topMsgId) {
-            const history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
-            const maxReplies = kw.max_replies !== undefined ? kw.max_replies : 0; // 0 means unlimited
-            
-            let currentCount = 0;
-            if (history) {
-              const lastUpdated = new Date(history.last_updated);
-              const today = new Date();
-              
-              const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-              const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-              
-              if (lastUpdatedIST === todayIST || !autoResetEnabled) {
-                currentCount = history.count;
-              } else {
-                currentCount = 0;
-              }
-            }
+            const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 0;
+            const currentCount = await getKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled);
 
             if (maxReplies > 0 && currentCount >= maxReplies) {
               console.log(`Catchup skipped: Max replies reached for rule ${kw._id} in topic ${topMsgId}`);
@@ -3868,9 +4605,8 @@ async function startServer() {
             }
           }
 
-          console.log(`Catchup: Processing trigger ${trigger._id} for peer ${peerId}, replyToMsgId ${replyToMsgId}, topMsgId ${topMsgId}, final replyTo ${replyTo}`);
+          console.log(`Catchup: Processing trigger ${trigger._id} for peer ${peerId}`);
 
-          // Handle message links (forwarding)
           const linksToProcess = [...(kw.message_links || [])];
           if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
             linksToProcess.push(kw.message_link);
@@ -3880,20 +4616,18 @@ async function startServer() {
           let replySent = false;
 
           if (kw.photo) {
-            console.log(`Catchup: Sending photo reply for keyword: ${kw.keyword}`);
             const base64Data = kw.photo.includes(",") ? kw.photo.split(",")[1] : kw.photo;
             const buffer = Buffer.from(base64Data, "base64");
             const fileToUpload = new CustomFile("photo.jpg", buffer.length, "", buffer);
-            const toUpload = await userClient.uploadFile({ file: fileToUpload, workers: 1 });
-            await userClient.sendFile(peerId, {
+            const toUpload = await client.uploadFile({ file: fileToUpload, workers: 1 });
+            await client.sendFile(peerId, {
               file: toUpload,
               caption: kw.reply || "",
               replyTo: replyTo,
             });
             replySent = true;
           } else if (kw.reply) {
-            console.log(`Catchup: Sending text reply for keyword: ${kw.keyword}`);
-            await userClient.sendMessage(peerId, {
+            await client.sendMessage(peerId, {
               message: kw.reply,
               replyTo: replyTo,
             });
@@ -3901,12 +4635,11 @@ async function startServer() {
           }
 
           if (normalizedLinks.length > 0) {
-            console.log(`Catchup: Handling ${normalizedLinks.length} message links for keyword: ${kw.keyword}`);
             for (const link of normalizedLinks) {
               const parts = link.split("/").filter(p => p.length > 0);
               const messageId = parseInt(parts[parts.length - 1], 10);
               if (!isNaN(messageId)) {
-                let fromPeer: any = (await getSetting("target_group_id"))?.value;
+                let fromPeer: any = (await getSetting("target_group_id", accountId))?.value;
                 if (link.includes("/c/")) {
                   const cIndex = parts.indexOf("c");
                   if (cIndex !== -1 && parts[cIndex + 1]) {
@@ -3922,17 +4655,10 @@ async function startServer() {
                 }
 
                 try {
-                  let inputPeer;
-                  try {
-                    inputPeer = await userClient.getInputEntity(fromPeer);
-                  } catch (e: any) {
-                    console.warn(`Could not resolve entity for ${fromPeer}: ${e.message}`);
-                    throw e;
-                  }
+                  let inputPeer = await client.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
+                  const toPeerInput = await client.getInputEntity(peerId);
 
-                  const toPeerInput = await userClient.getInputEntity(peerId);
-
-                  await userClient.invoke(
+                  await client.invoke(
                     new Api.messages.ForwardMessages({
                       fromPeer: inputPeer,
                       id: [messageId],
@@ -3941,14 +4667,12 @@ async function startServer() {
                       topMsgId: replyInGeneral ? undefined : topMsgId,
                     }) as any
                   );
-                  console.log(`Catchup: Forwarded message ${messageId} for keyword: ${kw.keyword}`);
                   replySent = true;
                 } catch (forwardErr: any) {
-                  console.error("Catchup forward failed, trying fallback:", forwardErr.message);
                   try {
-                    await userClient.forwardMessages(peerId, {
+                    await client.forwardMessages(peerId, {
                       messages: [messageId],
-                      fromPeer: fromPeer,
+                      fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
                       topMsgId: replyInGeneral ? undefined : topMsgId,
                     } as any);
                     replySent = true;
@@ -3961,28 +4685,8 @@ async function startServer() {
             }
           }
 
-          // Update ReplyHistory
           if (replySent && topMsgId) {
-            const today = new Date();
-            const history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id });
-            let isSameDay = false;
-            
-            if (history) {
-              const lastUpdated = new Date(history.last_updated);
-              const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-              const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-              if (lastUpdatedIST === todayIST) isSameDay = true;
-            }
-
-            if (history && isSameDay) {
-               await ReplyHistory.findByIdAndUpdate(history._id, { $inc: { count: 1 }, last_updated: today });
-            } else {
-               await ReplyHistory.findOneAndUpdate(
-                  { topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id },
-                  { count: 1, last_updated: today },
-                  { upsert: true }
-               );
-            }
+            await incrementKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled);
           }
 
           trigger.processed = true;
@@ -3997,20 +4701,14 @@ async function startServer() {
 
       res.json({ success: true, count: processedCount, cancelled: cancelCatchupFlag });
     } catch (err: any) {
-      if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await deleteSetting("session_string");
-        if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
-        userClient = null;
-      } else if (err.message?.includes("TIMEOUT")) {
-        console.log("Connection timed out. Will retry later.");
-      }
       res.status(500).json({ error: err.message });
     }
   });
 
   app.get("/api/logs", async (req, res) => {
     try {
-      const logs = await Log.find().sort({ timestamp: -1 }).limit(100);
+      const accountId = getAccountId(req);
+      const logs = await Log.find(getAccountFilter(accountId)).sort({ timestamp: -1 }).limit(100);
       res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4020,7 +4718,8 @@ async function startServer() {
   // Blocked Topics Routes
   app.get("/api/blocked-topics", async (req, res) => {
     try {
-      const blocked = await BlockedTopic.find().sort({ created_at: -1 });
+      const accountId = getAccountId(req);
+      const blocked = await BlockedTopic.find(getAccountFilter(accountId)).sort({ created_at: -1 });
       res.json(blocked);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4028,6 +4727,7 @@ async function startServer() {
   });
 
   app.post("/api/blocked-topics", async (req, res) => {
+    const accountId = getAccountId(req);
     const { link } = req.body;
     if (!link) return res.status(400).json({ error: "Link required" });
 
@@ -4041,11 +4741,12 @@ async function startServer() {
       const normalizedLink = topicInfo.normalizedLink;
 
       // Toggle behavior: If already blocked, unblock it
-      const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+      const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(accountId) });
       if (existing) {
         await BlockedTopic.findByIdAndDelete(existing._id);
-        blockedTopicsCache.delete(topicId);
-        await saveLog(`Topic ${topicId} unblocked via link`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink });
+        const cache = blockedTopicsCache.get(accountId);
+        if (cache) cache.delete(topicId);
+        await saveLog(`Topic ${topicId} unblocked via link`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink }, accountId);
         sendSseEvent('topic_unblocked', { topicId, timestamp: new Date() });
         return res.json({ success: true, action: 'unblocked' });
       }
@@ -4053,7 +4754,7 @@ async function startServer() {
       // Try to find topic name from our Topic collection or cache
       let name = topicNamesCache[topicId] || "";
       if (!name) {
-        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(accountId) });
         if (foundTopic && foundTopic.name) name = foundTopic.name;
       }
       if (!name) name = `Topic #${topicId}`;
@@ -4061,11 +4762,13 @@ async function startServer() {
       await BlockedTopic.create({
         telegram_topic_id: topicId,
         name,
-        link: normalizedLink
+        link: normalizedLink,
+        account_id: accountId || 'default'
       });
-      blockedTopicsCache.add(topicId);
+      if (!blockedTopicsCache.has(accountId)) blockedTopicsCache.set(accountId, new Set());
+      blockedTopicsCache.get(accountId)!.add(topicId);
       
-      await saveLog(`Topic ${topicId} blocked`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink, name });
+      await saveLog(`Topic ${topicId} blocked`, 'info', 'API', '/api/blocked-topics', { link: normalizedLink, name }, accountId);
       sendSseEvent('topic_blocked', {
         message: `Topic "${name}" blocked via Dashboard`,
         topicName: name,
@@ -4079,9 +4782,11 @@ async function startServer() {
 
   app.delete("/api/blocked-topics/:id", async (req, res) => {
     try {
-      const deleted = await BlockedTopic.findByIdAndDelete(req.params.id);
+      const accountId = getAccountId(req);
+      const deleted = await BlockedTopic.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) });
       if (deleted) {
-        blockedTopicsCache.delete(deleted.telegram_topic_id);
+        const cache = blockedTopicsCache.get(accountId);
+        if (cache) cache.delete(deleted.telegram_topic_id);
       }
       res.json({ success: true });
     } catch (err: any) {
@@ -4091,7 +4796,8 @@ async function startServer() {
 
   app.delete("/api/logs", async (req, res) => {
     try {
-      await Log.deleteMany({});
+      const accountId = getAccountId(req);
+      await Log.deleteMany(getAccountFilter(accountId));
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4100,7 +4806,8 @@ async function startServer() {
 
   app.get("/api/logs/export", async (req, res) => {
     try {
-      const logs = await Log.find().sort({ timestamp: -1 });
+      const accountId = getAccountId(req);
+      const logs = await Log.find(getAccountFilter(accountId)).sort({ timestamp: -1 });
       const format = req.query.format || 'json';
       
       if (format === 'csv') {
@@ -4124,10 +4831,11 @@ async function startServer() {
 
   app.get("/api/analytics", async (req, res) => {
     try {
+      const accountId = getAccountId(req);
       const { startDate, endDate, timezone = "Asia/Kolkata" } = req.query;
 
-      let replyHistoryMatchStage: any = { $match: {} };
-      let topicMatchStage: any = { $match: {} };
+      let replyHistoryMatchStage: any = { $match: { ...getAccountFilter(accountId) } };
+      let topicMatchStage: any = { $match: { ...getAccountFilter(accountId) } };
 
       let start: Date;
       let end: Date;
@@ -4158,6 +4866,7 @@ async function startServer() {
       // Filter ReplyHistory by last_updated date range and ensure valid date
       replyHistoryMatchStage = {
         $match: {
+          ...getAccountFilter(accountId),
           last_updated: { $gte: start, $lte: end }
         }
       };
@@ -4165,6 +4874,7 @@ async function startServer() {
       // Filter Topic creation by created_at date range and ensure valid date type
       topicMatchStage = {
         $match: {
+          ...getAccountFilter(accountId),
           created_at: { $gte: start, $lte: end }
         }
       };
@@ -4178,7 +4888,7 @@ async function startServer() {
       ]);
       
       const keywordIds = topKeywords.map(k => k._id);
-      const keywords = await Keyword.find({ _id: { $in: keywordIds } });
+      const keywords = await Keyword.find({ _id: { $in: keywordIds }, ...getAccountFilter(accountId) });
       const keywordMap = keywords.reduce((acc, kw) => {
         acc[kw._id.toString()] = kw.keyword || kw.keywords?.[0] || 'Unknown';
         return acc;
@@ -4290,6 +5000,70 @@ async function startServer() {
     res.status(404).json({ error: "API endpoint not found" });
   });
 
+  const publicDir = path.join(process.cwd(), "public");
+
+  // Dynamic PWA manifest matching active user logo
+  app.get("/manifest.json", async (req, res) => {
+    try {
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+
+      const appLogoSetting = await getSetting("app_logo", "default");
+      const appLogo = appLogoSetting?.value || "";
+      const iconUrl = appLogo ? (appLogo.startsWith("data:") ? "/api/app-icon.png" : appLogo) : "/pwa-192x192.png";
+
+      res.json({
+        name: "BotFlow Premium",
+        short_name: "BotFlow",
+        description: "Professional Telegram Topic & Userbot Manager with AI",
+        id: "/",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        orientation: "portrait",
+        background_color: "#0a0d14",
+        theme_color: "#0a0d14",
+        icons: [
+          {
+            src: iconUrl,
+            sizes: "192x192 512x512",
+            type: iconUrl.endsWith(".svg") ? "image/svg+xml" : "image/png",
+            purpose: "any"
+          },
+          {
+            src: iconUrl,
+            sizes: "192x192 512x512",
+            type: iconUrl.endsWith(".svg") ? "image/svg+xml" : "image/png",
+            purpose: "maskable"
+          }
+        ],
+        screenshots: [
+          {
+            src: "/screenshot1.png",
+            sizes: "540x720",
+            type: "image/png",
+            form_factor: "narrow",
+            label: "BotFlow Dashboard"
+          }
+        ],
+        prefer_related_applications: false,
+        categories: ["productivity", "utilities"]
+      });
+    } catch (e) {
+      res.sendFile(path.join(publicDir, "manifest.json"));
+    }
+  });
+
+  // Service worker
+  app.get("/sw.js", (req, res) => {
+    res.setHeader("Content-Type", "application/javascript");
+    res.setHeader("Cache-Control", "no-cache");
+    res.sendFile(path.join(publicDir, "sw.js"));
+  });
+
+  // Serve static assets from public directory
+  app.use(express.static(publicDir));
+
   // Vite middleware
   if (process.env.NODE_ENV !== "production") {
     createViteServer({
@@ -4302,11 +5076,58 @@ async function startServer() {
       console.error("Vite server error:", err);
     });
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html") || filePath.endsWith(".js") || filePath.endsWith(".json")) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        }
+      }
+    }));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  // Periodic background sweep to expire approval requests older than 24 hours
+  setInterval(async () => {
+    try {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const expiredDocs = await PendingApproval.find({
+        status: 'pending',
+        created_at: { $lt: twentyFourHoursAgo }
+      });
+
+      if (expiredDocs.length > 0) {
+        await PendingApproval.updateMany(
+          { status: 'pending', created_at: { $lt: twentyFourHoursAgo } },
+          { $set: { status: 'expired', processed_at: new Date() } }
+        );
+
+        for (const doc of expiredDocs) {
+          sendSseEvent('approval_processed', { id: doc._id, status: 'expired' });
+          if (bot && doc.bot_chat_id && doc.bot_message_id) {
+            bot.editMessageText(
+              `⏳ <b>Approval Request Expired</b>\n\n<b>Keyword:</b> <code>${escapeHtml(doc.matched_keyword)}</code>\n<i>This request expired after 24 hours.</i>`,
+              {
+                chat_id: doc.bot_chat_id,
+                message_id: doc.bot_message_id,
+                parse_mode: 'HTML'
+              }
+            ).catch(() => {});
+          }
+        }
+        console.log(`[EXPIRE] Expired ${expiredDocs.length} pending approval requests older than 24 hours.`);
+      }
+    } catch (err: any) {
+      console.error("Error in approval expiration sweep:", err.message);
+    }
+  }, 5 * 60 * 1000);
 
   // Graceful shutdown
   const shutdown = async () => {
