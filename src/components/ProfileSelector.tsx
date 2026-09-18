@@ -101,8 +101,9 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
           return;
         }
       }
-    } catch (e) {
-      console.error('Error fetching accounts from server:', e);
+    } catch (e: any) {
+      // Gracefully fallback to localStorage without noisy console errors
+      console.log('Using local profile fallback:', e?.message || e);
     }
 
     // Fallback to localStorage if offline
@@ -651,27 +652,18 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                         onClick={() => {
                           if (!isEditingThis) handleSwitchProfile(p.id);
                         }}
-                        className={`flex flex-col p-3.5 rounded-2xl transition-all duration-300 border relative overflow-hidden group ${
+                        className={`flex flex-col p-4 rounded-xl transition-all duration-300 relative overflow-hidden ${
                           isSelected 
-                            ? 'bg-gradient-to-r from-blue-950/40 to-slate-900/40 border-blue-500/50 shadow-[0_4px_20px_rgba(59,130,246,0.15)]' 
-                            : 'bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/15'
+                            ? 'bg-blue-950/20 border-y border-r border-white/[0.04] border-l-[3.5px] border-l-blue-500 shadow-[0_4px_20px_rgba(59,130,246,0.08)]' 
+                            : 'bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.04] hover:border-white/10'
                         } ${!isEditingThis ? 'cursor-pointer' : ''}`}
                       >
-                        {/* Glow backdrop for selected card */}
-                        {isSelected && (
-                          <div className="absolute inset-0 bg-blue-500/5 blur-xl rounded-2xl pointer-events-none -z-10" />
-                        )}
-
                         <div className="flex items-center justify-between min-w-0 w-full">
+                           {/* Left side info block */}
                           <div className="flex items-center gap-3.5 min-w-0 flex-1 mr-2">
-                            {/* Avatar representation with cool animations */}
-                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-lg border border-white/20 relative group-hover:scale-105 transition-transform`}>
+                            {/* Modern avatar representation */}
+                            <div className={`w-10 h-10 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-md border border-white/10 relative group-hover:scale-105 transition-transform duration-300`}>
                               <User size={18} strokeWidth={2.4} />
-                              {p.lockPin && (
-                                <span className="absolute -top-1 -right-1 p-0.5 bg-amber-500 text-slate-950 rounded-full border border-neutral-950 shadow-md">
-                                  <Lock size={9} strokeWidth={3} />
-                                </span>
-                              )}
                             </div>
                             
                             {isEditingThis ? (
@@ -686,7 +678,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                     if (e.key === 'Enter') handleSaveEdit(p.id, e);
                                     if (e.key === 'Escape') handleCancelEdit();
                                   }}
-                                  className="w-full px-2.5 py-1 text-xs rounded-xl bg-neutral-900 border border-blue-500 text-white font-bold focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                  className="w-full px-2.5 py-1 text-xs rounded-lg bg-neutral-900 border border-blue-500 text-white font-bold focus:outline-none focus:ring-1 focus:ring-blue-400"
                                   placeholder="Account name"
                                 />
                                 <button
@@ -713,23 +705,25 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <p className="text-xs font-black tracking-wide text-white leading-tight group-hover:text-blue-300 transition-colors">{p.name}</p>
                                   {isMainAccount && (
-                                    <span className="px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm">
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm">
                                       MAIN
                                     </span>
                                   )}
                                   {p.lockPin && (
-                                    <span className="px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25 shadow-sm flex items-center gap-0.5">
-                                      <Lock size={8} /> LOCKED
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-red-500/10 text-red-400 border border-red-500/20 shadow-sm flex items-center gap-0.5">
+                                      <Lock size={8} /> SECURED
                                     </span>
                                   )}
                                 </div>
                                 {(p.telegramName || p.telegramUsername) && (
-                                  <p className="text-[10.5px] text-blue-300 font-bold truncate mt-1 flex items-center gap-1">
-                                    <Bot size={12} className="text-blue-400 shrink-0" />
-                                    <span>{p.telegramName || `@${p.telegramUsername}`}</span>
-                                    {p.telegramUsername && p.telegramName && (
-                                      <span className="text-slate-400 text-[9.5px]">(@{p.telegramUsername})</span>
-                                    )}
+                                  <p className="text-[10.5px] text-slate-300 font-bold mt-1 flex items-center gap-1.5 overflow-hidden min-w-0 w-full">
+                                    <Bot size={11} className="text-slate-400 shrink-0" />
+                                    <span className="truncate flex items-center gap-1 min-w-0 w-full text-slate-300">
+                                      <span className="font-semibold">{p.telegramName || `@${p.telegramUsername}`}</span>
+                                      {p.telegramUsername && p.telegramName && (
+                                        <span className="text-slate-500 text-[9px] shrink-0 font-medium">(@{p.telegramUsername})</span>
+                                      )}
+                                    </span>
                                   </p>
                                 )}
                                 <div className="text-[10px] font-bold mt-1.5 flex items-center gap-1.5">
@@ -738,7 +732,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Active Session
                                     </span>
                                   ) : (
-                                    <span className="text-slate-400 font-medium group-hover:text-slate-300 transition-colors flex items-center gap-1">
+                                    <span className="text-slate-400 font-semibold group-hover:text-blue-300 transition-colors flex items-center gap-1">
                                       Switch to session {p.lockPin ? '🔒' : '⚡'}
                                     </span>
                                   )}
@@ -748,19 +742,19 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                           </div>
 
                           {!isEditingThis && (
-                            <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center gap-1 px-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                               {/* Toggle Lock / Passcode Lock Button */}
                               <button
                                 type="button"
                                 onClick={(e) => handleStartPinSetup(p, e)}
-                                className={`p-2 rounded-xl border transition-all ${
+                                className={`p-1.5 rounded-lg border transition-all ${
                                   p.lockPin 
-                                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20 hover:scale-105' 
+                                    ? 'bg-amber-500/10 border-amber-500/25 text-amber-400 hover:bg-amber-500/20 hover:scale-105' 
                                     : 'bg-white/5 border-white/5 text-slate-400 hover:text-white hover:bg-white/10 hover:border-white/10 hover:scale-105'
                                 }`}
                                 title={p.lockPin ? 'Lock settings (Passcode Enabled)' : 'Enable Passcode Lock'}
                               >
-                                {p.lockPin ? <Lock size={13} /> : <Unlock size={13} />}
+                                {p.lockPin ? <Lock size={12} strokeWidth={2.5} /> : <Unlock size={12} />}
                               </button>
 
                               {/* Rename/Edit Account Button */}
@@ -768,10 +762,10 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                 type="button"
                                 id={`edit-account-btn-${p.id}`}
                                 onClick={(e) => handleStartEdit(p, e)}
-                                className="p-2 rounded-xl bg-white/5 border border-white/5 text-slate-400 hover:text-blue-300 hover:bg-blue-500/10 hover:border-blue-500/20 transition-all hover:scale-105"
+                                className="p-1.5 rounded-lg bg-white/5 border border-white/5 text-slate-400 hover:text-blue-300 hover:bg-blue-500/10 hover:border-blue-500/25 transition-all hover:scale-105"
                                 title="Rename account"
                               >
-                                <Pencil size={13} />
+                                <Pencil size={12} />
                               </button>
 
                               {/* First two accounts are permanent main accounts and CANNOT be deleted */}
@@ -780,10 +774,10 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                   type="button"
                                   id={`delete-account-${p.id}`}
                                   onClick={(e) => handleDeleteProfile(p.id, e)}
-                                  className="p-2 rounded-xl bg-white/5 border border-white/5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/20 transition-all hover:scale-105"
+                                  className="p-1.5 rounded-lg bg-white/5 border border-white/5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/25 transition-all hover:scale-105"
                                   title="Delete account"
                                 >
-                                  <Trash2 size={13} />
+                                  <Trash2 size={12} />
                                 </button>
                               )}
                             </div>
@@ -807,7 +801,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                       className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg transition active:scale-95"
                     >
                       <Plus size={16} strokeWidth={2.5} />
-                      <span>+ Add New Account</span>
+                      <span>Add New Account</span>
                     </button>
                   ) : (
                     <div className="space-y-3 bg-neutral-900/80 p-3 rounded-xl border border-white/15 shadow-inner">

@@ -1,8 +1,8 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { 
   CheckCircle2, Smartphone, RefreshCw, Key, ShieldCheck, 
-  User, Lock, ArrowRight, ExternalLink, Hash, Phone, Sparkles, Clock
+  User, Lock, ArrowRight, ExternalLink, Hash, Phone, Sparkles, Clock, Send
 } from 'lucide-react';
 
 interface UserManagerProps {
@@ -23,6 +23,8 @@ interface UserManagerProps {
   setPhoneNumberInput: (val: string) => void;
   handleSendCode: () => void;
   isSendingCode: boolean;
+  handleResendCode?: () => void;
+  isResendingCode?: boolean;
   phoneCodeInput: string;
   setPhoneCodeInput: (val: string) => void;
   handleVerifyCode: () => void;
@@ -52,6 +54,8 @@ const UserManager: React.FC<UserManagerProps> = ({
   setPhoneNumberInput,
   handleSendCode,
   isSendingCode,
+  handleResendCode,
+  isResendingCode = false,
   phoneCodeInput,
   setPhoneCodeInput,
   handleVerifyCode,
@@ -62,6 +66,38 @@ const UserManager: React.FC<UserManagerProps> = ({
   slideVariants,
   handleSaveApiCredentials,
 }) => {
+  // Resend code cooldown countdown (default 60 seconds)
+  const [resendCooldown, setResendCooldown] = useState(60);
+
+  useEffect(() => {
+    let timer: any = null;
+    if (authStep === 'code' && resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [authStep, resendCooldown]);
+
+  // Reset countdown when switching to 'code' step
+  useEffect(() => {
+    if (authStep === 'code') {
+      setResendCooldown(60);
+    }
+  }, [authStep]);
+
+  const onTriggerResend = () => {
+    if (resendCooldown > 0 || isResendingCode) return;
+    if (handleResendCode) {
+      handleResendCode();
+    } else {
+      handleSendCode();
+    }
+    setResendCooldown(60);
+  };
+
   // Get active account info
   const profiles = JSON.parse(localStorage.getItem('profiles') || '[]');
   const currentProfileId = localStorage.getItem('currentProfileId') || 'default';
@@ -400,13 +436,28 @@ const UserManager: React.FC<UserManagerProps> = ({
                     <input
                       type="text"
                       value={phoneNumberInput}
-                      onChange={(e) => setPhoneNumberInput(e.target.value)}
-                      placeholder="+919876543210"
+                      onChange={(e) => {
+                        // Keep digits, plus sign, spaces and hyphens for user convenience
+                        setPhoneNumberInput(e.target.value);
+                      }}
+                      placeholder="+91 9876543210"
                       className={`w-full pl-10 pr-3 py-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-mono transition ${
                         darkMode ? 'bg-neutral-950 border-white/15 text-white placeholder:text-slate-600' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400'
                       }`}
                     />
                   </div>
+                  {phoneNumberInput.trim() && !phoneNumberInput.trim().startsWith('+') && (
+                    <div className="space-y-1">
+                      <p className="text-[11px] text-amber-500 pl-1 font-medium">
+                        💡 Tip: Starting with your country code like <code className="font-mono bg-amber-500/10 px-1 py-0.5 rounded">+91</code> or <code className="font-mono bg-amber-500/10 px-1 py-0.5 rounded">+1</code> ensures Telegram connects instantly.
+                      </p>
+                      {phoneNumberInput.trim().replace(/[\s\-\(\)\+]/g, "").length === 10 && (
+                        <p className="text-[11px] text-red-400 pl-1 font-semibold animate-pulse">
+                          ⚠️ Warning: You entered a 10-digit number. Please add your country code (e.g. <code className="font-mono bg-red-500/10 px-1 py-0.5 rounded">+91</code> for India) before requesting code, or Telegram will fail!
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <motion.button
@@ -438,11 +489,18 @@ const UserManager: React.FC<UserManagerProps> = ({
             {authStep === 'code' && (
               <div className="space-y-4">
                 <div className="space-y-1">
-                  <h4 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                    Verification Code Sent
-                  </h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      Verification Code Sent
+                    </h4>
+                    {phoneNumberInput && (
+                      <span className="text-[11px] font-mono text-blue-400 font-semibold bg-blue-500/10 px-2 py-0.5 rounded-md border border-blue-500/20">
+                        {phoneNumberInput}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-slate-400">
-                    Check your Telegram app on phone/desktop for the 5-digit login code.
+                    Telegram has sent a login code to <strong className={darkMode ? 'text-white' : 'text-slate-900'}>{phoneNumberInput || 'your account'}</strong>. <span className="text-amber-400 font-semibold">Note:</span> Telegram sends this code to your active Telegram app (phone or desktop in the official Telegram notification chat), not regular SMS.
                   </p>
                 </div>
 
@@ -491,13 +549,44 @@ const UserManager: React.FC<UserManagerProps> = ({
                   <span>{isVerifyingCode ? 'Connecting UserBot...' : 'Verify & Connect Session'}</span>
                 </motion.button>
 
-                <button 
-                  type="button"
-                  onClick={() => setAuthStep('phone')} 
-                  className="w-full text-slate-400 hover:text-white text-[11px] font-bold uppercase tracking-wider transition py-1 text-center"
-                >
-                  ← Back to Phone Number
-                </button>
+                {/* Resend Code & Back actions */}
+                <div className="flex items-center justify-between pt-1 gap-2">
+                  <button 
+                    type="button"
+                    onClick={() => setAuthStep('phone')} 
+                    className="text-slate-400 hover:text-white text-[11px] font-bold uppercase tracking-wider transition py-1 text-left"
+                  >
+                    ← Change Phone
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onTriggerResend}
+                    disabled={resendCooldown > 0 || isResendingCode}
+                    className={`text-[11px] font-bold uppercase tracking-wider transition py-1 flex items-center space-x-1.5 ${
+                      resendCooldown > 0 || isResendingCode
+                        ? 'text-slate-500 cursor-not-allowed'
+                        : 'text-blue-400 hover:text-blue-300'
+                    }`}
+                  >
+                    {isResendingCode ? (
+                      <>
+                        <RefreshCw className="animate-spin" size={12} />
+                        <span>Resending...</span>
+                      </>
+                    ) : resendCooldown > 0 ? (
+                      <>
+                        <Clock size={12} />
+                        <span>Resend Code in {resendCooldown}s</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send size={12} />
+                        <span>Resend Code</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>

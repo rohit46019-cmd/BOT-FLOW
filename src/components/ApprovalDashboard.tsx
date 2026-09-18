@@ -17,7 +17,8 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
   const fetchApprovals = async () => {
     try {
       const res = await fetch('/api/approvals');
-      const data = await res.json();
+      if (!res.ok) return;
+      const data = await res.json().catch(() => []);
       const now = Date.now();
       const validApprovals = (Array.isArray(data) ? data : []).filter((a: any) => {
         if (!a.created_at) return true;
@@ -25,8 +26,10 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
         return (now - created) < 24 * 60 * 60 * 1000;
       });
       setApprovals(validApprovals);
-    } catch (err) {
-      console.error("Failed to fetch approvals:", err);
+    } catch (err: any) {
+      if (err?.message !== 'Failed to fetch' && !err?.name?.includes('AbortError')) {
+        console.error("Failed to fetch approvals:", err);
+      }
     } finally {
       setLoading(false);
     }

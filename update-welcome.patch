@@ -1,0 +1,32 @@
+--- server.ts
++++ server.ts
+@@ -2844,6 +2844,15 @@
+         (message as any).forumTopicCreated
+       );
+ 
++      const isUserJoinEvent = !!(
++        (message.action instanceof Api.MessageActionChatAddUser) ||
++        (message.action instanceof Api.MessageActionChatJoinedByLink) ||
++        (message.action instanceof Api.MessageActionChatJoinedByRequest) ||
++        (message.action && (message.action as any).className === 'MessageActionChatAddUser') ||
++        (message.action && (message.action as any).className === 'MessageActionChatJoinedByLink') ||
++        (message.action && (message.action as any).className === 'MessageActionChatJoinedByRequest')
++      );
++
+       let forumTopicId: number;
+       if (isTopicCreationEvent) {
+         forumTopicId = Number(messageId);
+@@ -3119,8 +3128,8 @@
+       }
+ 
+-      // 1. Topic Creation Handler (Welcome Message)
+-      if (isTopicCreationEvent) {
+-        const topicName = (message.action as any)?.title || (message as any)?.forum_topic_created?.name || (message as any)?.forumTopicCreated?.title || `Topic #${message.id}`;
++      // 1. Welcome Message (Topic Creation OR User Join)
++      if (isTopicCreationEvent || isUserJoinEvent) {
++        const topicName = isUserJoinEvent ? "New User Join" : ((message.action as any)?.title || (message as any)?.forum_topic_created?.name || (message as any)?.forumTopicCreated?.title || `Topic #${message.id}`);
+         const topicId = Number(message.id);
+-        await logTopic(topicId, topicName, chatId, undefined, accountId);
++        if (isTopicCreationEvent) await logTopic(topicId, topicName, chatId, undefined, accountId);
+         
+         const autoReply = (await getSetting("auto_reply", accountId))?.value || "Welcome!";

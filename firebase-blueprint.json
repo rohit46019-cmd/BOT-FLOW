@@ -1,0 +1,121 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "Registered user profile and metadata",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user identifier matching auth UID",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address",
+          "maxLength": 256
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name",
+          "maxLength": 128
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User photo URL",
+          "maxLength": 1024
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account registration timestamp"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Latest sign-in timestamp"
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "userSettings": {
+      "title": "UserSettings",
+      "description": "User personal preferences and synchronization state",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owning user UID",
+          "maxLength": 128
+        },
+        "theme": {
+          "type": "string",
+          "description": "Visual theme selection",
+          "maxLength": 32
+        },
+        "notificationsEnabled": {
+          "type": "boolean",
+          "description": "User notification toggle state"
+        },
+        "activeProfile": {
+          "type": "string",
+          "description": "Current active Telegram profile alias",
+          "maxLength": 128
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when settings were last saved"
+        }
+      },
+      "required": ["userId"]
+    },
+    "activityLogs": {
+      "title": "ActivityLog",
+      "description": "User audit activity log entry",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "User ID of the actor",
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "description": "Action performed (e.g. LOGIN, UPDATE_SETTINGS, SYNC)",
+          "maxLength": 128
+        },
+        "category": {
+          "type": "string",
+          "description": "Action category",
+          "maxLength": 64
+        },
+        "details": {
+          "type": "string",
+          "description": "Contextual description or summary",
+          "maxLength": 2048
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when log was recorded"
+        }
+      },
+      "required": ["userId", "action"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "Private user account records"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": "userSettings",
+      "description": "Per-user application preferences and state"
+    },
+    "/users/{userId}/activityLogs/{logId}": {
+      "schema": "activityLogs",
+      "description": "User activity audit stream"
+    }
+  }
+}

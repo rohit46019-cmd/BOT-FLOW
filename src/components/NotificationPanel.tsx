@@ -46,8 +46,11 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [targetedPushingId, setTargetedPushingId] = useState<string | null>(null);
   const [aiAutoMode, setAiAutoMode] = useState(false);
+  const [deliveryLogs, setDeliveryLogs] = useState<any[]>([]);
+  const [ntfyTopic, setNtfyTopic] = useState('');
+  const [savingNtfy, setSavingNtfy] = useState(false);
   const [pushScope, setPushScope] = useState<'current' | 'all'>(
-    (localStorage.getItem('botflow_push_scope') as 'current' | 'all') || 'current'
+    (localStorage.getItem('botflow_push_scope') as 'current' | 'all') || 'all'
   );
 
   // Push form state
@@ -56,6 +59,38 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const localDeviceInfo = useMemo(() => getDeviceInfo(), []);
+
+  useEffect(() => {
+    fetch('/api/ntfy/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.topic) {
+          setNtfyTopic(data.topic);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveNtfyConfig = async () => {
+    setSavingNtfy(true);
+    try {
+      const res = await fetch('/api/ntfy/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic: ntfyTopic })
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success("✅ Bulletproof ntfy topic saved successfully!");
+      } else {
+        toast.error("Failed to save ntfy topic");
+      }
+    } catch (e) {
+      toast.error("Error saving ntfy configuration");
+    } finally {
+      setSavingNtfy(false);
+    }
+  };
 
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -140,11 +175,25 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
     }
   };
 
+  const fetchDeliveryLogs = async () => {
+    try {
+      const res = await fetch('/api/push/logs');
+      if (res.ok) {
+        const data = await res.json();
+        setDeliveryLogs(data.logs || []);
+      }
+    } catch (e) {}
+  };
+
   useEffect(() => {
     if (isOpen) {
       fetchDevices();
       fetchAiAutoMode();
-      const interval = setInterval(fetchDevices, 12000);
+      fetchDeliveryLogs();
+      const interval = setInterval(() => {
+        fetchDevices();
+        fetchDeliveryLogs();
+      }, 10000);
       return () => clearInterval(interval);
     }
   }, [isOpen]);
@@ -216,13 +265,19 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
 
       if (res.ok) {
         const data = await res.json();
-        toast.success(`🚀 Push broadcast sent to ${data.deliveredCount || devices.length} device(s)!`);
+        const count = data.deliveredCount !== undefined ? data.deliveredCount : 0;
+        if (count === 0) {
+          toast.error('⚠️ 0 devices registered for push! Please click "Enable Browser Push Notifications" below first.');
+        } else {
+          toast.success(`🚀 Push broadcast sent to ${count} device(s) successfully!`);
+        }
         fetchDevices();
       } else {
-        toast.error('Failed to broadcast push notification');
+        const errData = await res.json().catch(() => ({}));
+        toast.error(errData.error || 'Failed to broadcast push notification');
       }
-    } catch (e) {
-      toast.error('Network error broadcasting push');
+    } catch (e: any) {
+      toast.error(e?.message || 'Network error broadcasting push');
     } finally {
       setIsBroadcasting(false);
     }
@@ -540,6 +595,42 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                     Enable Browser Push Notifications 🔔
                   </button>
 
+                  <button
+                    onClick={async () => {
+                      const activeAccId = localStorage.getItem('currentProfileId') || 'default';
+                      const result = await enablePushNotifications(activeAccId, true);
+                      if (result.success) {
+                        toast.success("🔄 Force synced: " + result.message);
+                        fetchDevices();
+                      } else {
+                        toast.error(result.message);
+                      }
+                    }}
+                    className="w-full mt-2 py-1.5 px-3 rounded-2xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 transition"
+                  >
+                    🔄 Force Re-Register & Sync Push
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/push/purge-legacy', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                          toast.success(`🧹 Purged ${data.deletedCount} legacy FCM subscriptions! Now re-register.`);
+                          fetchDevices();
+                        } else {
+                          toast.error("Failed to purge legacy subscriptions");
+                        }
+                      } catch (e) {
+                        toast.error("Error purging legacy subscriptions");
+                      }
+                    }}
+                    className="w-full mt-1.5 py-1.5 px-3 rounded-2xl bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-2 transition"
+                  >
+                    🧹 Clean Broken/Legacy FCM Endpoints
+                  </button>
+
                   <div className={`mt-3 p-3 rounded-2xl flex flex-col gap-2 border ${darkMode ? 'bg-slate-800/50 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Receive Push Notifications For:</label>
                     <div className="flex bg-slate-900/10 p-1 rounded-xl">
@@ -597,6 +688,125 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
                   >
                     {aiAutoMode ? 'ON' : 'OFF'}
                   </button>
+                </div>
+
+                {/* Live Push Delivery Verification & Test Card */}
+                <div className={`p-4 rounded-3xl border flex flex-col gap-3 ${
+                  darkMode ? 'bg-slate-900/60 border-indigo-500/30' : 'bg-slate-50 border-indigo-200'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="p-2 rounded-xl bg-indigo-600 text-white shadow-md">
+                        <Radio size={15} className="animate-pulse" />
+                      </span>
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider">Push Delivery Verification Log</h4>
+                        <p className="text-[10px] text-slate-400">Real-time delivery receipt from your service worker.</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const res = await fetch('/api/push/test', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                          toast.success("🧪 Test push sent! Check your notification tray.");
+                          setTimeout(fetchDeliveryLogs, 2500);
+                        } else {
+                          toast.error(data.message || "Failed to send test push");
+                        }
+                      }}
+                      className="py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] uppercase tracking-wider shadow-md transition flex items-center gap-1.5"
+                    >
+                      <Bell size={12} /> Test Push
+                    </button>
+                  </div>
+
+                  <div className={`p-3 rounded-2xl max-h-40 overflow-y-auto space-y-2 border ${darkMode ? 'bg-slate-950 border-white/5' : 'bg-white border-slate-200'}`}>
+                    {deliveryLogs.length === 0 ? (
+                      <div className="text-center py-3 text-[11px] text-slate-400">
+                        No delivery receipts yet. Click "Test Push" to verify!
+                      </div>
+                    ) : (
+                      deliveryLogs.map((log: any, idx: number) => (
+                        <div key={idx} className="flex items-center justify-between text-[11px] py-1.5 px-2.5 rounded-xl bg-slate-800/40 border border-white/5">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            <span className="font-bold text-slate-200 truncate max-w-[150px]">{log.title}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-black">DELIVERED</span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Bulletproof Ntfy.sh Mobile Push Card */}
+                <div className={`p-4 rounded-3xl border flex flex-col gap-3 ${
+                  darkMode ? 'bg-slate-900/60 border-emerald-500/30' : 'bg-emerald-50/50 border-emerald-200'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="p-2 rounded-xl bg-emerald-600 text-white shadow-md">
+                        <ShieldCheck size={15} />
+                      </span>
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider">Bulletproof Mobile Push (ntfy.sh)</h4>
+                        <p className="text-[10px] text-slate-400">Never fails! Works even when PWA/Browser is closed.</p>
+                      </div>
+                    </div>
+                    <span className="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                      RECOMMENDED
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      1. Install free <a href="https://ntfy.sh/" target="_blank" rel="noreferrer" className="text-emerald-400 underline font-bold">ntfy app</a> on Android/iOS.<br/>
+                      2. Enter a unique secret topic name below (e.g., <code className="bg-black/30 px-1 py-0.5 rounded text-amber-300">botflow-rohit-unique</code>).<br/>
+                      3. Subscribe to that topic in the mobile app. Done!
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={ntfyTopic}
+                        onChange={(e) => setNtfyTopic(e.target.value)}
+                        placeholder="e.g. botflow-alerts-xyz123"
+                        className={`flex-1 px-3 py-2 rounded-xl text-xs border outline-none font-mono ${
+                          darkMode ? 'bg-slate-950 border-white/10 text-white' : 'bg-white border-slate-300 text-slate-800'
+                        }`}
+                      />
+                      <button
+                        onClick={saveNtfyConfig}
+                        disabled={savingNtfy}
+                        className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] uppercase tracking-wider shadow-md transition whitespace-nowrap"
+                      >
+                        {savingNtfy ? 'Saving...' : 'Save Topic'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Why closed app notifications fail on Android & Fix */}
+                <div className={`p-4 rounded-3xl border flex flex-col gap-2.5 ${
+                  darkMode ? 'bg-amber-950/20 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-amber-500 text-white font-black text-[10px]">💡 WHY CLOSED APP PUSH FAILS</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed opacity-90">
+                    Jab aap app ko **completely close (swipe away)** kar dete hain, toh Android phone (Samsung, Xiaomi, Realme, Vivo, Oppo) ki **Battery Optimization** Chrome ya PWA browser process ko kill kar deti hai. Is wajah se background service worker wakeup nahi ho pata.
+                  </p>
+                  <div className="text-[11px] font-bold mt-1">
+                    🛠️ Solution (Android Settings):
+                    <ol className="list-decimal list-inside font-normal space-y-1 mt-1 opacity-90">
+                      <li>Phone ki <b>Settings → Apps → Chrome (ya BotFlow PWA)</b> me jayein.</li>
+                      <li><b>Battery</b> option par click karein.</li>
+                      <li>Ise <b>"Unrestricted"</b> (ya "No restrictions") par set kar dein.</li>
+                    </ol>
+                  </div>
                 </div>
 
                 {/* Blind Push Broadcast Form */}

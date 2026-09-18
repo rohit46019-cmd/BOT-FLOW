@@ -1,0 +1,12 @@
+--- src/components/SettingsPanel.tsx
++++ src/components/SettingsPanel.tsx
+@@ -29,6 +29,15 @@
+   systemPaused: boolean;
+ }
+ 
++type SettingsTab = 'general' | 'topic' | 'photo' | 'ai' | 'advanced';
++
+ const SettingsPanel = ({ isOpen, onClose, darkMode, accountId = 'default' }: { isOpen: boolean; onClose: () => void; darkMode: boolean; accountId?: string }) => {
++  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
++
+   // Existing state variables...

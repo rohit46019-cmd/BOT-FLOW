@@ -112,7 +112,18 @@ self.addEventListener('push', (event) => {
     }
   };
 
-  event.waitUntil(displayNotification());
+  const reportDelivery = async () => {
+    try {
+      const subscription = await self.registration.pushManager.getSubscription();
+      await fetch('/api/push/delivered', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: subscription ? subscription.endpoint : 'sw-endpoint', title, body: options.body })
+      });
+    } catch (e) {}
+  };
+
+  event.waitUntil(Promise.all([displayNotification(), reportDelivery()]));
 });
 
 self.addEventListener('notificationclick', (event) => {

@@ -120,7 +120,7 @@ function urlBase64ToUint8Array(base64String: string) {
   return outputArray;
 }
 
-export async function enablePushNotifications(accountId: string = 'default'): Promise<{ success: boolean; message: string }> {
+export async function enablePushNotifications(accountId: string = 'default', forceFresh: boolean = false): Promise<{ success: boolean; message: string }> {
   try {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       return { success: false, message: 'Push notifications are not supported in this browser.' };
@@ -133,6 +133,12 @@ export async function enablePushNotifications(accountId: string = 'default'): Pr
 
     const reg = await navigator.serviceWorker.ready;
     
+    let existingSub = await reg.pushManager.getSubscription().catch(() => null);
+    if (existingSub && forceFresh) {
+      await existingSub.unsubscribe().catch(() => {});
+      existingSub = null;
+    }
+
     // Fetch VAPID public key
     const resKey = await fetch('/api/push/vapid-public-key');
     if (!resKey.ok) {
@@ -145,13 +151,13 @@ export async function enablePushNotifications(accountId: string = 'default'): Pr
     }
 
     const convertedKey = urlBase64ToUint8Array(vapidPublicKey);
-    const subscription = await reg.pushManager.subscribe({
+    const subscription = existingSub || await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: convertedKey
     });
 
     const info = getDeviceInfo();
-    const pushScope = localStorage.getItem('botflow_push_scope') || 'current';
+    const pushScope = localStorage.getItem('botflow_push_scope') || 'all';
     
     const resSub = await fetch('/api/push/subscribe', {
       method: 'POST',
@@ -162,11 +168,11 @@ export async function enablePushNotifications(accountId: string = 'default'): Pr
         'x-account-id': accountId,
         'x-push-scope': pushScope
       },
-      body: JSON.stringify({ ...subscription.toJSON(), pushScope })
+      body: JSON.stringify({ ...subscription.toJSON(), deviceId: info.deviceId, pushScope })
     });
 
     if (resSub.ok) {
-      return { success: true, message: 'Push notifications enabled successfully!' };
+      return { success: true, message: 'Push notifications registered & synced successfully!' };
     } else {
       return { success: false, message: 'Failed to register subscription on server.' };
     }

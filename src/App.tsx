@@ -22,6 +22,7 @@ import ApprovalDashboard from './components/ApprovalDashboard';
 import ProfileSelector from './components/ProfileSelector';
 import { LogoSelectorModal } from './components/LogoSelectorModal';
 import { InstallAppModal } from './components/InstallAppModal';
+import { FirebaseCloudModal } from './components/FirebaseCloudModal';
 import { pingDeviceSession } from './utils/deviceTracker';
 import { 
   MessageSquare, 
@@ -89,7 +90,8 @@ import {
   SlidersHorizontal,
   Terminal,
   Radio,
-  Activity
+  Activity,
+  Cloud
 } from "lucide-react";
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
 
@@ -235,20 +237,20 @@ const TabButton = ({
   darkMode: boolean
 }) => {
   const isActive = activeTab === id;
-  const colors: Record<TabType, { bg: string, text: string, glow: string, ring: string }> = {
-    dashboard: { bg: 'from-blue-600 via-indigo-600 to-violet-600', text: 'text-indigo-400', glow: 'shadow-indigo-500/40', ring: 'ring-indigo-500/40' },
-    keywords: { bg: 'from-fuchsia-600 via-purple-600 to-indigo-600', text: 'text-fuchsia-400', glow: 'shadow-fuchsia-500/40', ring: 'ring-purple-500/40' },
-    approvals: { bg: 'from-emerald-500 via-teal-500 to-cyan-600', text: 'text-emerald-400', glow: 'shadow-emerald-500/40', ring: 'ring-emerald-500/40' },
-    broadcast: { bg: 'from-amber-500 via-orange-500 to-rose-600', text: 'text-orange-400', glow: 'shadow-orange-500/40', ring: 'ring-orange-500/40' },
-    settings: { bg: 'from-cyan-500 via-sky-500 to-blue-600', text: 'text-cyan-400', glow: 'shadow-cyan-500/40', ring: 'ring-cyan-500/40' },
-    analytics: { bg: 'from-cyan-400 to-cyan-600', text: 'text-cyan-400', glow: 'shadow-cyan-500/40', ring: 'ring-cyan-500/30' },
-    tester: { bg: 'from-orange-400 to-orange-600', text: 'text-orange-400', glow: 'shadow-orange-500/40', ring: 'ring-orange-500/30' },
-    user: { bg: 'from-pink-400 to-pink-600', text: 'text-pink-400', glow: 'shadow-pink-500/40', ring: 'ring-pink-500/30' },
-    logs: { bg: 'from-slate-400 to-slate-600', text: 'text-slate-400', glow: 'shadow-slate-500/40', ring: 'ring-slate-500/30' },
-    media: { bg: 'from-indigo-400 to-indigo-600', text: 'text-indigo-400', glow: 'shadow-indigo-500/40', ring: 'ring-indigo-500/30' },
-    insights: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-400', glow: 'shadow-rose-500/40', ring: 'ring-rose-500/30' },
-    photo_stats: { bg: 'from-amber-400 to-amber-600', text: 'text-amber-400', glow: 'shadow-amber-500/40', ring: 'ring-amber-500/30' },
-    catchup: { bg: 'from-rose-400 to-rose-600', text: 'text-rose-400', glow: 'shadow-rose-500/40', ring: 'ring-rose-500/30' }
+  const colors: Record<TabType, { bg: string, text: string }> = {
+    dashboard: { bg: darkMode ? 'bg-slate-800' : 'bg-slate-100', text: darkMode ? 'text-blue-400' : 'text-[#001b69]' },
+    keywords: { bg: darkMode ? 'bg-rose-900/60' : 'bg-[#ff7a7a]', text: darkMode ? 'text-rose-200' : 'text-white' },
+    approvals: { bg: darkMode ? 'bg-emerald-900/60' : 'bg-emerald-500', text: darkMode ? 'text-emerald-200' : 'text-white' },
+    broadcast: { bg: darkMode ? 'bg-[#001b69]' : 'bg-[#002288]', text: 'text-white' },
+    settings: { bg: darkMode ? 'bg-rose-900/60' : 'bg-[#ff7a7a]', text: darkMode ? 'text-rose-200' : 'text-white' },
+    analytics: { bg: darkMode ? 'bg-cyan-900/60' : 'bg-cyan-600', text: darkMode ? 'text-cyan-200' : 'text-white' },
+    tester: { bg: darkMode ? 'bg-orange-900/60' : 'bg-orange-600', text: darkMode ? 'text-orange-200' : 'text-white' },
+    user: { bg: darkMode ? 'bg-pink-900/60' : 'bg-pink-600', text: darkMode ? 'text-pink-200' : 'text-white' },
+    logs: { bg: darkMode ? 'bg-slate-700' : 'bg-slate-600', text: 'text-white' },
+    media: { bg: darkMode ? 'bg-indigo-900/60' : 'bg-indigo-600', text: darkMode ? 'text-indigo-200' : 'text-white' },
+    insights: { bg: darkMode ? 'bg-rose-900/60' : 'bg-rose-600', text: darkMode ? 'text-rose-200' : 'text-white' },
+    photo_stats: { bg: darkMode ? 'bg-amber-900/60' : 'bg-amber-600', text: darkMode ? 'text-amber-200' : 'text-white' },
+    catchup: { bg: darkMode ? 'bg-rose-900/60' : 'bg-rose-600', text: darkMode ? 'text-rose-200' : 'text-white' }
   };
 
   const theme = colors[id] || colors.dashboard;
@@ -261,37 +263,24 @@ const TabButton = ({
         const currentIndex = TABS.indexOf(activeTab);
         const newIndex = TABS.indexOf(id);
         if (currentIndex !== newIndex) {
-          setDirection(newIndex > currentIndex ? 1 : -1);
-          setActiveTab(id);
+          React.startTransition(() => {
+            setDirection(newIndex > currentIndex ? 1 : -1);
+            setActiveTab(id);
+          });
         }
       }}
-      className={`flex flex-col items-center justify-center py-1 px-1.5 sm:px-2.5 rounded-2xl transition-all duration-300 relative group cursor-pointer ${
+      className={`flex flex-col items-center justify-center py-2.5 px-1 sm:px-2 rounded-full transition-all duration-300 ease-out relative group cursor-pointer ${
         isActive 
-          ? (darkMode ? "text-white" : "text-slate-900") 
-          : (darkMode ? "text-slate-400 hover:text-white" : "text-slate-500 hover:text-slate-900")
+          ? `flex-[1.15] ${theme.bg} ${theme.text} shadow-sm` 
+          : `flex-1 bg-transparent ${darkMode ? "text-slate-400 hover:text-white" : "text-slate-500 hover:text-slate-900"}`
       }`}
     >
-      <div className={`p-1.5 sm:p-2 rounded-xl transition-all duration-300 flex items-center justify-center relative ${
-        isActive 
-          ? `bg-gradient-to-tr ${theme.bg} text-white shadow-lg ${theme.glow} scale-110 ring-2 ${theme.ring}` 
-          : `group-hover:bg-slate-800/30 dark:group-hover:bg-white/10`
-      }`}>
-        <Icon strokeWidth={isActive ? 2.5 : 2} className={`w-4 h-4 transition-transform duration-300 ${isActive ? "scale-105" : ""}`} />
-      </div>
-      <span className={`text-[9.5px] font-bold tracking-tight mt-1 transition-all ${
-        isActive 
-          ? `${darkMode ? 'text-white font-black' : 'text-slate-950 font-black'}` 
-          : "opacity-65"
+      <Icon strokeWidth={isActive ? 2.5 : 2} className={`w-5 h-5 sm:w-6 sm:h-6 mb-1 transition-transform duration-300 ${isActive ? "scale-110" : "group-hover:scale-105 group-active:scale-95"}`} />
+      <span className={`text-[10px] sm:text-[11px] font-bold tracking-tight transition-all duration-300 leading-none ${
+        isActive ? 'font-black scale-100 opacity-100' : "scale-95 opacity-80"
       }`}>
         {label}
       </span>
-      {isActive && (
-        <motion.div 
-          layoutId="activeTabIndicator"
-          className={`absolute -bottom-0.5 w-4 h-0.5 bg-gradient-to-r ${theme.bg} rounded-full`}
-          transition={{ type: "spring", stiffness: 500, damping: 35 }}
-        />
-      )}
     </motion.button>
   );
 };
@@ -493,7 +482,7 @@ export default function App() {
   const [keywordFilter, setKeywordFilter] = useCachedState<'all' | 'active' | 'inactive' | 'forward' | 'message' | 'highest' | 'lowest' | 'approval' | 'notify'>("botflow_keywordFilter", 'all');
   const debouncedKeywordSearch = useDebounce(keywordSearch, 300);
   const [expandedKeywordId, setExpandedKeywordId] = useCachedState<string | null>("botflow_expandedKeywordId", null);
-  const [visibleKeywordsCount, setVisibleKeywordsCount] = useCachedState("botflow_visibleKeywordsCount", 50);
+  const [visibleKeywordsCount, setVisibleKeywordsCount] = useState(25);
   const [blockedTopics, setBlockedTopics] = useCachedState<any[]>("botflow_blockedTopics", []);
   
   const [testMessage, setTestMessage] = useState("");
@@ -559,6 +548,7 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
+  const [isFirebaseModalOpen, setIsFirebaseModalOpen] = useState(false);
   const keywordsTopRef = useRef<HTMLDivElement>(null);
   const keywordsBottomRef = useRef<HTMLDivElement>(null);
   const castTopRef = useRef<HTMLDivElement>(null);
@@ -1141,7 +1131,7 @@ export default function App() {
         }
 
         const activeAccId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
-        const pushScope = localStorage.getItem('botflow_push_scope') || 'current';
+        const pushScope = localStorage.getItem('botflow_push_scope') || 'all';
 
         if (existingSub && !forceFresh) {
           const subJSON = existingSub.toJSON();
@@ -1467,6 +1457,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [authStep, setAuthStep] = useState<'credentials' | 'phone' | 'code'>('credentials');
   const [authLoading, setAuthLoading] = useState(false);
+  const [isResendingCode, setIsResendingCode] = useState(false);
   const hasLoadedInitialSettingsRef = useRef(false);
   
   const [isHeaderRefreshing, setIsHeaderRefreshing] = useState(false);
@@ -1525,11 +1516,15 @@ export default function App() {
             }
             setNotificationSoundEnabled(!!sData.notificationSoundEnabled);
             setNotificationSoundType(sData.notificationSoundType || "default");
-            if (!phone) setPhone(sData.defaultPhone || "");
+            if (sData.defaultPhone) {
+              setPhone(sData.defaultPhone);
+            }
             
             if (sData.apiId && sData.apiHash && sData.apiId !== "0" && sData.apiHash !== "") {
               setAuthStep(prev => prev === 'credentials' ? 'phone' : prev);
             }
+          } else if (sData.defaultPhone && !phone) {
+            setPhone(sData.defaultPhone);
           }
         }
         if (Array.isArray(kwData)) setKeywords(kwData);
@@ -1670,14 +1665,14 @@ export default function App() {
   }, [filteredKeywords, visibleKeywordsCount]);
 
   useEffect(() => {
-    setVisibleKeywordsCount(50);
-  }, [deferredKeywordSearch]);
+    setVisibleKeywordsCount(25);
+  }, [deferredKeywordSearch, activeTab]);
 
   const handleKeywordsScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop <= clientHeight + 100) {
+    if (scrollHeight - scrollTop <= clientHeight + 120) {
       if (visibleKeywordsCount < filteredKeywords.length) {
-        setVisibleKeywordsCount(prev => prev + 50);
+        setVisibleKeywordsCount(prev => prev + 25);
       }
     }
   };
@@ -1887,8 +1882,10 @@ export default function App() {
       if (res.ok && Array.isArray(res.data)) {
         setMissedList(res.data);
       }
-    } catch (err) {
-      console.error("Failed to fetch missed list", err);
+    } catch (err: any) {
+      if (err?.message !== "Failed to fetch" && !err?.name?.includes("AbortError")) {
+        console.error("Failed to fetch missed list", err);
+      }
     } finally {
       setIsFetchingMissed(false);
     }
@@ -2090,16 +2087,26 @@ export default function App() {
 
     window.addEventListener('account_changed', handleAccountChangeEvent);
 
-    // Consolidated background sync every 25 seconds, only when tab is visible
+    // Consolidated background & foreground sync every 15 seconds, running continuously
     const globalInterval = setInterval(() => {
-      if (!document.hidden) {
-        fetchAppState();
+      fetchAppState();
+      pingDeviceSession(currentProfileId);
+    }, 15000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log("App returned to foreground — performing instant refresh");
+        fetchAppState(true);
+        fetchAnalytics();
         pingDeviceSession(currentProfileId);
       }
-    }, 25000);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('account_changed', handleAccountChangeEvent);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(globalInterval);
     };
   }, [currentProfileId]);
@@ -2123,9 +2130,8 @@ export default function App() {
       fetchMissedList();
     }
 
-    // Refresh active tab data every 25 seconds when visible
+    // Refresh active tab data every 15 seconds continuously in background & foreground
     const tabInterval = setInterval(() => {
-      if (document.hidden) return;
       if (activeTab === 'dashboard' || activeTab === 'logs') {
         fetchLogs();
       } else if (activeTab === 'analytics') {
@@ -2133,7 +2139,7 @@ export default function App() {
       } else if (activeTab === 'catchup') {
         fetchMissedList();
       }
-    }, 25000);
+    }, 15000);
 
     return () => clearInterval(tabInterval);
   }, [activeTab]);
@@ -2677,7 +2683,11 @@ export default function App() {
       const res = await fetch("/api/auth/send-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone }),
+        body: JSON.stringify({ 
+          phone,
+          apiId: apiIdInput,
+          apiHash: apiHashInput
+        }),
       });
       
       const text = await res.text();
@@ -2690,15 +2700,45 @@ export default function App() {
 
       if (res.ok) {
         setAuthStep('code');
-        showNotification('success', 'Code sent!');
+        showNotification('success', 'Code sent! Please check Telegram on your phone or desktop.');
       } else {
         showNotification('error', data?.error || `Failed to send code: ${res.statusText}`);
       }
-    } catch (err) {
-      console.error(err);
-      showNotification('error', 'Connection error: Check console');
+    } catch (err: any) {
+      console.error("handleSendCode error:", err);
+      showNotification('error', err?.message || 'Connection error: Check console');
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    setIsResendingCode(true);
+    try {
+      const res = await fetch("/api/auth/resend-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone,
+          apiId: apiIdInput,
+          apiHash: apiHashInput
+        }),
+      });
+
+      const text = await res.text();
+      let data: any = null;
+      try { data = JSON.parse(text); } catch (e) {}
+
+      if (res.ok) {
+        showNotification('success', 'Telegram verification code resent! Please check your Telegram app.');
+      } else {
+        showNotification('error', data?.error || `Failed to resend code: ${res.statusText}`);
+      }
+    } catch (err: any) {
+      console.error("handleResendCode error:", err);
+      showNotification('error', err?.message || 'Connection error while resending code');
+    } finally {
+      setIsResendingCode(false);
     }
   };
 
@@ -2794,8 +2834,10 @@ export default function App() {
       if (res.ok && res.data) {
         setLastImportInfo(res.data);
       }
-    } catch (e) {
-      console.error("Failed to fetch last import info:", e);
+    } catch (e: any) {
+      if (e?.message !== "Failed to fetch" && !e?.name?.includes("AbortError")) {
+        console.error("Failed to fetch last import info:", e);
+      }
     }
   };
 
@@ -2806,8 +2848,10 @@ export default function App() {
       if (res.ok && Array.isArray(res.data)) {
         setImportBatches(res.data);
       }
-    } catch (e) {
-      console.error("Failed to fetch import batches:", e);
+    } catch (e: any) {
+      if (e?.message !== "Failed to fetch" && !e?.name?.includes("AbortError")) {
+        console.error("Failed to fetch import batches:", e);
+      }
     } finally {
       setIsFetchingBatches(false);
     }
@@ -3222,6 +3266,15 @@ export default function App() {
         <div className="flex items-center space-x-1 sm:space-x-2 relative z-10 shrink-0">
           <ProfileSelector isConnected={stats?.isUserBotConnected} onSwitchAccount={handleAccountSwitch} />
 
+          {/* Firebase Cloud Hub button */}
+          <button 
+            onClick={() => setIsFirebaseModalOpen(true)}
+            className="p-1 sm:p-2 rounded-lg sm:rounded-xl transition relative group text-amber-400 hover:text-white hover:bg-white/10 shrink-0"
+            title="Firebase Cloud & Auth Hub"
+          >
+            <Cloud size={19} className="transition duration-300 drop-shadow-[0_0_8px_rgba(245,158,11,0.8)] sm:w-[22px] sm:h-[22px]" />
+          </button>
+
           {/* Quick manual refresh button */}
           <button 
             onClick={handleManualRefresh}
@@ -3358,6 +3411,22 @@ export default function App() {
                   <div className="flex flex-col items-start">
                     <span className="text-[11px] font-bold uppercase tracking-wide">Notifications</span>
                     <span className="text-[8px] opacity-50">View recent alerts</span>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsFirebaseModalOpen(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl transition group ${darkMode ? 'text-amber-400 hover:bg-white/5' : 'text-amber-600 hover:bg-black/5'}`}
+                >
+                  <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
+                    <Cloud size={16} />
+                  </div>
+                  <div className="flex flex-col items-start">
+                    <span className="text-[11px] font-bold uppercase tracking-wide">Firebase Cloud</span>
+                    <span className="text-[8px] opacity-50">Firestore DB & Google Auth</span>
                   </div>
                 </button>
                 
@@ -3725,6 +3794,7 @@ export default function App() {
               keywordFilter={keywordFilter}
               setKeywordFilter={setKeywordFilter}
               handleEditKeyword={handleEditKeyword}
+              setActiveTab={setActiveTab}
             />
           )}
 
@@ -4135,6 +4205,8 @@ export default function App() {
               setPhoneNumberInput={setPhone}
               handleSendCode={handleSendCode}
               isSendingCode={authLoading}
+              handleResendCode={handleResendCode}
+              isResendingCode={isResendingCode}
               phoneCodeInput={code}
               setPhoneCodeInput={setCode}
               handleVerifyCode={handleSignIn}
@@ -4716,10 +4788,10 @@ export default function App() {
 
       {/* Floating Bottom Navigation Bar */}
       <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-sm sm:max-w-md z-50 transition-all duration-300">
-        <nav className={`rounded-2xl sm:rounded-full border px-2 py-1.5 flex items-center justify-around transition-all duration-300 shadow-2xl backdrop-blur-xl ${
+        <nav className={`rounded-full border p-1 sm:p-1.5 flex items-stretch justify-between gap-1 transition-all duration-300 shadow-2xl backdrop-blur-xl ${
           darkMode 
-            ? 'bg-slate-950/90 border-white/15 shadow-[0_12px_40px_rgba(0,0,0,0.85)]' 
-            : 'bg-white/95 border-slate-200/90 shadow-[0_12px_40px_rgba(0,0,0,0.14)]'
+            ? 'bg-neutral-900/95 border-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.85)]' 
+            : 'bg-white border-slate-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
         }`}>
           <TabButton id="dashboard" icon={Home} label="Home" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
           <TabButton id="keywords" icon={Key} label="Rules" activeTab={activeTab} setActiveTab={setActiveTab} setDirection={setDirection} darkMode={darkMode} />
@@ -5399,6 +5471,14 @@ export default function App() {
         onTriggerInstall={handleInstallApp}
         darkMode={darkMode}
         appLogo={appLogoInput || stats?.appLogo}
+      />
+
+      {/* Firebase Cloud Hub Modal */}
+      <FirebaseCloudModal
+        isOpen={isFirebaseModalOpen}
+        onClose={() => setIsFirebaseModalOpen(false)}
+        darkMode={darkMode}
+        currentProfileId={currentProfileId}
       />
     </motion.div>
       )}

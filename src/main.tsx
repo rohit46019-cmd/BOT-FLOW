@@ -43,6 +43,24 @@ try {
   }
 }
 
+// Resilient handling for transient network and ping timeout errors
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  const msg = reason?.message || String(reason || '');
+  if (msg.includes('TIMEOUT') || msg.includes('Connection check timed out')) {
+    console.warn('[Network] Handled transient timeout rejection gracefully:', msg);
+    event.preventDefault();
+  }
+});
+
+window.addEventListener('error', (event) => {
+  const msg = event.message || event.error?.message || '';
+  if (msg.includes('TIMEOUT') || msg.includes('Connection check timed out')) {
+    console.warn('[Network] Handled transient timeout error gracefully:', msg);
+    event.preventDefault();
+  }
+});
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
