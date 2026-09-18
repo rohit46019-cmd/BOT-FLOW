@@ -40,6 +40,13 @@ const PRESET_COLORS = [
   'from-cyan-600 to-blue-600'
 ];
 
+export const getAvatarUrl = (id: string, name: string) => {
+  const styles = ['bottts', 'adventurer', 'lorelei', 'avataaars', 'fun-emoji', 'pixel-art'];
+  const charCodeSum = (id || '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const style = styles[charCodeSum % styles.length];
+  return `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(name || 'User')}`;
+};
+
 interface ProfileSelectorProps {
   isConnected?: boolean;
   onSwitchAccount?: (profile: Profile) => void;
@@ -465,27 +472,38 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
           setIsAdding(false);
           setErrorMsg('');
         }}
-        className="flex items-center gap-1 sm:gap-1.5 py-1 px-1 sm:px-2 rounded-lg sm:rounded-xl transition-all duration-300 border bg-neutral-900 border-white/15 hover:border-blue-500/50 hover:bg-neutral-800 text-white shadow-md group active:scale-95 shrink-0 max-w-[95px] xs:max-w-[115px] sm:max-w-[160px]"
+        className="flex items-center gap-2.5 sm:gap-3 text-left focus:outline-none transition group active:scale-95 shrink-0"
         title="Switch Account & Telegram Login"
       >
         <div className="relative shrink-0">
-          <div className={`w-5 h-5 sm:w-6 sm:h-6 rounded-md sm:rounded-lg bg-gradient-to-tr ${currentProfile.avatarColor || 'from-blue-600 to-indigo-600'} flex items-center justify-center text-white shadow-md border border-white/20 group-hover:scale-105 transition-transform`}>
-            <User size={11} className="text-white sm:hidden" strokeWidth={2.5} />
-            <User size={13} className="text-white hidden sm:block" strokeWidth={2.5} />
+          <div className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-tr ${currentProfile.avatarColor || 'from-blue-600 to-indigo-600'} flex items-center justify-center text-white shadow-lg border-2 border-white dark:border-white/10 group-hover:scale-105 transition-transform duration-300 relative overflow-hidden`}>
+            {/* Fallback Initials */}
+            <span className="text-base font-black tracking-tighter uppercase select-none absolute inset-0 flex items-center justify-center">
+              {currentProfile.name ? currentProfile.name.charAt(0) : 'U'}
+            </span>
+            {/* Random Graphical Avatar */}
+            <img 
+              src={getAvatarUrl(currentProfile.id, currentProfile.name)}
+              alt={currentProfile.name} 
+              className="w-full h-full rounded-full object-cover select-none absolute inset-0 z-10 transition-opacity duration-300"
+              referrerPolicy="no-referrer"
+              loading="lazy"
+              onError={(e) => {
+                e.currentTarget.style.opacity = '0';
+              }}
+            />
           </div>
-          <span className={`absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full border border-neutral-900 ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+          <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-neutral-900 ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
         </div>
 
-        <div className="flex flex-col text-left min-w-0 flex-1">
-          <span className="text-[10px] sm:text-[11px] font-bold truncate text-white group-hover:text-blue-300 transition-colors leading-tight">
+        <div className="flex flex-col text-left min-w-0">
+          <span className="text-[10px] sm:text-[11px] font-bold text-white/70 flex items-center gap-1 leading-tight uppercase tracking-wider">
+            Hi <span className="animate-bounce inline-block text-[12px]">👋</span>
+          </span>
+          <span className="text-sm sm:text-base font-extrabold truncate text-white group-hover:text-white/90 transition-colors leading-none mt-0.5">
             {currentProfile.name}
           </span>
-          <span className="text-[7.5px] sm:text-[8.5px] font-medium text-slate-400 truncate leading-none mt-0.5 hidden xs:block">
-            {currentProfile.telegramUsername ? `@${currentProfile.telegramUsername}` : (currentProfile.id === 'default' ? 'Main' : 'Account')}
-          </span>
         </div>
-
-        <ChevronDown size={11} className="text-slate-400 group-hover:text-white shrink-0 transition-transform" />
       </button>
 
       {/* FULL PORTAL MODAL (Completely detached from header CSS bounding box) */}
@@ -662,8 +680,18 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                            {/* Left side info block */}
                           <div className="flex items-center gap-3.5 min-w-0 flex-1 mr-2">
                             {/* Modern avatar representation */}
-                            <div className={`w-10 h-10 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-md border border-white/10 relative group-hover:scale-105 transition-transform duration-300`}>
-                              <User size={18} strokeWidth={2.4} />
+                            <div className={`w-10 h-10 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-md border border-white/10 relative overflow-hidden group-hover:scale-105 transition-transform duration-300`}>
+                              <User size={18} strokeWidth={2.4} className="absolute" />
+                              <img 
+                                src={getAvatarUrl(p.id, p.name)}
+                                alt={p.name}
+                                className="w-full h-full rounded-lg object-cover select-none absolute inset-0 z-10 transition-opacity duration-300"
+                                referrerPolicy="no-referrer"
+                                loading="lazy"
+                                onError={(e) => {
+                                  e.currentTarget.style.opacity = '0';
+                                }}
+                              />
                             </div>
                             
                             {isEditingThis ? (

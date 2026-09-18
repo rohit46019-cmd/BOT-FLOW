@@ -3202,97 +3202,29 @@ export default function App() {
       </div>
 
       {/* Header */}
-      <header className={`px-2 sm:px-6 py-2 flex items-center justify-between fixed top-0 left-0 right-0 z-50 border-b transition-all duration-500 bg-black border-white/10 text-white shadow-2xl ${activeTab === 'logs' ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
+      <header className={`px-4 sm:px-6 py-3.5 flex items-center justify-between fixed top-0 left-0 right-0 z-50 transition-all duration-500 rounded-b-[24px] backdrop-blur-xl border-b ${
+        darkMode 
+          ? 'bg-[#1c3443]/80 text-white border-white/10 shadow-[0_10px_30px_rgba(0,0,0,0.35)]' 
+          : 'bg-[#1c3443]/70 text-white border-[#1c3443]/15 shadow-[0_10px_30px_rgba(28,52,67,0.15)]'
+      } ${activeTab === 'logs' ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
         
         {/* Oval glow effect */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80%] h-[200%] rounded-[100%] blur-3xl opacity-20 bg-white" />
-        </div>
-
-        <div className="flex items-center space-x-1.5 sm:space-x-3 relative z-10 shrink-0">
-          <div className="relative">
-            <button 
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
-              className="p-1.5 sm:p-2 rounded-xl transition relative group text-blue-400 hover:text-white hover:bg-white/10"
-            >
-              <div className="relative z-10 flex items-center justify-center w-[20px] h-[20px] sm:w-[22px] sm:h-[22px]">
-                <div className="flex flex-col items-start justify-center w-full h-full space-y-1 sm:space-y-1.5 transition duration-300 drop-shadow-[0_0_8px_rgba(255,255,255,0.6)] group-hover:drop-shadow-[0_0_12px_rgba(255,255,255,1)]">
-                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-[20px] sm:w-[22px] translate-y-2 rotate-45 bg-white' : 'w-[20px] sm:w-[22px] bg-white'}`}></span>
-                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-0 opacity-0 bg-white' : 'w-[14px] sm:w-[16px] bg-white'}`}></span>
-                  <span className={`h-0.5 rounded-full transition duration-300 ${isMenuOpen ? 'w-[20px] sm:w-[22px] -translate-y-2 -rotate-45 bg-white' : 'w-[9px] sm:w-[10px] bg-white'}`}></span>
-                </div>
-                {isMenuOpen && (
-                  <motion.div 
-                    layoutId="menu-glow"
-                    className="absolute inset-0 bg-white/20 blur-xl rounded-full -z-10"
-                  />
-                )}
-              </div>
-              <div className="absolute inset-0 bg-white/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            </button>
-            {/* Status dot overlapping the 3-line bar */}
-            <div className={`absolute top-1 right-1 sm:top-1.5 sm:right-1.5 w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full border-2 border-black z-20 ${stats?.isUserBotConnected ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-               <div className={`absolute inset-0 rounded-full animate-ping opacity-75 ${stats?.isUserBotConnected ? 'bg-emerald-400' : 'bg-rose-400'}`}></div>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-1.5 sm:space-x-3">
-            <div 
-              onClick={() => setIsLogoModalOpen(true)}
-              className="relative w-7 h-7 sm:w-8 sm:h-8 group cursor-pointer shrink-0" 
-              title="Click to choose or upload app logo"
-            >
-              <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded-lg rotate-3 opacity-40 group-hover:rotate-6 transition-transform duration-500"></div>
-              <div className="relative w-full h-full rounded-lg overflow-hidden flex items-center justify-center border transition-colors duration-500 bg-neutral-900 border-white/10 group-hover:border-emerald-500/50">
-                <img src={appLogoInput || stats?.appLogo || "/pwa-192x192.png"} alt="Logo" className="w-4 h-4 sm:w-5 sm:h-5 object-contain rounded-md" />
-              </div>
-            </div>
-            <div className="flex flex-col">
-              <div className="flex items-center space-x-1">
-                <h1 className="font-black text-sm sm:text-xl tracking-tighter leading-none transition-colors duration-500 text-white bg-clip-text text-transparent bg-gradient-to-r from-white via-blue-100 to-emerald-100">
-                  BotFlow
-                </h1>
-                <Sparkles className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400 animate-pulse" />
-              </div>
-              <div className="flex items-center space-x-1">
-                <span className="text-[6.5px] sm:text-[7px] font-black text-emerald-400 tracking-[0.25em] uppercase block">v3.7 • Premium AI</span>
-                <div className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
-              </div>
-            </div>
-          </div>
+        <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-b-[24px]">
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80%] h-[200%] rounded-[100%] blur-3xl opacity-15 bg-white" />
         </div>
         
-        {/* Right Side Controls: Account Switcher & Notifications */}
-        <div className="flex items-center space-x-1 sm:space-x-2 relative z-10 shrink-0">
+        {/* Left Side: Personalized Greeting and Avatar Account Switcher */}
+        <div className="relative z-10 shrink-0">
           <ProfileSelector isConnected={stats?.isUserBotConnected} onSwitchAccount={handleAccountSwitch} />
-
-          {/* Firebase Cloud Hub button */}
-          <button 
-            onClick={() => setIsFirebaseModalOpen(true)}
-            className="p-1 sm:p-2 rounded-lg sm:rounded-xl transition relative group text-amber-400 hover:text-white hover:bg-white/10 shrink-0"
-            title="Firebase Cloud & Auth Hub"
-          >
-            <Cloud size={19} className="transition duration-300 drop-shadow-[0_0_8px_rgba(245,158,11,0.8)] sm:w-[22px] sm:h-[22px]" />
-          </button>
-
-          {/* Quick manual refresh button */}
-          <button 
-            onClick={handleManualRefresh}
-            disabled={isHeaderRefreshing}
-            className={`p-1 sm:p-2 rounded-lg sm:rounded-xl transition relative group text-emerald-400 hover:text-white hover:bg-white/10 shrink-0 ${isHeaderRefreshing ? 'cursor-not-allowed opacity-65' : ''}`}
-            title="Refresh App Data"
-          >
-            <motion.div
-              animate={isHeaderRefreshing ? { rotate: 360 } : {}}
-              transition={isHeaderRefreshing ? { repeat: Infinity, duration: 1, ease: "linear" } : { type: "spring", stiffness: 200 }}
-            >
-              <RefreshCw size={19} className="transition duration-300 drop-shadow-[0_0_8px_rgba(16,185,129,0.8)] sm:w-[22px] sm:h-[22px]" />
-            </motion.div>
-          </button>
-
+        </div>
+        
+        {/* Right Side: Colorful Controls & Menu Trigger */}
+        <div className="flex items-center space-x-2 relative z-10 shrink-0">
+          
+          {/* Notification Button */}
           <button 
             onClick={() => setIsNotificationOpen(true)}
-            className="p-1 sm:p-2 rounded-lg sm:rounded-xl transition relative group text-rose-400 hover:text-white hover:bg-white/10 shrink-0"
+            className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
             aria-label="Notifications"
           >
             <motion.div
@@ -3308,18 +3240,28 @@ export default function App() {
                 ease: "easeInOut"
               }}
             >
-              <Bell size={19} className={`transition duration-300 drop-shadow-[0_0_8px_rgba(251,113,133,0.8)] group-hover:drop-shadow-[0_0_12px_rgba(255,255,255,0.8)] sm:w-[22px] sm:h-[22px] ${unreadCount > 0 ? 'text-rose-500' : ''}`} />
+              <Bell size={18} className={`sm:w-[20px] sm:h-[20px] ${unreadCount > 0 ? 'text-rose-400' : ''}`} />
             </motion.div>
             {unreadCount > 0 && (
-              <motion.span 
-                initial={{ scale: 0, rotate: -45 }}
-                animate={{ scale: 1, rotate: 0 }}
-                className="absolute -top-1 -right-1 min-w-[15px] h-[15px] sm:min-w-[18px] sm:h-[18px] px-0.5 sm:px-1 bg-rose-500 text-white text-[8px] sm:text-[9px] font-black flex items-center justify-center rounded-full border-2 border-black shadow-[0_0_15px_rgba(244,63,94,0.8)] group-hover:scale-125 transition-transform"
-              >
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] sm:min-w-[16px] sm:h-[16px] bg-rose-500 text-white text-[8px] font-black flex items-center justify-center rounded-full border-2 border-white dark:border-black shadow-lg">
                 {unreadCount > 99 ? '99+' : unreadCount}
-              </motion.span>
+              </span>
             )}
           </button>
+ 
+          {/* Sidebar Menu Toggle Button */}
+          <button 
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+            className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
+            title="Open Navigation Menu"
+          >
+            <div className="flex flex-col items-center justify-center space-y-1 w-[18px] h-[18px]">
+              <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? 'rotate-45 translate-y-1.5' : ''} bg-white`}></span>
+              <span className={`h-0.5 w-4.5 rounded-full transition-opacity ${isMenuOpen ? 'opacity-0' : 'opacity-100'} bg-white`}></span>
+              <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? '-rotate-45 -translate-y-1.5' : ''} bg-white`}></span>
+            </div>
+          </button>
+
         </div>
       </header>
 
@@ -3602,7 +3544,7 @@ export default function App() {
         className={`mx-auto relative z-10 overflow-x-hidden ${
           activeTab === 'logs' 
             ? 'max-w-none w-full p-0 pt-0 pb-0' 
-            : 'max-w-md p-4 pt-20 pb-28'
+            : 'max-w-md p-4 pt-24 pb-28'
         }`}
       >
         <AnimatePresence mode="popLayout" custom={direction} initial={false}>
