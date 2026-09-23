@@ -86,7 +86,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const [showGroupDropdown, setShowGroupDropdown] = useState(false);
   const [groupSearchTerm, setGroupSearchTerm] = useState("");
 
-  useEffect(() => {
+  const fetchAvailableGroups = () => {
     fetch("/api/groups")
       .then(res => res.json())
       .then(data => {
@@ -95,6 +95,22 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
         }
       })
       .catch(err => console.error("Error fetching groups:", err));
+  };
+
+  useEffect(() => {
+    fetchAvailableGroups();
+
+    const handleRefresh = () => {
+      fetchAvailableGroups();
+    };
+
+    window.addEventListener('groups_updated', handleRefresh);
+    window.addEventListener('account_changed', handleRefresh);
+
+    return () => {
+      window.removeEventListener('groups_updated', handleRefresh);
+      window.removeEventListener('account_changed', handleRefresh);
+    };
   }, []);
 
   const toggleSelectGroup = (groupIdOrTitle: string) => {
@@ -159,20 +175,26 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
     const normalize = (id: string) => id.toString().trim().replace(/^-100|^ -100|^-/, "");
 
     for (const g of splitGroups) {
-      if (availableGroups.length > 0) {
-        const normG = normalize(g);
-        const match = availableGroups.find(ag => ag.id === g || ag.title === g || normalize(ag.id) === normG);
-        if (!match) {
-          toast.error(`"${g}" Settings mein registered Target Group nahi hai! Sirf Settings wale groups allow hain.`);
-          continue;
-        }
+      const normG = normalize(g);
+      const match = availableGroups.find(ag => ag.id === g || ag.title === g || normalize(ag.id) === normG || ag.id.replace(/^-100/, '') === normG);
+      
+      if (match) {
         if (!nextGroups.includes(match.id)) {
           nextGroups.push(match.id);
           added = true;
         }
       } else {
-        toast.error("Pehle Settings mein Target Group IDs configure karein!");
-        return;
+        // If it looks like a Telegram group ID (e.g. -100..., or numeric)
+        const isTelegramId = /^-?\d+$/.test(g.replace(/\s+/g, ''));
+        if (isTelegramId) {
+          const formattedId = g.startsWith('-100') ? g : (g.startsWith('-') ? g : `-100${g}`);
+          if (!nextGroups.includes(formattedId)) {
+            nextGroups.push(formattedId);
+            added = true;
+          }
+        } else {
+          toast.error(`"${g}" Settings mein registered Target Group nahi hai! Sirf Settings wale groups allow hain.`);
+        }
       }
     }
     if (added) {

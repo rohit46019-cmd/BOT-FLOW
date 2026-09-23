@@ -374,7 +374,7 @@ async function executeApprovedReply(approvalDoc: any) {
         const topMsgId = (topicId === 1 || !topicId) ? undefined : topicId;
 
         try {
-          let inputPeer = await userClient.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
+          let inputPeer = await getCachedInputEntity(userClient, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, approvalDoc.account_id || "default");
           await userClient.invoke(
             new Api.messages.ForwardMessages({
               fromPeer: inputPeer,
@@ -1373,13 +1373,41 @@ export async function sendTelegramPhotoOptimized(
 // Fast In-Memory InputEntity Cache for Ultra-Fast Message Forwarding
 const inputEntityCache = new Map<string, { entity: any; timestamp: number }>();
 
+function getPeerKey(peer: any): string {
+  if (!peer) return 'null';
+  if (typeof peer === 'object') {
+    if (peer.channelId !== undefined) return `channel:${String(peer.channelId)}`;
+    if (peer.chatId !== undefined) return `chat:${String(peer.chatId)}`;
+    if (peer.userId !== undefined) return `user:${String(peer.userId)}`;
+    if (peer.id !== undefined) return `id:${String(peer.id)}`;
+    try {
+      return JSON.stringify(peer);
+    } catch {
+      return String(peer);
+    }
+  }
+  return String(peer);
+}
+
 export async function getCachedInputEntity(client: any, peer: any, accountId: string = 'default'): Promise<any> {
-  const key = `${String(peer)}:${accountId}`;
+  const key = `${getPeerKey(peer)}:${accountId}`;
   const cached = inputEntityCache.get(key);
   if (cached && Date.now() - cached.timestamp < 3600000) {
     return cached.entity;
   }
-  const entity = await client.getInputEntity(peer);
+  let entity;
+  try {
+    entity = await client.getInputEntity(peer);
+  } catch (err: any) {
+    console.warn(`[InputEntity] getInputEntity failed for ${getPeerKey(peer)}, trying robust getEntity:`, err.message);
+    try {
+      const resolvedEntity = await client.getEntity(peer);
+      entity = await client.getInputEntity(resolvedEntity);
+    } catch (robustErr: any) {
+      console.error(`[InputEntity] Robust getEntity failed for ${getPeerKey(peer)}:`, robustErr.message);
+      throw err; // throw original
+    }
+  }
   inputEntityCache.set(key, { entity, timestamp: Date.now() });
   if (inputEntityCache.size > 200) {
     const oldestKey = [...inputEntityCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
@@ -1592,7 +1620,7 @@ const getTelegramDevice = async (accountId: string = "default") => {
 // Helper: Parse and normalize target group IDs configured in Settings
 export function parseRegisteredGroups(settingValue?: string, accountId: string = "default"): { id: string; normalizedId: string; title: string }[] {
   const acc = accountId || "default";
-  const raw = settingValue !== undefined ? settingValue : (
+  const raw = (settingValue && settingValue.trim()) ? settingValue : (
     settingsCache[acc]?.["telegram_group_ids"] || 
     settingsCache[acc]?.["target_group_id"] || 
     settingsCache['default']?.["telegram_group_ids"] || 
@@ -4113,61 +4141,65 @@ async function startServer() {
                 }).catch(err => { console.error("Error sending keyword hit notification:", err); });
               }
 
-              // 1. AI Reply (if enabled)
+              // 1. AI Reply (if enabled) - Runs asynchronously in the background so it never delays static replies
               if (kw.ai_reply_enabled) {
                 const aiModeEnabled = getCachedSetting("ai_mode_enabled", accountId) === "true";
                 
                 if (aiModeEnabled) {
-                   const geminiApiKeysSetting = getCachedSetting("gemini_api_keys", accountId);
-                   let apiKeys: string[] = [];
-                   try {
-                     apiKeys = JSON.parse(geminiApiKeysSetting || "[]");
-                   } catch (e) {}
-                   
-                   const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-                   if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
-                   
-                   if (apiKeys.length > 0) {
-                     const aiPersona = getCachedSetting("ai_persona", accountId) || DEFAULT_AI_PERSONA;
-                     const conversationContext = await getRecentConversationContext(client, message.peerId, topicId).catch(() => "");
-                     
-                     for (const apiKey of apiKeys) {
-                       try {
-                         const genAI = new GoogleGenAI({ apiKey });
-                         const responseText = await Promise.race([
-                           genAI.models.generateContent({
-                             model: "gemini-2.5-flash",
-                             contents: [
-                               {
-                                 role: "user",
-                                 parts: [
-                                   { text: `System Instruction: ${aiPersona}` },
-                                   { text: conversationContext },
-                                   { text: `User Message: "${message.message}"` },
-                                   { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
-                                 ]
-                               }
-                             ]
-                           }).then(res => res.text),
-                           new Promise<string>((_, reject) => setTimeout(() => reject(new Error("AI timeout")), 3500))
-                         ]);
-                         
-                         const aiReply = responseText ? responseText.trim() : "";
-                         if (aiReply && aiReply !== "NO_REPLY") {
-                           await enqueueTelegramTask(accountId, async () => {
-                             await client.sendMessage(message.peerId, {
-                               message: aiReply,
-                               replyTo: replyTo,
-                             });
-                           });
-                           saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT', undefined, undefined, accountId).catch(() => {});
-                           break;
-                         }
-                       } catch (e) {
-                         console.error("AI Keyword Reply failed/timed out:", e);
-                       }
-                     }
-                   }
+                  (async () => {
+                    const geminiApiKeysSetting = getCachedSetting("gemini_api_keys", accountId);
+                    let apiKeys: string[] = [];
+                    try {
+                      apiKeys = JSON.parse(geminiApiKeysSetting || "[]");
+                    } catch (e) {}
+                    
+                    const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+                    if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
+                    
+                    if (apiKeys.length > 0) {
+                      const aiPersona = getCachedSetting("ai_persona", accountId) || DEFAULT_AI_PERSONA;
+                      const conversationContext = await getRecentConversationContext(client, message.peerId, topicId).catch(() => "");
+                      
+                      for (const apiKey of apiKeys) {
+                        try {
+                          const genAI = new GoogleGenAI({ apiKey });
+                          const responseText = await Promise.race([
+                            genAI.models.generateContent({
+                              model: "gemini-2.5-flash",
+                              contents: [
+                                {
+                                  role: "user",
+                                  parts: [
+                                    { text: `System Instruction: ${aiPersona}` },
+                                    { text: conversationContext },
+                                    { text: `User Message: "${message.message}"` },
+                                    { text: `Context: The user triggered a keyword "${match.matchedWord}". Reply naturally to their query considering the recent conversation history. If the message is short, generic, or doesn't need a reply, output 'NO_REPLY'.` }
+                                  ]
+                                }
+                              ]
+                            }).then(res => res.text),
+                            new Promise<string>((_, reject) => setTimeout(() => reject(new Error("AI timeout")), 3500))
+                          ]);
+                          
+                          const aiReply = responseText ? responseText.trim() : "";
+                          if (aiReply && aiReply !== "NO_REPLY") {
+                            await enqueueTelegramTask(accountId, async () => {
+                              await client.sendMessage(message.peerId, {
+                                message: aiReply,
+                                replyTo: replyTo,
+                              });
+                            });
+                            saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT', undefined, undefined, accountId).catch(() => {});
+                            break;
+                          }
+                        } catch (e) {
+                          console.error("AI Keyword Reply failed/timed out:", e);
+                        }
+                      }
+                    }
+                  })().catch(err => {
+                    console.error("Error in asynchronous background AI reply:", err);
+                  });
                 }
               }
 
@@ -4311,7 +4343,9 @@ async function startServer() {
                           ]);
                           console.log(`[Keyword Reply] Successfully forwarded via fallback client.forwardMessages for link: ${link}`);
                         } catch (fallbackErr: any) {
-                          console.error(`[Keyword Reply] Forwarding failed completely for link ${link}:`, fallbackErr.message);
+                          const errMsg = `[Keyword Reply] Forwarding failed completely for link ${link}: ${fallbackErr.message}`;
+                          console.error(errMsg);
+                          await saveLog(errMsg, 'error', 'USERBOT', undefined, { link, error: fallbackErr.message }, accountId).catch(() => {});
                         }
                       }
                     });
@@ -5901,7 +5935,10 @@ async function startServer() {
   app.get("/api/groups", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      const rawSetting = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
+      const rawSetting = (await getSetting("telegram_group_ids", accountId))?.value 
+        || (await getSetting("target_group_id", accountId))?.value 
+        || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") 
+        || "";
       const registeredGroups = parseRegisteredGroups(rawSetting, accountId);
 
       if (registeredGroups.length === 0) {
@@ -6009,7 +6046,11 @@ async function startServer() {
       };
       
       if (id) {
-        await Keyword.findOneAndUpdate({ _id: id, ...getAccountFilter(accountId) }, updateData);
+        let updatedDoc = await Keyword.findOneAndUpdate({ _id: id, ...getAccountFilter(accountId) }, updateData, { new: true });
+        if (!updatedDoc) {
+          // Fallback: claim orphan or previously created keyword under this account
+          await Keyword.findOneAndUpdate({ _id: id }, updateData, { new: true });
+        }
       } else {
         await Keyword.create(updateData);
       }
@@ -6027,7 +6068,10 @@ async function startServer() {
     try {
       const accountId = getAccountId(req);
       const { approval_mode } = req.body;
-      await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, { approval_mode: !!approval_mode });
+      let updatedDoc = await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, { approval_mode: !!approval_mode });
+      if (!updatedDoc) {
+        await Keyword.findOneAndUpdate({ _id: req.params.id }, { approval_mode: !!approval_mode });
+      }
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -6038,7 +6082,10 @@ async function startServer() {
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      await Keyword.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) });
+      let deleted = await Keyword.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) });
+      if (!deleted) {
+        await Keyword.findOneAndDelete({ _id: req.params.id });
+      }
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -6053,7 +6100,10 @@ async function startServer() {
       if (typeof req.body.enabled !== 'undefined') updateData.enabled = req.body.enabled;
       if (typeof req.body.approval_mode !== 'undefined') updateData.approval_mode = !!req.body.approval_mode;
       if (typeof req.body.notify_on_hit !== 'undefined') updateData.notify_on_hit = !!req.body.notify_on_hit;
-      await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, updateData);
+      let updatedDoc = await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, updateData);
+      if (!updatedDoc) {
+        await Keyword.findOneAndUpdate({ _id: req.params.id }, updateData);
+      }
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -7228,8 +7278,8 @@ async function startServer() {
                 }
               }
 
-              let inputPeer = await client.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
-              const toPeer = await client.getInputEntity(trigger.chat_id);
+              let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
+              const toPeer = await getCachedInputEntity(client, trigger.chat_id, accountId);
               await client.invoke(new Api.messages.ForwardMessages({
                 fromPeer: inputPeer,
                 id: [messageId],
@@ -7440,8 +7490,8 @@ async function startServer() {
                 }
 
                 try {
-                  let inputPeer = await client.getInputEntity(typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer);
-                  const toPeerInput = await client.getInputEntity(peerId);
+                  let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
+                  const toPeerInput = await getCachedInputEntity(client, peerId, accountId);
 
                   await client.invoke(
                     new Api.messages.ForwardMessages({

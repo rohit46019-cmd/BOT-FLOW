@@ -308,13 +308,29 @@ export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispa
     return defaultValue;
   });
 
+  const lastKeyRef = useRef(scopedKey);
+
   useEffect(() => {
-    try {
-      localStorage.setItem(scopedKey, JSON.stringify(state));
-    } catch (e) {
-      console.warn('Error writing to localStorage', e);
+    if (lastKeyRef.current !== scopedKey) {
+      lastKeyRef.current = scopedKey;
+      try {
+        const cached = localStorage.getItem(scopedKey);
+        if (cached) {
+          setState(JSON.parse(cached));
+        } else {
+          setState(defaultValue);
+        }
+      } catch (e) {
+        setState(defaultValue);
+      }
+    } else {
+      try {
+        localStorage.setItem(scopedKey, JSON.stringify(state));
+      } catch (e) {
+        console.warn('Error writing to localStorage', e);
+      }
     }
-  }, [scopedKey, state]);
+  }, [scopedKey, state, defaultValue]);
 
   return [state, setState];
 }
@@ -1516,15 +1532,15 @@ export default function App() {
             }
             setNotificationSoundEnabled(!!sData.notificationSoundEnabled);
             setNotificationSoundType(sData.notificationSoundType || "default");
-            if (sData.defaultPhone) {
-              setPhone(sData.defaultPhone);
-            }
+            setPhone(sData.defaultPhone || "");
             
             if (sData.apiId && sData.apiHash && sData.apiId !== "0" && sData.apiHash !== "") {
-              setAuthStep(prev => prev === 'credentials' ? 'phone' : prev);
+              setAuthStep('phone');
+            } else {
+              setAuthStep('credentials');
             }
           } else if (sData.defaultPhone && !phone) {
-            setPhone(sData.defaultPhone);
+            setPhone(sData.defaultPhone || "");
           }
         }
         if (Array.isArray(kwData)) setKeywords(kwData);
@@ -1608,10 +1624,12 @@ export default function App() {
           }
           setNotificationSoundEnabled(!!data.notificationSoundEnabled);
           setNotificationSoundType(data.notificationSoundType || "default");
-          if (!phone) setPhone(data.defaultPhone || "");
+          setPhone(data.defaultPhone || "");
           
           if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
-            setAuthStep(prev => prev === 'credentials' ? 'phone' : prev);
+            setAuthStep('phone');
+          } else {
+            setAuthStep('credentials');
           }
         }
       }
@@ -1624,9 +1642,12 @@ export default function App() {
     }
   };
 
-  const fetchKeywords = async () => {
+  const fetchKeywords = async (bypassCache = false) => {
     try {
-      const res = await apiJson("/api/keywords");
+      if (bypassCache) {
+        invalidateApiCache();
+      }
+      const res = await apiJson("/api/keywords", { bypassCache });
       if (res.ok && Array.isArray(res.data)) {
         setKeywords(res.data);
       }
@@ -2077,12 +2098,24 @@ export default function App() {
     pingDeviceSession(currentProfileId);
 
     const handleAccountChangeEvent = (e: any) => {
-      console.log("Smooth Account Change Event received:", e.detail);
+      const newAccId = e.detail?.accountId || e.detail?.id || e.detail?.profile?.id || localStorage.getItem('currentProfileId') || 'default';
+      console.log("Smooth Account Change Event received for account:", newAccId);
+      setCurrentProfileId(newAccId);
       invalidateApiCache();
+      
+      // Reset local state fields before fetching the new account profile
+      setPhone("");
+      setCode("");
+      setPassword("");
+      setAuthStep("credentials");
+      
       fetchAppState(true);
+      fetchKeywords(true);
       fetchAnalytics();
       fetchImportBatches();
-      pingDeviceSession(e.detail?.id || currentProfileId);
+      pingDeviceSession(newAccId);
+      
+      window.dispatchEvent(new CustomEvent('groups_updated', { detail: { accountId: newAccId } }));
     };
 
     window.addEventListener('account_changed', handleAccountChangeEvent);
@@ -2429,6 +2462,7 @@ export default function App() {
       if (res.ok) {
         showNotification('success', 'Settings updated!');
         fetchStats(true);
+        window.dispatchEvent(new CustomEvent('groups_updated'));
       } else {
         showNotification('error', data?.error || `Update failed: ${res.statusText}`);
       }
@@ -2479,7 +2513,7 @@ export default function App() {
       if (res.ok) {
         showNotification('success', editingKeywordId ? 'Rule updated!' : 'Rule created!');
         setEditingKeywordId(null);
-        fetchKeywords();
+        fetchKeywords(true);
       } else {
         const text = await res.text();
         let errData: any = {};
@@ -2561,7 +2595,7 @@ export default function App() {
 
       if (res.ok) {
         showNotification('success', 'Keyword rule copied! Duplicate added.');
-        fetchKeywords();
+        fetchKeywords(true);
       } else {
         const newKeywordObj: Keyword = {
           ...kw,
@@ -2606,14 +2640,14 @@ export default function App() {
       });
       if (res.ok) {
         showNotification('success', `Keyword ${enabled ? 'enabled' : 'disabled'}`);
-        fetchKeywords();
+        fetchKeywords(true);
       } else {
         showNotification('error', 'Failed to update keyword');
-        fetchKeywords();
+        fetchKeywords(true);
       }
     } catch (err) {
       showNotification('error', 'Update failed');
-      fetchKeywords();
+      fetchKeywords(true);
     }
   };
 
@@ -2629,14 +2663,14 @@ export default function App() {
       });
       if (res.ok) {
         showNotification('success', `Notifications ${notify_on_hit ? 'enabled' : 'disabled'}`);
-        fetchKeywords();
+        fetchKeywords(true);
       } else {
         showNotification('error', 'Failed to update notification setting');
-        fetchKeywords();
+        fetchKeywords(true);
       }
     } catch (err) {
       showNotification('error', 'Update failed');
-      fetchKeywords();
+      fetchKeywords(true);
     }
   };
 
@@ -2651,14 +2685,14 @@ export default function App() {
       });
       if (res.ok) {
         showNotification('success', `Approval mode ${approval_mode ? 'enabled' : 'disabled'}`);
-        fetchKeywords();
+        fetchKeywords(true);
       } else {
         showNotification('error', 'Failed to update approval mode');
-        fetchKeywords();
+        fetchKeywords(true);
       }
     } catch (err) {
       showNotification('error', 'Update failed');
-      fetchKeywords();
+      fetchKeywords(true);
     }
   };
 
@@ -2668,7 +2702,7 @@ export default function App() {
       const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
       if (res.ok) {
         showNotification('success', 'Keyword deleted');
-        fetchKeywords();
+        fetchKeywords(true);
       }
     } catch (err) {
       showNotification('error', 'Delete failed');
@@ -2887,9 +2921,11 @@ export default function App() {
     try {
       await Promise.all([
         fetchAppState(true),
+        fetchKeywords(true),
         fetchAnalytics(),
         fetchImportBatches()
       ]);
+      window.dispatchEvent(new CustomEvent('groups_updated', { detail: { accountId: profile.id } }));
     } catch (e) {
       console.error("Failed to refresh on account switch:", e);
     }
@@ -2906,7 +2942,7 @@ export default function App() {
       if (res.ok) {
         setShowDeleteLastKeywordConfirm(false);
         showNotification('success', data?.message || 'Last imported data deleted successfully!');
-        fetchKeywords();
+        fetchKeywords(true);
         fetchStats();
         fetchLastImportInfo();
       } else {
@@ -2931,7 +2967,7 @@ export default function App() {
       if (res.ok) {
         setShowDeleteLastRuleConfirm(false);
         showNotification('success', data?.message || 'Last rule deleted successfully!');
-        fetchKeywords();
+        fetchKeywords(true);
         fetchStats();
         fetchLastImportInfo();
       } else {
@@ -2966,7 +3002,7 @@ export default function App() {
         if (res.ok) {
           const resData = await res.json();
           showNotification('success', `Data imported successfully (${resData?.count || 'all'} rules)`);
-          fetchKeywords();
+          fetchKeywords(true);
           fetchStats();
           fetchLastImportInfo();
           fetchImportBatches();

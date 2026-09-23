@@ -58,8 +58,8 @@ interface KeywordsManagerProps {
   setActiveTab?: (tab: any) => void;
 }
 
-// Module-level cache to prevent re-fetching groups on every tab switch
-let cachedGroupsMap: Record<string, string> | null = null;
+// Account-scoped cache to prevent unnecessary re-fetching while properly supporting multiple accounts
+const cachedGroupsByAccount = new Map<string, Record<string, string>>();
 
 // Extracted, memoized RuleCard component to prevent heavy re-renders and eliminate layout thrashing
 interface RuleCardProps {
@@ -433,7 +433,9 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedKeywordsId, setCopiedKeywordsId] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [availableGroupsMap, setAvailableGroupsMap] = useState<Record<string, string>>(cachedGroupsMap || {});
+  const [availableGroupsMap, setAvailableGroupsMap] = useState<Record<string, string>>(() => 
+    cachedGroupsByAccount.get(localStorage.getItem('currentProfileId') || 'default') || {}
+  );
   const [expandedAdvanceIds, setExpandedAdvanceIds] = useState<Record<string, boolean>>({});
 
   const toggleAdvance = useCallback((id: string) => {
@@ -455,9 +457,13 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   }, []);
 
-  // Fetch groups once and cache at module level
-  useEffect(() => {
-    if (cachedGroupsMap && Object.keys(cachedGroupsMap).length > 0) return;
+  // Fetch groups and update map on mount or when account/settings change
+  const fetchAndSetGroups = useCallback((force = false) => {
+    const activeAcc = localStorage.getItem('currentProfileId') || 'default';
+    if (!force && cachedGroupsByAccount.has(activeAcc)) {
+      setAvailableGroupsMap(cachedGroupsByAccount.get(activeAcc)!);
+      return;
+    }
     fetch("/api/groups")
       .then(res => res.json())
       .then(data => {
@@ -465,13 +471,30 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
           const map: Record<string, string> = {};
           data.groups.forEach((g: any) => {
             if (g.id) map[g.id] = g.title || g.id;
+            if (g.normalizedId) map[g.normalizedId] = g.title || g.id;
           });
-          cachedGroupsMap = map;
+          cachedGroupsByAccount.set(activeAcc, map);
           setAvailableGroupsMap(map);
         }
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchAndSetGroups();
+
+    const handleRefresh = () => {
+      fetchAndSetGroups(true);
+    };
+
+    window.addEventListener('groups_updated', handleRefresh);
+    window.addEventListener('account_changed', handleRefresh);
+
+    return () => {
+      window.removeEventListener('groups_updated', handleRefresh);
+      window.removeEventListener('account_changed', handleRefresh);
+    };
+  }, [fetchAndSetGroups]);
 
   // Single-loop O(N) counts computation for extreme speed
   const counts = useMemo(() => {
