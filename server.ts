@@ -119,13 +119,49 @@ const SettingSchema = new mongoose.Schema({
 });
 SettingSchema.index({ key: 1, account_id: 1 }, { unique: true });
 const Setting = mongoose.model("Setting", SettingSchema);
-let bot: TelegramBot | null = null;
-let currentBotInfo: { id: number; firstName: string; username: string } | null = null;
+export const accountBots: Map<string, TelegramBot> = new Map();
+export const accountBotInfo: Map<string, { id: number; firstName: string; username: string }> = new Map();
+export let bot: TelegramBot | null = null;
+export let currentBotInfo: { id: number; firstName: string; username: string } | null = null;
+
+export function getBotForAccount(accountId: string = "default"): TelegramBot | null {
+  const acc = accountId || "default";
+  return accountBots.get(acc) || (acc === "default" ? bot : null);
+}
+
+export function getBotInfoForAccount(accountId: string = "default"): { id: number; firstName: string; username: string } | null {
+  const acc = accountId || "default";
+  return accountBotInfo.get(acc) || (acc === "default" ? currentBotInfo : null);
+}
 
 const escapeHtml = (text: string) => {
   if (!text) return "";
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 };
+
+async function handleAuthError(accountId: string = 'default') {
+  const failures = (consecutiveAuthFailures.get(accountId) || 0) + 1;
+  consecutiveAuthFailures.set(accountId, failures);
+  console.warn(`[Auth Error Handler] failure #${failures} for "${accountId}"`);
+  
+  // Clear in-memory client but don't delete DB string yet
+  const session = accountClients.get(accountId);
+  if (session) {
+    try { await session.client.disconnect().catch(() => {}); } catch (e) {}
+    await recordSessionEnd(accountId, session.sessionStartTime).catch(() => {});
+    accountClients.delete(accountId);
+  }
+  
+  if (accountId === 'default') {
+    userClient = null;
+    cachedAuthStatus = false;
+  }
+
+  if (failures >= 3) {
+    console.error(`[Auth Error Handler] Final failure for "${accountId}". Deleting session from DB.`);
+    await deleteSetting("session_string", accountId).catch(() => {});
+  }
+}
 
 async function getRecentConversationContext(client: TelegramClient, peerId: any, topicId: number | undefined): Promise<string> {
   if (!topicId) return "";
@@ -210,8 +246,11 @@ function extractTopicInfo(input: string): { topicId: number; normalizedLink: str
 }
 
 async function executeApprovedReply(approvalDoc: any) {
-  if (!userClient) {
-    throw new Error("Telegram User Client is not connected or logged in.");
+  const accountId = approvalDoc.account_id || "default";
+  const client = getAccountClient(accountId);
+  
+  if (!client || !client.connected) {
+    throw new Error(`Telegram Client for account "${accountId}" is not connected or logged in.`);
   }
 
   let kw: any = approvalDoc.rule_id;
@@ -233,21 +272,9 @@ async function executeApprovedReply(approvalDoc: any) {
 
   const chatId = approvalDoc.chat_id;
   const topicId = approvalDoc.topic_id;
-  const replyInGeneral = (await getSetting("reply_in_general"))?.value === "true";
+  const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
 
-  let toPeerInput: any = chatId;
-  try {
-    toPeerInput = await userClient.getInputEntity(chatId);
-  } catch (e) {
-    try {
-      const numId = parseInt(chatId, 10);
-      if (!isNaN(numId)) {
-        toPeerInput = await userClient.getInputEntity(numId);
-      }
-    } catch (e2) {
-      toPeerInput = chatId;
-    }
-  }
+  let toPeerInput: any = await getCachedInputEntity(client, chatId, accountId);
 
   let replyTo = replyInGeneral ? undefined : approvalDoc.message_id;
   if (!replyTo && topicId && topicId !== 1) {
@@ -258,17 +285,17 @@ async function executeApprovedReply(approvalDoc: any) {
 
   // 1. AI Reply if enabled on rule
   if (kw.ai_reply_enabled) {
-    const aiModeEnabled = (await getSetting("ai_mode_enabled"))?.value === "true";
+    const aiModeEnabled = (await getSetting("ai_mode_enabled", accountId))?.value === "true";
     if (aiModeEnabled) {
-      const geminiApiKeysSetting = await getSetting("gemini_api_keys");
+      const geminiApiKeysSetting = await getSetting("gemini_api_keys", accountId);
       let apiKeys: string[] = [];
       try { apiKeys = JSON.parse(geminiApiKeysSetting?.value || "[]"); } catch (e) {}
       const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
       if (envKey && !apiKeys.includes(envKey)) apiKeys.push(envKey);
 
       if (apiKeys.length > 0) {
-        const aiPersona = (await getSetting("ai_persona"))?.value || DEFAULT_AI_PERSONA;
-        const conversationContext = await getRecentConversationContext(userClient, toPeerInput, topicId);
+        const aiPersona = (await getSetting("ai_persona", accountId))?.value || DEFAULT_AI_PERSONA;
+        const conversationContext = await getRecentConversationContext(client, toPeerInput, topicId);
         
         for (const apiKey of apiKeys) {
           try {
@@ -290,12 +317,12 @@ async function executeApprovedReply(approvalDoc: any) {
             const aiReply = response.text.trim();
             if (aiReply && aiReply !== "NO_REPLY") {
               try {
-                await userClient.sendMessage(toPeerInput, { message: aiReply, replyTo });
+                await client.sendMessage(toPeerInput, { message: aiReply, replyTo });
               } catch (err: any) {
                 const fallbackReplyTo = (topicId && topicId !== 1) ? topicId : undefined;
-                await userClient.sendMessage(toPeerInput, { message: aiReply, replyTo: fallbackReplyTo });
+                await client.sendMessage(toPeerInput, { message: aiReply, replyTo: fallbackReplyTo });
               }
-              await saveLog(`AI Auto-Reply (Approved Keyword: ${matchedWord}): "${aiReply}"`, 'info', 'USERBOT');
+              await saveLog(`AI Auto-Reply (Approved Keyword: ${matchedWord}): "${aiReply}"`, 'info', 'USERBOT', undefined, undefined, accountId);
               replySent = true;
               break;
             }
@@ -311,8 +338,8 @@ async function executeApprovedReply(approvalDoc: any) {
   if (kw.photo) {
     try {
       await sendTelegramPhotoOptimized(
-        userClient,
-        approvalDoc.account_id || "default",
+        client,
+        accountId,
         toPeerInput,
         kw.photo,
         kw.reply || "",
@@ -322,14 +349,14 @@ async function executeApprovedReply(approvalDoc: any) {
     } catch (e: any) {
       console.error("Photo reply send error:", e.message);
       if (kw.reply && !replySent) {
-        await userClient.sendMessage(toPeerInput, { message: kw.reply, replyTo }).catch(() => {});
+        await client.sendMessage(toPeerInput, { message: kw.reply, replyTo }).catch(() => {});
         replySent = true;
       }
     }
   } else if (kw.reply && !replySent) {
     // 3. Text reply
     try {
-      await userClient.sendMessage(toPeerInput, {
+      await client.sendMessage(toPeerInput, {
         message: kw.reply,
         replyTo: replyTo
       });
@@ -337,11 +364,11 @@ async function executeApprovedReply(approvalDoc: any) {
     } catch (err: any) {
       console.warn("Text reply with msgId replyTo failed, falling back to topicId or plain:", err.message);
       const fallbackReplyTo = (topicId && topicId !== 1) ? topicId : undefined;
-      await userClient.sendMessage(toPeerInput, {
+      await client.sendMessage(toPeerInput, {
         message: kw.reply,
         replyTo: fallbackReplyTo
       }).catch(e2 => {
-        return userClient.sendMessage(toPeerInput, { message: kw.reply });
+        return client.sendMessage(toPeerInput, { message: kw.reply });
       });
       replySent = true;
     }
@@ -374,8 +401,8 @@ async function executeApprovedReply(approvalDoc: any) {
         const topMsgId = (topicId === 1 || !topicId) ? undefined : topicId;
 
         try {
-          let inputPeer = await getCachedInputEntity(userClient, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, approvalDoc.account_id || "default");
-          await userClient.invoke(
+          let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
+          await client.invoke(
             new Api.messages.ForwardMessages({
               fromPeer: inputPeer,
               id: [messageId],
@@ -413,44 +440,55 @@ async function executeApprovedReply(approvalDoc: any) {
   return { success: true };
 }
 
-async function initBot(token: string) {
-  if (bot) {
+async function initBotForAccount(token: string, accountId: string = "default"): Promise<TelegramBot | null> {
+  const acc = accountId || "default";
+  const existingBot = accountBots.get(acc);
+  if (existingBot) {
     try {
-      await bot.stopPolling();
-      console.log("Stopped existing Telegram Bot polling.");
+      await existingBot.stopPolling();
+      console.log(`[Telegram Bot] Stopped existing polling for account "${acc}".`);
     } catch (e) {
-      console.error("Error stopping bot polling:", e);
+      console.error(`[Telegram Bot] Error stopping bot polling for account "${acc}":`, e);
     }
+    accountBots.delete(acc);
   }
 
-  console.log("Initializing Telegram Bot...");
-  bot = new TelegramBot(token, { polling: true });
-  saveLog("Telegram Bot initialized and polling started.", "info", "SYSTEM");
+  console.log(`[Telegram Bot] Initializing Telegram Bot for account "${acc}"...`);
+  const accountBot = new TelegramBot(token, { polling: true });
+  accountBots.set(acc, accountBot);
+  if (acc === "default" || !bot) {
+    bot = accountBot;
+  }
+  saveLog(`Telegram Bot initialized and polling started for account "${acc}".`, "info", "SYSTEM", undefined, undefined, acc);
   
   try {
-    const me = await bot.getMe();
-    currentBotInfo = {
+    const me = await accountBot.getMe();
+    const info = {
       id: me.id,
       firstName: me.first_name || "Bot",
       username: me.username || "",
     };
-    console.log(`Telegram Bot @${me.username} (${me.first_name}) info loaded successfully.`);
+    accountBotInfo.set(acc, info);
+    if (acc === "default" || !currentBotInfo) {
+      currentBotInfo = info;
+    }
+    console.log(`[Telegram Bot] Bot @${me.username} (${me.first_name}) loaded for account "${acc}".`);
   } catch (meErr: any) {
-    console.warn("Could not fetch bot getMe() info:", meErr.message);
+    console.warn(`[Telegram Bot] Could not fetch bot getMe() for account "${acc}":`, meErr.message);
   }
   
-  bot.on("polling_error", (error: any) => {
+  accountBot.on("polling_error", (error: any) => {
     if (error.message && error.message.includes("409 Conflict")) return;
     if (error.message && error.message.includes("401 Unauthorized")) {
-      console.error("Telegram Bot Polling Error: 401 Unauthorized. Stopping polling. Please check your TELEGRAM_BOT_TOKEN.");
-      bot?.stopPolling();
-      saveLog("Telegram Bot Token is unauthorized (401). Please update it in settings.", "error", "SYSTEM");
+      console.error(`[Telegram Bot] 401 Unauthorized for account "${acc}". Stopping polling.`);
+      accountBot.stopPolling();
+      saveLog(`Telegram Bot Token is unauthorized (401) for account "${acc}". Please update it in settings.`, "error", "SYSTEM", undefined, undefined, acc);
       return;
     }
-    console.error("Telegram Bot Polling Error:", error.message || "Unknown error");
+    console.error(`[Telegram Bot] Polling Error (${acc}):`, error.message || "Unknown error");
   });
 
-  bot.on("message", async (msg) => {
+  accountBot.on("message", async (msg) => {
     try {
       const chatId = msg.chat.id;
       const isPrivate = msg.chat.type === 'private';
@@ -461,18 +499,15 @@ async function initBot(token: string) {
         const topicName = msg.forum_topic_created?.name || (msg as any).forum_topic_edited?.name || `Topic #${msg.message_thread_id || msg.message_id}`;
         const topicId = msg.message_thread_id || msg.message_id;
         if (topicId) {
-          await logTopic(topicId, topicName, msg.chat.id.toString());
-          console.log(`[BOT] Topic tracked: "${topicName}" (${topicId}) in chat ${msg.chat.id}`);
-
-          // Welcome message sending from the standard Bot has been disabled.
-          // It will now only be sent from the UserBot (Personal Telegram ID).
+          await logTopic(topicId, topicName, msg.chat.id.toString(), undefined, acc);
+          console.log(`[BOT (${acc})] Topic tracked: "${topicName}" (${topicId}) in chat ${msg.chat.id}`);
         }
         return;
       }
 
       if (!text) return;
 
-      const registered = parseRegisteredGroups();
+      const registered = parseRegisteredGroups(undefined, acc);
       const allowedGroupIds = registered.map(r => r.normalizedId);
       const currentChatId = chatId.toString().replace(/^-100|^ -100|^-/, "").trim();
       const isAllowedGroup = allowedGroupIds.includes(currentChatId);
@@ -489,45 +524,57 @@ async function initBot(token: string) {
       const lowerText = text.toLowerCase();
 
       if (isPrivate) {
-        // Automatically save the user's private Telegram chat ID as admin for notifications
+        // Automatically save the user's private Telegram chat ID as admin for this account
         await Setting.findOneAndUpdate(
-          { key: `bot_admin_${chatId}`, account_id: "default" },
-          { key: `bot_admin_${chatId}`, value: chatId.toString(), account_id: "default" },
+          { key: `bot_admin_${chatId}`, account_id: acc },
+          { key: `bot_admin_${chatId}`, value: chatId.toString(), account_id: acc },
           { upsert: true }
         ).catch(() => {});
       }
 
       // --- COMMAND: /start or /help ---
       if (lowerText === "/start" || lowerText.startsWith("/start ") || lowerText === "/help" || lowerText.startsWith("/help ")) {
-        const welcomeText = `👋 <b>Welcome to BotFlow Control Bot!</b>\n\nYou can manage blocked topics directly here:\n\n• <b>Block a topic:</b> Send any Telegram topic link (e.g. <code>https://t.me/c/12345/678</code>) or <code>/block &lt;link&gt;</code>\n• <b>Unblock a topic:</b> Send <code>/unblock &lt;link or ID&gt;</code>\n• <b>View blocked topics:</b> <code>/blocked</code>\n• <b>System status:</b> <code>/status</code>\n\n<i>When a topic is blocked, the userbot skips all automatic replies and broadcasts for that topic.</i>`;
-        await bot?.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
+        const accProfile = await AccountProfile.findOne({ account_id: acc });
+        const accDisplayName = accProfile?.name || (acc === 'default' ? 'Rohit Pandit' : acc);
+        const welcomeText = `👋 <b>Welcome to BotFlow Control Bot!</b>\n\n` +
+          `👤 <b>Linked Account:</b> <b>${escapeHtml(accDisplayName)}</b> (<code>${acc}</code>)\n` +
+          `🆔 <b>Admin Chat ID:</b> <code>${chatId}</code>\n\n` +
+          `✅ <i>You will receive instant alerts for groups configured in this account!</i>\n\n` +
+          `• <b>Block topic:</b> Send topic link or <code>/block &lt;link&gt;</code>\n` +
+          `• <b>Unblock topic:</b> Send <code>/unblock &lt;link or ID&gt;</code>\n` +
+          `• <b>View blocked topics:</b> <code>/blocked</code>\n` +
+          `• <b>System status:</b> <code>/status</code>`;
+        await accountBot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
         return;
       }
 
       // --- COMMAND: /status or /stats ---
       if (lowerText === "/status" || lowerText === "/stats") {
-        const isUserConnected = !!(userClient && userClient.connected);
-        const isSystemPaused = (await getSetting("system_paused"))?.value === "true";
-        const blockedCount = await BlockedTopic.countDocuments();
-        const keywordCount = await Keyword.countDocuments({ enabled: true });
-        const pendingCount = await PendingApproval.countDocuments({ status: 'pending' });
+        const clientSession = accountClients.get(acc)?.client || (acc === 'default' ? userClient : null);
+        const isUserConnected = !!(clientSession && clientSession.connected);
+        const isSystemPaused = getCachedSetting("system_paused", acc) === "true";
+        const blockedCount = await BlockedTopic.countDocuments(getAccountFilter(acc));
+        const keywordCount = await Keyword.countDocuments({ enabled: true, ...getAccountFilter(acc) });
+        const pendingCount = await PendingApproval.countDocuments({ status: 'pending', ...getAccountFilter(acc) });
+        const accProfile = await AccountProfile.findOne({ account_id: acc });
+        const accDisplayName = accProfile?.name || (acc === 'default' ? 'Rohit Pandit' : acc);
 
-        const statusText = `🤖 <b>BotFlow System Status</b>\n\n` +
+        const statusText = `🤖 <b>BotFlow Status (${escapeHtml(accDisplayName)})</b>\n\n` +
           `• <b>UserBot:</b> ${isUserConnected ? '🟢 Connected' : '🔴 Disconnected'}\n` +
-          `• <b>Auto-Reply System:</b> ${isSystemPaused ? '⏸ Paused' : '▶️ Active'}\n` +
+          `• <b>Auto-Reply:</b> ${isSystemPaused ? '⏸ Paused' : '▶️ Active'}\n` +
           `• <b>Active Rules:</b> <code>${keywordCount}</code>\n` +
           `• <b>Blocked Topics:</b> <code>${blockedCount}</code>\n` +
           `• <b>Pending Approvals:</b> <code>${pendingCount}</code>`;
 
-        await bot?.sendMessage(chatId, statusText, { parse_mode: 'HTML' });
+        await accountBot.sendMessage(chatId, statusText, { parse_mode: 'HTML' });
         return;
       }
 
       // --- COMMAND: /blocked or /list ---
       if (lowerText === "/blocked" || lowerText === "/list" || lowerText.startsWith("/blocked ") || lowerText.startsWith("/list ")) {
-        const blockedList = await BlockedTopic.find().sort({ created_at: -1 }).limit(25);
+        const blockedList = await BlockedTopic.find(getAccountFilter(acc)).sort({ created_at: -1 }).limit(25);
         if (blockedList.length === 0) {
-          await bot?.sendMessage(chatId, `✅ <b>No topics are currently blocked.</b>\n\nTo block a topic, send its link here.`, { parse_mode: 'HTML' });
+          await accountBot.sendMessage(chatId, `✅ <b>No topics are currently blocked.</b>\n\nTo block a topic, send its link here.`, { parse_mode: 'HTML' });
           return;
         }
 
@@ -548,7 +595,7 @@ async function initBot(token: string) {
           }
         });
 
-        await bot?.sendMessage(chatId, listText, {
+        await accountBot.sendMessage(chatId, listText, {
           parse_mode: 'HTML',
           reply_markup: keyboardButtons.length > 0 ? { inline_keyboard: keyboardButtons } : undefined,
           disable_web_page_preview: true
@@ -561,22 +608,22 @@ async function initBot(token: string) {
       if (isExplicitUnblock) {
         const topicInfo = extractTopicInfo(text);
         if (!topicInfo) {
-          await bot?.sendMessage(chatId, `⚠️ <b>Invalid link or ID!</b>\n\nPlease provide a valid Telegram topic link or ID.\nExample: <code>/unblock https://t.me/c/12345/678</code> or <code>/unblock 678</code>`, { parse_mode: 'HTML' });
+          await accountBot.sendMessage(chatId, `⚠️ <b>Invalid link or ID!</b>\n\nPlease provide a valid Telegram topic link or ID.\nExample: <code>/unblock https://t.me/c/12345/678</code> or <code>/unblock 678</code>`, { parse_mode: 'HTML' });
           return;
         }
 
-        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicInfo.topicId });
+        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicInfo.topicId, ...getAccountFilter(acc) });
         if (existing) {
           const topicName = existing.name || topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
           await BlockedTopic.findByIdAndDelete(existing._id);
           removeBlockedTopicFromCache(topicInfo.topicId);
 
           const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
-          await saveLog(`Topic ${topicInfo.topicId} unblocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { topicName, topicId: topicInfo.topicId });
-          sendSseEvent('topic_unblocked', { topicId: topicInfo.topicId, timestamp: new Date() });
+          await saveLog(`Topic ${topicInfo.topicId} unblocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { topicName, topicId: topicInfo.topicId }, acc);
+          sendSseEvent('topic_unblocked', { topicId: topicInfo.topicId, timestamp: new Date(), accountId: acc });
 
           const replyText = `✅ <b>Topic Unblocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code>\n\n<i>Auto-replies and broadcasts are now ENABLED for this topic.</i>`;
-          await bot?.sendMessage(chatId, replyText, {
+          await accountBot.sendMessage(chatId, replyText, {
             parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [
@@ -586,7 +633,7 @@ async function initBot(token: string) {
           });
         } else {
           const topicName = topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
-          await bot?.sendMessage(chatId, `ℹ️ <b>Topic is not blocked</b>\n\n📌 <b>Topic:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code> is already active.`, { parse_mode: 'HTML' });
+          await accountBot.sendMessage(chatId, `ℹ️ <b>Topic is not blocked</b>\n\n📌 <b>Topic:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code> is already active.`, { parse_mode: 'HTML' });
         }
         return;
       }
@@ -599,7 +646,7 @@ async function initBot(token: string) {
 
         let name = topicNamesCache[topicId] || "";
         if (!name) {
-          const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+          const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
           if (foundTopic && foundTopic.name) {
             name = foundTopic.name;
           }
@@ -608,11 +655,11 @@ async function initBot(token: string) {
           name = `Topic #${topicId}`;
         }
 
-        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+        const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
         if (existing) {
           const displayName = existing.name || name;
           const alreadyBlockedText = `ℹ️ <b>Topic is Already Blocked</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(displayName)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n🔗 <b>Link:</b> ${escapeHtml(existing.link || normalizedLink)}\n\n<i>This topic is already blocked from auto-replies and broadcasts.</i>`;
-          await bot?.sendMessage(chatId, alreadyBlockedText, {
+          await accountBot.sendMessage(chatId, alreadyBlockedText, {
             parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [
@@ -628,18 +675,19 @@ async function initBot(token: string) {
         await BlockedTopic.create({
           telegram_topic_id: topicId,
           name,
-          link: normalizedLink
+          link: normalizedLink,
+          account_id: acc
         });
         addBlockedTopicToCache(topicId);
 
         const userName = msg.from?.first_name ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` : 'Telegram User';
-        await saveLog(`Topic ${topicId} blocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { link: normalizedLink, topicName: name, topicId });
+        await saveLog(`Topic ${topicId} blocked via Telegram Bot by ${userName}`, 'info', 'BOT', undefined, { link: normalizedLink, topicName: name, topicId }, acc);
 
-        // Notify frontend
         sendSseEvent('topic_blocked', {
           message: `Topic "${name}" blocked via Telegram Bot`,
           topicName: name,
-          timestamp: new Date()
+          timestamp: new Date(),
+          accountId: acc
         });
 
         const blockedReplyText = `🚫 <b>Topic Blocked Successfully!</b>\n\n` +
@@ -648,7 +696,7 @@ async function initBot(token: string) {
           `🔗 <b>Link:</b> ${escapeHtml(normalizedLink)}\n\n` +
           `<i>The bot will now skip all auto-replies and broadcasts in this topic.</i>`;
 
-        await bot?.sendMessage(chatId, blockedReplyText, {
+        await accountBot.sendMessage(chatId, blockedReplyText, {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
@@ -662,18 +710,18 @@ async function initBot(token: string) {
 
       // If user sent something unrecognized in private DM
       if (isPrivate) {
-        await bot?.sendMessage(
+        await accountBot.sendMessage(
           chatId,
           `❓ <b>Unrecognized Input</b>\n\nPlease send a Telegram topic link (e.g. <code>https://t.me/c/12345/678</code>) to block it, or type <code>/help</code> for available commands.`,
           { parse_mode: 'HTML' }
         );
       }
     } catch (err: any) {
-      console.error("Error processing bot message:", err);
+      console.error(`Error processing bot message (${acc}):`, err);
     }
   });
 
-  bot.on("callback_query", async (query) => {
+  accountBot.on("callback_query", async (query) => {
     const data = query.data;
     if (!data) return;
     
@@ -683,33 +731,34 @@ async function initBot(token: string) {
       const topicId = parseInt(data.replace(isBlock ? "block_topic_" : "unblock_topic_", ""), 10);
       
       if (isNaN(topicId)) {
-        await bot?.answerCallbackQuery(query.id, { text: "Invalid topic ID" });
+        await accountBot.answerCallbackQuery(query.id, { text: "Invalid topic ID" }).catch(() => {});
         return;
       }
 
       let name = topicNamesCache[topicId] || "";
       if (!name) {
-        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId });
+        const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
         if (foundTopic && foundTopic.name) name = foundTopic.name;
       }
       if (!name) name = `Topic #${topicId}`;
 
       try {
         if (isBlock) {
-          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
           if (!existing) {
             await BlockedTopic.create({
               telegram_topic_id: topicId,
               name,
-              link: `Topic ID ${topicId}`
+              link: `Topic ID ${topicId}`,
+              account_id: acc
             });
             addBlockedTopicToCache(topicId);
-            sendSseEvent('topic_blocked', { message: `Topic "${name}" blocked`, topicName: name, timestamp: new Date() });
-            await saveLog(`Topic ${topicId} blocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
+            sendSseEvent('topic_blocked', { message: `Topic "${name}" blocked`, topicName: name, timestamp: new Date(), accountId: acc });
+            await saveLog(`Topic ${topicId} blocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId }, acc);
           }
-          await bot?.answerCallbackQuery(query.id, { text: `🚫 Topic ${topicId} blocked!` });
+          await accountBot.answerCallbackQuery(query.id, { text: `🚫 Topic ${topicId} blocked!` }).catch(() => {});
           if (query.message) {
-            await bot?.editMessageText(
+            await accountBot.editMessageText(
               `🚫 <b>Topic Blocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(name)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n\n<i>Auto-replies and broadcasts are now blocked for this topic.</i>`,
               {
                 chat_id: query.message.chat.id,
@@ -724,17 +773,17 @@ async function initBot(token: string) {
             ).catch(() => {});
           }
         } else {
-          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId });
+          const existing = await BlockedTopic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
           if (existing) {
             name = existing.name || name;
             await BlockedTopic.findByIdAndDelete(existing._id);
             removeBlockedTopicFromCache(topicId);
-            sendSseEvent('topic_unblocked', { topicId, timestamp: new Date() });
-            await saveLog(`Topic ${topicId} unblocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId });
+            sendSseEvent('topic_unblocked', { topicId, timestamp: new Date(), accountId: acc });
+            await saveLog(`Topic ${topicId} unblocked via Bot Button`, 'info', 'BOT', undefined, { topicName: name, topicId }, acc);
           }
-          await bot?.answerCallbackQuery(query.id, { text: `✅ Topic ${topicId} unblocked!` });
+          await accountBot.answerCallbackQuery(query.id, { text: `✅ Topic ${topicId} unblocked!` }).catch(() => {});
           if (query.message) {
-            await bot?.editMessageText(
+            await accountBot.editMessageText(
               `✅ <b>Topic Unblocked Successfully!</b>\n\n📌 <b>Topic Name:</b> ${escapeHtml(name)}\n🆔 <b>Topic ID:</b> <code>${topicId}</code>\n\n<i>Auto-replies and broadcasts are now enabled for this topic.</i>`,
               {
                 chat_id: query.message.chat.id,
@@ -751,7 +800,7 @@ async function initBot(token: string) {
         }
       } catch (e: any) {
         console.error("Error handling topic button toggle:", e);
-        await bot?.answerCallbackQuery(query.id, { text: `Error: ${e.message || 'Operation failed'}` });
+        await accountBot.answerCallbackQuery(query.id, { text: `Error: ${e.message || 'Operation failed'}` }).catch(() => {});
       }
       return;
     }
@@ -774,9 +823,9 @@ async function initBot(token: string) {
           }
 
           const responseMsg = is24hExpired ? "⏳ Approval request has expired (24h passed)." : "Approval already processed or not found.";
-          await bot?.answerCallbackQuery(query.id, { text: responseMsg });
+          await accountBot.answerCallbackQuery(query.id, { text: responseMsg }).catch(() => {});
           if (query.message) {
-            await bot?.editMessageText(
+            await accountBot.editMessageText(
               `⏳ <b>Approval Request Expired</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval?.matched_keyword || 'Keyword')}</code>\n<i>This request is older than 24 hours and is no longer valid.</i>`,
               {
                 chat_id: query.message.chat.id,
@@ -795,9 +844,9 @@ async function initBot(token: string) {
           approval.processed_at = new Date();
           await approval.save();
 
-          await bot?.answerCallbackQuery(query.id, { text: "✅ Approved & Reply sent immediately!" });
+          await accountBot.answerCallbackQuery(query.id, { text: "✅ Approved & Reply sent immediately!" }).catch(() => {});
           if (query.message) {
-            await bot?.editMessageText(
+            await accountBot.editMessageText(
               `✅ <b>Approved & Reply Sent!</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`,
               {
                 chat_id: query.message.chat.id,
@@ -812,9 +861,9 @@ async function initBot(token: string) {
           approval.processed_at = new Date();
           await approval.save();
 
-          await bot?.answerCallbackQuery(query.id, { text: "❌ Keyword reply rejected." });
+          await accountBot.answerCallbackQuery(query.id, { text: "❌ Keyword reply rejected." }).catch(() => {});
           if (query.message) {
-            await bot?.editMessageText(
+            await accountBot.editMessageText(
               `❌ <b>Not Approved / Rejected</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`,
               {
                 chat_id: query.message.chat.id,
@@ -823,17 +872,49 @@ async function initBot(token: string) {
               }
             ).catch(() => {});
           }
-          saveLog(`Keyword "${approval.matched_keyword}" rejected for ${approval.chat_title}`, 'info', 'USERBOT');
+          saveLog(`Keyword "${approval.matched_keyword}" rejected for ${approval.chat_title}`, 'info', 'USERBOT', undefined, undefined, acc);
           sendSseEvent('approval_processed', { id: approvalId, status: 'rejected' });
         }
       } catch (err: any) {
         console.error("Approval callback error:", err);
-        await bot?.answerCallbackQuery(query.id, { text: `❌ Failed: ${err.message || 'Error executing reply'}` });
+        await accountBot.answerCallbackQuery(query.id, { text: `❌ Failed: ${err.message || 'Error executing reply'}` }).catch(() => {});
       }
     }
   });
 
-  return bot;
+  return accountBot;
+}
+
+async function initBot(token: string, accountId: string = "default") {
+  return initBotForAccount(token, accountId);
+}
+
+async function initAllAccountBots() {
+  console.log("Initializing Telegram Bots for all accounts...");
+  const botTokens = await Setting.find({ key: "telegram_bot_token" });
+  const accountsSeen = new Set<string>();
+
+  for (const s of botTokens) {
+    const acc = s.account_id || "default";
+    const token = s.value?.trim();
+    if (token) {
+      accountsSeen.add(acc);
+      try {
+        await initBotForAccount(token, acc);
+      } catch (err: any) {
+        console.error(`Failed to initialize bot for account "${acc}":`, err.message);
+      }
+    }
+  }
+
+  // Also check default environment variable if not already started
+  if (!accountsSeen.has("default") && process.env.TELEGRAM_BOT_TOKEN) {
+    try {
+      await initBotForAccount(process.env.TELEGRAM_BOT_TOKEN.trim(), "default");
+    } catch (err: any) {
+      console.error(`Failed to initialize default bot from env:`, err.message);
+    }
+  }
 }
 
 const TopicSchema = new mongoose.Schema({
@@ -1124,13 +1205,42 @@ const AccountProfile = mongoose.model("AccountProfile", AccountProfileSchema);
 // Helper functions
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Fast in-memory alias map for account IDs & names (e.g. 'prakash' -> 'acc_1788572705603', 'rohit' -> 'default')
+export const accountNameToIdMap = new Map<string, string>();
+
+export async function refreshAccountNameMap() {
+  try {
+    const accs = await AccountProfile.find().lean();
+    accountNameToIdMap.clear();
+    for (const a of accs) {
+      if (a.name) {
+        accountNameToIdMap.set(a.name.toLowerCase().trim(), a.account_id);
+        const firstName = a.name.split(' ')[0].toLowerCase().trim();
+        if (firstName && !accountNameToIdMap.has(firstName)) {
+          accountNameToIdMap.set(firstName, a.account_id);
+        }
+      }
+      if (a.account_id) {
+        accountNameToIdMap.set(a.account_id.toLowerCase().trim(), a.account_id);
+      }
+    }
+    accountNameToIdMap.set("main", "default");
+    accountNameToIdMap.set("default", "default");
+    accountNameToIdMap.set("rohit", "default");
+  } catch (e) {}
+}
+
 export function getAccountId(req?: any): string {
   if (!req) return 'default';
   const headerId = req.headers?.['x-account-id'] as string;
-  const queryId = req.query?.account_id as string;
-  const bodyId = req.body?.account_id as string;
-  const id = headerId || queryId || bodyId || 'default';
-  return String(id).trim() || 'default';
+  const queryId = (req.query?.account_id || req.query?.accountId || req.query?.account || req.query?.user || req.query?.profile) as string;
+  const bodyId = (req.body?.account_id || req.body?.accountId || req.body?.account || req.body?.user || req.body?.profile) as string;
+  const rawId = String(headerId || queryId || bodyId || 'default').trim();
+  const lower = rawId.toLowerCase();
+  if (accountNameToIdMap.has(lower)) {
+    return accountNameToIdMap.get(lower)!;
+  }
+  return rawId || 'default';
 }
 
 export function getAccountFilter(accountId: string = 'default') {
@@ -1483,6 +1593,7 @@ export interface AccountSession {
 
 export const accountClients: Map<string, AccountSession> = new Map();
 export const accountAuthStates: Map<string, { phoneCodeHash?: string; phoneNumber?: string; isConnecting?: boolean; client?: TelegramClient }> = new Map();
+const consecutiveAuthFailures: Map<string, number> = new Map();
 
 export function getAccountClient(accountId: string = 'default'): TelegramClient | null {
   const acc = accountId || 'default';
@@ -1531,7 +1642,16 @@ const getSetting = async (key: string, accountId: string = "default") => {
     setting = await Setting.findOne({ key, ...getAccountFilter('default') });
   } else {
     setting = await Setting.findOne({ key, account_id: acc });
-    if (!setting) {
+    const noFallbackKeys = new Set([
+      'telegram_bot_token',
+      'telegram_group_ids',
+      'target_group_id',
+      'telegram_admin_id',
+      'admin_chat_id',
+      'session_string',
+      'default_phone'
+    ]);
+    if (!setting && !noFallbackKeys.has(key)) {
       setting = await Setting.findOne({ key, ...getAccountFilter('default') });
     }
   }
@@ -1620,13 +1740,13 @@ const getTelegramDevice = async (accountId: string = "default") => {
 // Helper: Parse and normalize target group IDs configured in Settings
 export function parseRegisteredGroups(settingValue?: string, accountId: string = "default"): { id: string; normalizedId: string; title: string }[] {
   const acc = accountId || "default";
-  const raw = (settingValue && settingValue.trim()) ? settingValue : (
+  let raw = (settingValue && settingValue.trim()) ? settingValue : (
     settingsCache[acc]?.["telegram_group_ids"] || 
-    settingsCache[acc]?.["target_group_id"] || 
-    settingsCache['default']?.["telegram_group_ids"] || 
-    settingsCache['default']?.["target_group_id"] || 
-    (process.env.TELEGRAM_GROUP_ID || "")
+    settingsCache[acc]?.["target_group_id"]
   );
+  if (!raw && acc === "default") {
+    raw = process.env.TELEGRAM_GROUP_ID || "";
+  }
   if (!raw || !raw.trim()) return [];
 
   const items = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
@@ -1933,7 +2053,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
       console.log(`Fetching forum topics to find name for ${topicId}...`);
       const result = await client.invoke(
         new Api.channels.GetForumTopics({
-          channel: await client.getInputEntity(message.peerId),
+          channel: await getCachedInputEntity(client, message.peerId),
           q: "", // Empty query
           offsetDate: 0,
           offsetId: 0,
@@ -2019,7 +2139,7 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
       }
 
       const editParams: any = {
-        channel: await client.getInputEntity(message.peerId),
+        channel: await getCachedInputEntity(client, message.peerId),
         topicId: topicId,
       };
 
@@ -2195,22 +2315,16 @@ async function sendPushNotification(title: string, body: string, data: any = {},
       }
     } catch (e) {}
 
-    // Fetch active push subscriptions for the specific account or fallback to all subscriptions if needed
+    // Fetch active push subscriptions for the specific account
     let allSubs = await PushSubscription.find({
       $or: [
         { account_id: accId },
-        { push_scope: "all" },
-        { push_scope: { $exists: false } }
+        { push_scope: "all" }
       ]
     });
 
-    if (allSubs.length === 0) {
-      // Fallback: broadcast to all registered push endpoints to guarantee PWA background delivery
-      allSubs = await PushSubscription.find({});
-    }
-    
     // Fetch device tracking sessions to map IPs, devices, and logged-in accounts
-    const allDevices = await DeviceSession.find({}).sort({ last_active: -1 });
+    const allDevices = await DeviceSession.find(getAccountFilter(accId)).sort({ last_active: -1 });
     const deviceMap = new Map<string, any>();
     allDevices.forEach(d => {
       if (d.device_id) deviceMap.set(d.device_id, d);
@@ -2321,11 +2435,15 @@ async function sendPushNotification(title: string, body: string, data: any = {},
   }
 }
 
-async function getBotAdminChatIds(): Promise<string[]> {
+async function getBotAdminChatIds(accountId: string = "default"): Promise<string[]> {
   try {
-    const adminDocs = await Setting.find({ key: { $regex: /^bot_admin_/ } });
+    const acc = accountId || "default";
+    const adminDocs = await Setting.find({ 
+      key: { $regex: /^bot_admin_/ },
+      ...getAccountFilter(acc)
+    });
     const chatIds = adminDocs.map(d => d.value).filter(Boolean);
-    const customAdmin = (await getSetting("telegram_admin_id"))?.value || (await getSetting("admin_chat_id"))?.value;
+    const customAdmin = (await getSetting("telegram_admin_id", acc))?.value || (await getSetting("admin_chat_id", acc))?.value;
     if (customAdmin && !chatIds.includes(customAdmin)) {
       chatIds.push(customAdmin);
     }
@@ -2370,9 +2488,10 @@ export async function sendPhotoReceivedNotification(params: {
   });
 
   // 3. Telegram Bot alert directly to user & admins (Bot Notification)
-  if (bot) {
+  const targetBot = getBotForAccount(accountId);
+  if (targetBot) {
     try {
-      const adminChats = await getBotAdminChatIds();
+      const adminChats = await getBotAdminChatIds(accountId);
       
       // Auto-detect user's own Chat ID via client to ensure direct private delivery
       let ownChatId: string | null = null;
@@ -2407,11 +2526,11 @@ export async function sendPhotoReceivedNotification(params: {
 
       for (const targetChat of targetChats) {
         if (!targetChat) continue;
-        await bot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
+        await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
           .catch(async (e) => {
             console.warn(`[NOTIFY] HTML Bot photo send failed to ${targetChat}, sending plain:`, e.message);
             const plainText = `📸 New Photo Received!\nGroup: ${chatTitle}\nTopic: ${topicName}`;
-            await bot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
+            await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
           });
       }
     } catch (botErr: any) {
@@ -2466,9 +2585,10 @@ export async function sendKeywordHitNotification(params: {
   });
 
   // 3. Telegram Bot alert directly to user & admins (Bot Notification)
-  if (bot) {
+  const targetBot = getBotForAccount(accountId);
+  if (targetBot) {
     try {
-      const adminChats = await getBotAdminChatIds();
+      const adminChats = await getBotAdminChatIds(accountId);
 
       // Auto-detect user's own Chat ID via client to ensure direct private delivery
       let ownChatId: string | null = null;
@@ -2503,11 +2623,11 @@ export async function sendKeywordHitNotification(params: {
 
       for (const targetChat of targetChats) {
         if (!targetChat) continue;
-        await bot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
+        await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
           .catch(async (e) => {
             console.warn(`[NOTIFY] HTML Bot keyword send failed to ${targetChat}, sending plain:`, e.message);
             const plainText = `🎯 Keyword Hit Alert!\nKeyword: ${matchedWord}\nTopic: ${topicName}\nGroup: ${chatTitle}\nMessage: ${userMessage || ''}`;
-            await bot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
+            await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
           });
       }
     } catch (botErr: any) {
@@ -2914,8 +3034,9 @@ async function startServer() {
 
   app.get("/api/push/logs", async (req, res) => {
     try {
-      const logs = await PushDeliveryLog.find({}).sort({ timestamp: -1 }).limit(20);
-      const subsCount = await PushSubscription.countDocuments();
+      const accountId = getAccountId(req);
+      const logs = await PushDeliveryLog.find(getAccountFilter(accountId)).sort({ timestamp: -1 }).limit(20);
+      const subsCount = await PushSubscription.countDocuments(getAccountFilter(accountId));
       res.json({ success: true, logs, totalSubscribers: subsCount });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3160,12 +3281,10 @@ async function startServer() {
         await initSettings().catch(() => {});
         await setupVapid().catch(() => {});
         await refreshKeywordCache().catch(() => {});
+        await refreshAccountNameMap().catch(() => {});
 
-        // Initialize Telegram Bot after DB is ready
-        let botToken = (await getSetting("telegram_bot_token"))?.value || process.env.TELEGRAM_BOT_TOKEN;
-        if (botToken) {
-          await initBot(botToken).catch(e => console.error("Initial initBot failed:", e));
-        }
+        // Initialize Telegram Bots for all accounts after DB is ready
+        await initAllAccountBots().catch(e => console.error("Initial initAllAccountBots failed:", e));
 
         // Background Engine: Verify and connect all authorized UserBots
         setTimeout(() => {
@@ -3249,8 +3368,9 @@ async function startServer() {
           tag: `topic-${topicId}`
         }, accountId).catch(() => {});
 
-        if (bot) {
-          getBotAdminChatIds().then(adminChats => {
+        const targetBot = getBotForAccount(accountId);
+        if (targetBot) {
+          getBotAdminChatIds(accountId).then(adminChats => {
             const topicAlertText = `🌟 <b>New Topic Created!</b>\n\n• <b>Topic:</b> ${escapeHtml(topicName)} (ID: <code>${topicId}</code>)\n• <b>Group:</b> <code>${chatId}</code>`;
             const replyMarkup = {
               inline_keyboard: [
@@ -3259,7 +3379,7 @@ async function startServer() {
               ]
             };
             for (const adminChat of adminChats) {
-              bot.sendMessage(adminChat, topicAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
+              targetBot.sendMessage(adminChat, topicAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
             }
           }).catch(() => {});
         }
@@ -3528,6 +3648,9 @@ async function startServer() {
           const normalizedChatId = chatId.toString().trim().replace(/^-100|^ -100|^-/, "");
           
           if (allowedGroupIds.length > 0 && !allowedGroupIds.includes(normalizedChatId)) {
+            if (rawText.length > 1) {
+              console.log(`[UserBot] Ignored message from unauthorized group/chat ${chatId} (Allowed: ${allowedGroupIds.join(", ")})`);
+            }
             return;
           }
 
@@ -3580,33 +3703,36 @@ async function startServer() {
         (message.action && Array.isArray((message.action as any).users) && (message.action as any).users.length > 0)
       );
 
-      let forumTopicId: number;
+      let forumTopicId: number = 1;
       if (isTopicCreationEvent) {
         forumTopicId = Number(messageId);
       } else if (message.replyTo) {
         if (message.replyTo.replyToTopId) {
           forumTopicId = Number(message.replyTo.replyToTopId);
-        } else if (message.replyTo.forumTopic) {
-          forumTopicId = Number(replyToId || 1);
-        } else {
-          forumTopicId = 1;
+        } else if (message.replyTo.replyToMsgId) {
+          forumTopicId = Number(message.replyTo.replyToMsgId);
         }
-      } else {
-        forumTopicId = 1;
+      }
+      if (forumTopicId === 1 && (message as any).messageThreadId) {
+        forumTopicId = Number((message as any).messageThreadId);
       }
 
       // Check if the topic ID is blocked
       if (forumTopicId) {
         const isBlocked = isTopicBlocked(forumTopicId, accountId);
         if (isBlocked) {
-          console.log(`Topic ${forumTopicId} is blocked for account ${accountId}. Skipping processing.`);
-          await saveLog(`Message ignored: Topic ${forumTopicId} is blocked.`, 'info', 'SYSTEM', undefined, { topicId: forumTopicId }, accountId);
+          console.log(`[UserBot] Topic ${forumTopicId} is blocked for account ${accountId}. Skipping.`);
           return;
         }
       }
 
       const topicId = forumTopicId;
       const replyInGeneral = getCachedSetting("reply_in_general", accountId) === "true";
+      
+      // DIAGNOSTIC LOG
+      if (topicId !== 1) {
+        console.log(`[UserBot] Detected Message in Topic ID: ${topicId}. ReplyInGeneral Setting: ${replyInGeneral}`);
+      }
       const replyTo = replyInGeneral ? undefined : messageId;
 
       // Check keyword reset logic (fast cached lookup)
@@ -3673,8 +3799,9 @@ async function startServer() {
             tag: `block-${topicId}`
           }, accountId).catch(e => console.error("WebPush block error:", e));
 
-          if (bot) {
-            getBotAdminChatIds().then(adminChats => {
+          const targetBot = getBotForAccount(accountId);
+          if (targetBot) {
+            getBotAdminChatIds(accountId).then(adminChats => {
               const blockMsg = `🛑 <b>Topic Auto-Blocked Alert!</b>\n\n• <b>Topic:</b> ${escapeHtml(name)}\n• <b>Trigger Keyword:</b> <code>${escapeHtml(matchedKeyword)}</code>`;
               const replyMarkup = {
                 inline_keyboard: [
@@ -3682,7 +3809,7 @@ async function startServer() {
                 ]
               };
               for (const adminChat of adminChats) {
-                bot.sendMessage(adminChat, blockMsg, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
+                targetBot.sendMessage(adminChat, blockMsg, { parse_mode: 'HTML', reply_markup: replyMarkup }).catch(() => {});
               }
             }).catch(() => {});
           }
@@ -3872,7 +3999,11 @@ async function startServer() {
         const text = message.message.toLowerCase().trim();
         const matches: { kw: any, index: number, matchedWord: string }[] = [];
         
-        console.log(`Checking ${accountKeywords.length} keywords for message: "${text}" from ${chatId} in account ${accountId}`);
+        if (accountKeywords.length === 0) {
+          console.log(`[UserBot] No keywords configured for account "${accountId}".`);
+        } else {
+          console.log(`[UserBot] Checking ${accountKeywords.length} keywords for message: "${text}" from ${chatId} in account ${accountId}`);
+        }
         
         for (const kw of accountKeywords) {
           if (kw.enabled === false) continue;
@@ -3906,13 +4037,20 @@ async function startServer() {
                 matches.push({ kw, index: 0, matchedWord: wordLower });
               } else {
                 // Unicode-aware word boundary check for exact mode (supports Hindi, English, Numbers, Special characters)
+                // Relaxed boundaries: allow punctuation and emojis around keywords
                 try {
                   const regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapedWord}(?=$|[^\\p{L}\\p{N}])`, 'gui');
                   const match = regex.exec(text);
                   if (match) {
                     matches.push({ kw, index: match.index, matchedWord: wordLower });
+                  } else {
+                    // Fallback: check if text ends with punctuation/emoji but contains keyword
+                    const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()!?\u{1F300}-\u{1F9FF}]/gu, " ").trim();
+                    if (cleanText === wordLower || cleanText.split(/\s+/).includes(wordLower)) {
+                       matches.push({ kw, index: text.indexOf(wordLower), matchedWord: wordLower });
+                    }
                   }
-                } catch {
+                } catch (regErr) {
                   const regex = new RegExp(`\\b${escapedWord}\\b`, 'gi');
                   const match = regex.exec(text);
                   if (match) {
@@ -3974,7 +4112,8 @@ async function startServer() {
 
             try {
               // Enforce max_replies limit BEFORE approval, notification, or auto-reply processing
-              const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 0;
+              // Default to 10 if not specified to be more lenient than the schema default of 2
+              const maxReplies = (kw.max_replies !== undefined && kw.max_replies !== null) ? Number(kw.max_replies) : 10;
               if (maxReplies > 0) {
                 const replyHistoryCount = await getKeywordReplyCount(topicId, chatId, kw._id, accountId, autoResetEnabled);
                 const pendingCount = await PendingApproval.countDocuments({
@@ -4040,7 +4179,8 @@ async function startServer() {
                   tag: `approval-${approval._id}`
                 }, accountId).catch(e => console.error("WebPush approval error:", e));
                 
-                if (bot) {
+                const targetBot = getBotForAccount(accountId);
+                if (targetBot) {
                   const notificationText = `🔔 <b>Approval Required</b>\n\n` +
                     `• <b>Keyword:</b> <code>${escapeHtml(match.matchedWord)}</code>\n` +
                     `• <b>Group:</b> ${escapeHtml(chatTitle)}\n` +
@@ -4063,7 +4203,7 @@ async function startServer() {
                   if (chatId) {
                     const targetTopicId = topicId ? Number(topicId) : undefined;
                     try {
-                      const msg = await bot.sendMessage(chatId, notificationText, {
+                      const msg = await targetBot.sendMessage(chatId, notificationText, {
                         parse_mode: 'HTML',
                         message_thread_id: targetTopicId,
                         reply_markup: replyMarkup
@@ -4077,11 +4217,11 @@ async function startServer() {
                   }
 
                   // Send to additional admin chats if configured (skip chatId so we don't send duplicate to same chat)
-                  getBotAdminChatIds().then(async (adminChats) => {
+                  getBotAdminChatIds(accountId).then(async (adminChats) => {
                     for (const adminChat of adminChats) {
                       if (adminChat !== chatId) {
                         try {
-                          const msg = await bot.sendMessage(adminChat, notificationText, {
+                          const msg = await targetBot.sendMessage(adminChat, notificationText, {
                             parse_mode: 'HTML',
                             reply_markup: replyMarkup
                           });
@@ -4141,7 +4281,7 @@ async function startServer() {
                 }).catch(err => { console.error("Error sending keyword hit notification:", err); });
               }
 
-              // 1. AI Reply (if enabled) - Runs asynchronously in the background so it never delays static replies
+              // AI Reply (if enabled) - Runs asynchronously in the background so it never delays static replies
               if (kw.ai_reply_enabled) {
                 const aiModeEnabled = getCachedSetting("ai_mode_enabled", accountId) === "true";
                 
@@ -4159,6 +4299,7 @@ async function startServer() {
                     if (apiKeys.length > 0) {
                       const aiPersona = getCachedSetting("ai_persona", accountId) || DEFAULT_AI_PERSONA;
                       const conversationContext = await getRecentConversationContext(client, message.peerId, topicId).catch(() => "");
+                      const targetTopMsgId = replyInGeneral ? undefined : (topicId && topicId !== 1 ? topicId : undefined);
                       
                       for (const apiKey of apiKeys) {
                         try {
@@ -4187,6 +4328,7 @@ async function startServer() {
                               await client.sendMessage(message.peerId, {
                                 message: aiReply,
                                 replyTo: replyTo,
+                                topMsgId: targetTopMsgId,
                               });
                             });
                             saveLog(`AI Auto-Reply (Keyword: ${match.matchedWord}): "${aiReply}"`, 'info', 'USERBOT', undefined, undefined, accountId).catch(() => {});
@@ -4487,21 +4629,8 @@ async function startServer() {
         await saveLog(`Bot Processing Error: ${errMessage}. details: ${stackTrace.slice(0, 400)}`, 'error', 'USERBOT', undefined, { error: stackTrace }, accountId).catch(() => {});
 
         if (globalErr.message?.includes("AUTH_KEY_UNREGISTERED")) {
-          console.log(`Session invalid in event handler for account ${accountId}. Clearing session string.`);
-          await deleteSetting("session_string", accountId);
-          if (accountClients.has(accountId)) {
-            const session = accountClients.get(accountId);
-            try { await session?.client.disconnect(); } catch(e) {}
-            await recordSessionEnd(accountId, session?.sessionStartTime);
-            accountClients.delete(accountId);
-          }
-          if (accountId === 'default') {
-            if (userClient) {
-              try { await userClient.disconnect(); } catch (e) {}
-            }
-            userClient = null;
-            cachedAuthStatus = false;
-          }
+          console.log(`Session invalid in event handler for account ${accountId}. Triggering auth error handler.`);
+          await handleAuthError(accountId);
         }
       }
       });
@@ -4682,6 +4811,7 @@ async function startServer() {
       );
 
       await saveLog(`Account profile created/updated: "${finalName}" (${accountId})`, 'info', 'API', '/api/accounts', undefined, accountId);
+      await refreshAccountNameMap().catch(() => {});
       res.json({
         success: true,
         account: {
@@ -4724,6 +4854,7 @@ async function startServer() {
       );
 
       await saveLog(`Account renamed or lock status updated: "${finalName}" (${id})`, 'info', 'API', `/api/accounts/${id}`, undefined, id);
+      await refreshAccountNameMap().catch(() => {});
       res.json({
         success: true,
         account: {
@@ -4777,6 +4908,7 @@ async function startServer() {
       blockedTopicsCache.delete(id);
 
       await saveLog(`Account and all its data permanently deleted: ${id}`, 'info', 'API', `/api/accounts/${id}`, undefined, 'default');
+      await refreshAccountNameMap().catch(() => {});
       res.json({ success: true, message: `Account ${id} deleted successfully` });
     } catch (err: any) {
       console.error("[DELETE /api/accounts/:id] Error:", err);
@@ -5096,16 +5228,14 @@ async function startServer() {
     try {
       const sessionDoc = await Setting.findOne({ key: "session_string", ...getAccountFilter(accId) });
       const sessionString = sessionDoc?.value;
-      if (!sessionString) {
-        return false;
-      }
+      if (!sessionString) return false;
 
-      // Determine credentials with full fallback: account-specific -> default -> environment defaults
       const apiIdRaw = (await getSetting("api_id", accId))?.value || (await getSetting("api_id", "default"))?.value || process.env.TELEGRAM_API_ID || "34669075";
       const apiHash = ((await getSetting("api_hash", accId))?.value || (await getSetting("api_hash", "default"))?.value || process.env.TELEGRAM_API_HASH || "b0f0ffda80d58bea235b2d232fbcbc79").trim();
       const apiId = parseInt(apiIdRaw.trim(), 10);
+      
       if (isNaN(apiId) || apiId <= 0 || !apiHash) {
-        console.warn(`[UserBot Background] Account "${accId}" has invalid API credentials: ID=${apiIdRaw}, Hash=${apiHash ? 'OK' : 'MISSING'}`);
+        console.warn(`[UserBot Background] Account "${accId}" invalid credentials.`);
         return false;
       }
 
@@ -5115,191 +5245,107 @@ async function startServer() {
       if (client && client.connected && !forceReconnect) {
         try {
           const isAuthed = await Promise.race([
-            client.isUserAuthorized(),
-            new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error("PING_TIMEOUT")), 4000))
+            client.isUserAuthorized().catch(() => false),
+            new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error("PING_TIMEOUT")), 8000))
           ]);
           if (isAuthed) {
-            if (!currentSession?.loginUser) {
-              try {
-                const me = await client.getMe();
-                if (me) {
-                  const liveUser = {
-                    id: me.id.toString(),
-                    firstName: me.firstName,
-                    lastName: me.lastName,
-                    username: me.username,
-                    phone: me.phone
-                  };
-                  if (currentSession) currentSession.loginUser = liveUser;
-                  const tgName = [me.firstName, me.lastName].filter(Boolean).join(' ');
-                  await AccountProfile.findOneAndUpdate(
-                    { account_id: accId },
-                    {
-                      telegram_name: tgName || me.username || '',
-                      telegram_username: me.username || '',
-                      phone: me.phone || '',
-                      updated_at: new Date()
-                    }
-                  );
-                }
-              } catch (e) {}
-            }
+            consecutiveAuthFailures.set(accId, 0);
             const targetGroupId = getCachedSetting("telegram_group_ids", accId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
             setupUserBotHandlers(client, targetGroupId, accId);
             return true;
           }
         } catch (e) {
-          console.warn(`[UserBot Background] Stale connection detected for account "${accId}", reconnecting...`);
-          // Stale connection, proceed to reconnect
+          console.warn(`[UserBot Background] Stale connection for "${accId}", reconnecting.`);
         }
       }
 
-      console.log(`[UserBot Background] Verifying and connecting account "${accId}"...`);
-      if (client) {
-        try { await client.disconnect(); } catch (e) {}
-      }
+      if (client) try { await client.disconnect().catch(() => {}); } catch (e) {}
 
       const devInfo = await getTelegramDevice(accId);
-
       const newClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-        connectionRetries: 5,
+        connectionRetries: 10,
         requestRetries: 5,
         deviceModel: devInfo.deviceModel,
         systemVersion: devInfo.systemVersion,
         appVersion: devInfo.appVersion,
         autoReconnect: true,
+        useWSS: true
       });
 
-      // Suppress noisy internal ping timeout logs during MTProto reconnection
       try {
         newClient.setLogLevel("none" as any);
         newClient.onError = async (err: any) => {
           const errStr = String(err?.message || err);
-          if (errStr.includes("TIMEOUT")) {
-            return;
-          }
+          if (errStr.includes("TIMEOUT")) return;
           if (errStr.includes("AUTH_KEY_UNREGISTERED") || errStr.includes("401")) {
-            console.warn(`[UserBot Auth] Invalid or unregistered session string for account "${accId}". Cleaning up session.`);
-            try { await newClient.disconnect(); } catch (e) {}
-            await deleteSetting("session_string", accId).catch(() => {});
-            return;
+            const failures = (consecutiveAuthFailures.get(accId) || 0) + 1;
+            consecutiveAuthFailures.set(accId, failures);
+            if (failures >= 3) {
+              console.error(`[UserBot Auth] Session for "${accId}" invalid. Deleting.`);
+              await deleteSetting("session_string", accId).catch(() => {});
+              accountClients.delete(accId);
+              if (accId === 'default') userClient = null;
+            }
           }
-          console.warn(`[UserBot] TelegramClient notice for "${accId}":`, err?.message || err);
         };
       } catch (e) {}
 
-      try {
-        await newClient.connect();
-      } catch (e: any) {
-        const errStr = String(e?.message || e);
-        if (errStr.includes("AUTH_KEY_UNREGISTERED") || errStr.includes("401")) {
-          console.warn(`[UserBot Auth] Connection failed due to unregistered session key for account "${accId}". Cleaning up.`);
-          await deleteSetting("session_string", accId).catch(() => {});
-        } else {
-          console.error(`[UserBot Background] Connection failed for account "${accId}":`, e.message || e);
-        }
-        return false;
-      }
-
-      // Persist new session string if updated by Telegram
-      try {
-        const newSessionString = (newClient.session as StringSession).save();
-        if (newSessionString && newSessionString !== sessionString) {
-          await setSetting("session_string", newSessionString, accId);
-        }
-      } catch (e) {}
+      await Promise.race([
+        newClient.connect(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("CONNECT_TIMEOUT")), 15000))
+      ]).catch(e => { throw e; });
 
       let isAuthorized = false;
       try {
-        isAuthorized = await newClient.isUserAuthorized();
-      } catch (authErr: any) {
-        const errStr = String(authErr?.message || authErr);
-        if (errStr.includes("AUTH_KEY_UNREGISTERED") || errStr.includes("401")) {
-          console.warn(`[UserBot Background] Unregistered session key for account "${accId}". Cleaning up.`);
-          try { await newClient.disconnect(); } catch (e) {}
-          await deleteSetting("session_string", accId).catch(() => {});
-          if (accId === 'default') {
-            userClient = null;
-            cachedAuthStatus = false;
-          }
-          if (accountClients.has(accId)) {
-            await recordSessionEnd(accId, accountClients.get(accId)?.sessionStartTime).catch(() => {});
-            accountClients.delete(accId);
-          }
-          return false;
-        } else if (errStr.includes("TIMEOUT")) {
-          console.warn(`[UserBot Background] Auth check timed out for account "${accId}".`);
-        } else {
-          console.warn(`[UserBot Background] Auth check failed for account "${accId}":`, authErr?.message || authErr);
-        }
-        return false;
-      }
-      if (isAuthorized) {
-        let liveUser: any = null;
-        try {
-          const me = await newClient.getMe();
-          if (me) {
-            liveUser = {
-              id: me.id.toString(),
-              firstName: me.firstName,
-              lastName: me.lastName,
-              username: me.username,
-              phone: me.phone
-            };
-            const tgName = [me.firstName, me.lastName].filter(Boolean).join(' ');
-            await AccountProfile.findOneAndUpdate(
-              { account_id: accId },
-              {
-                telegram_name: tgName || me.username || '',
-                telegram_username: me.username || '',
-                phone: me.phone || '',
-                updated_at: new Date()
-              }
-            );
-          }
-        } catch (e) {
-          console.warn(`[UserBot Background] Could not fetch getMe for account "${accId}":`, e);
-        }
+        isAuthorized = await Promise.race([
+          newClient.isUserAuthorized().catch(() => false),
+          new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error("AUTH_CHECK_TIMEOUT")), 10000))
+        ]);
+      } catch (e) {}
 
-        const targetGroupId = getCachedSetting("telegram_group_ids", accId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
-        setupUserBotHandlers(newClient, targetGroupId, accId);
+      if (isAuthorized) {
+        consecutiveAuthFailures.set(accId, 0);
+        const me = await newClient.getMe().catch(() => null);
+        const liveUser = me ? {
+          id: me.id.toString(),
+          firstName: me.firstName,
+          lastName: me.lastName,
+          username: me.username,
+          phone: me.phone
+        } : null;
 
         const startTime = Date.now();
         accountClients.set(accId, {
           accountId: accId,
           client: newClient,
           sessionStartTime: startTime,
-          phoneNumber: liveUser?.phone,
           loginUser: liveUser
         });
 
-        const activeAccountId = (await getSetting("active_account_id"))?.value || 'default';
-        if (accId === activeAccountId || accId === 'default') {
+        if (accId === 'default') {
           userClient = newClient;
+          sessionStartTime = startTime;
           cachedAuthStatus = true;
           lastAuthCheck = Date.now();
-          sessionStartTime = startTime;
         }
 
-        console.log(`[UserBot Background] Account "${accId}" (${liveUser?.phone || liveUser?.username || 'user'}) verified & connected successfully in background!`);
-        await saveLog(`Background Login Verified: UserBot connected for account "${accId}" (${liveUser?.phone || liveUser?.username || 'user'})`, "info", "SYSTEM", undefined, undefined, accId);
+        const targetGroupId = getCachedSetting("telegram_group_ids", accId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
+        setupUserBotHandlers(newClient, targetGroupId, accId);
+        console.log(`[UserBot Background] Account "${accId}" connected.`);
         return true;
       } else {
-        console.warn(`[UserBot Background] Session for account "${accId}" is unauthorized or expired.`);
-        try { await newClient.disconnect(); } catch (e) {}
-        await deleteSetting("session_string", accId);
-        if (accId === 'default') {
-          userClient = null;
-          cachedAuthStatus = false;
-        }
-        if (accountClients.has(accId)) {
-          await recordSessionEnd(accId, accountClients.get(accId)?.sessionStartTime);
+        const failures = (consecutiveAuthFailures.get(accId) || 0) + 1;
+        consecutiveAuthFailures.set(accId, failures);
+        if (failures >= 3) {
+          console.error(`[UserBot] Session expired for "${accId}". Deleting.`);
+          await deleteSetting("session_string", accId).catch(() => {});
           accountClients.delete(accId);
+          if (accId === 'default') userClient = null;
         }
         return false;
       }
     } catch (err: any) {
-      console.error(`[UserBot Background] Error verifying/connecting account "${accId}":`, err.message);
+      console.error(`[UserBot Background] Error for "${accId}":`, err.message);
       return false;
     }
   }
@@ -5492,13 +5538,7 @@ async function startServer() {
           } catch (e: any) {
             console.error("Error getting user info for account:", accountId, e);
             if (e.message?.includes("AUTH_KEY_UNREGISTERED") || e.message?.includes("AUTH_KEY_DUPLICATED")) {
-              if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
-              accountClients.delete(accountId);
-              if (accountId === 'default') {
-                await deleteSetting("session_string");
-                cachedAuthStatus = false;
-                userClient = null;
-              }
+              await handleAuthError(accountId);
             }
           }
         }
@@ -5546,7 +5586,7 @@ async function startServer() {
         targetGroupId,
         loginUser, sessionHistory: await SessionHistory.find({ account_id: accountId }).sort({ end_time: -1 }).limit(10),
         telegramBotToken: (await getSetting("telegram_bot_token", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_BOT_TOKEN : "") || "",
-        botInfo: currentBotInfo,
+        botInfo: getBotInfoForAccount(accountId),
       });
     } catch (err: any) {
       console.error("Error in /api/stats:", err);
@@ -5580,7 +5620,7 @@ async function startServer() {
         Keyword.find(getAccountFilter(accountId)).lean().catch(() => []),
         BlockedTopic.find(getAccountFilter(accountId)).sort({ created_at: -1 }).lean().catch(() => []),
         MissedTrigger.countDocuments({ processed: false, ...getAccountFilter(accountId) }).catch(() => 0),
-        Log.find({}).sort({ timestamp: -1 }).limit(50).lean().catch(() => []),
+        Log.find(getAccountFilter(accountId)).sort({ timestamp: -1 }).limit(50).lean().catch(() => []),
         AccountProfile.find().sort({ created_at: 1 }).lean().catch(() => []),
         getSetting("active_account_id"),
         ImportBatch.findOne(getAccountFilter(accountId)).sort({ imported_at: -1, _id: -1 }).lean().catch(() => null)
@@ -5724,7 +5764,7 @@ async function startServer() {
         targetGroupId,
         loginUser,
         telegramBotToken: (await getSetting("telegram_bot_token", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_BOT_TOKEN : "") || "",
-        botInfo: currentBotInfo,
+        botInfo: getBotInfoForAccount(accountId),
       };
 
       res.json({
@@ -5752,8 +5792,10 @@ async function startServer() {
       if (!token) {
         return res.json({ token: "", bot: null });
       }
-      if (currentBotInfo && bot) {
-        return res.json({ token, bot: currentBotInfo });
+      const existingInfo = getBotInfoForAccount(accountId);
+      const existingBot = getBotForAccount(accountId);
+      if (existingInfo && existingBot) {
+        return res.json({ token, bot: existingInfo });
       }
       try {
         const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -5764,7 +5806,10 @@ async function startServer() {
             firstName: data.result.first_name || "Bot",
             username: data.result.username || ""
           };
-          currentBotInfo = fetchedBot;
+          accountBotInfo.set(accountId, fetchedBot);
+          if (accountId === "default") {
+            currentBotInfo = fetchedBot;
+          }
           return res.json({ token, bot: fetchedBot });
         } else {
           return res.json({ token, bot: null, error: data.description });
@@ -5862,10 +5907,15 @@ async function startServer() {
       await refreshSettingsCache();
 
       if (typeof telegramBotToken !== "undefined") {
-        const currentToken = (await getSetting("telegram_bot_token", accountId))?.value;
-        const oldToken = settingsCache[accountId]?.["telegram_bot_token"];
-        if (telegramBotToken && (!bot || telegramBotToken !== oldToken)) {
-           await initBot(telegramBotToken);
+        if (telegramBotToken && telegramBotToken.trim()) {
+          await initBotForAccount(telegramBotToken.trim(), accountId);
+        } else {
+          const existingBot = accountBots.get(accountId);
+          if (existingBot) {
+            try { await existingBot.stopPolling(); } catch (e) {}
+            accountBots.delete(accountId);
+            accountBotInfo.delete(accountId);
+          }
         }
       }
       
@@ -5893,7 +5943,8 @@ async function startServer() {
       const firstTarget = target.split(",")[0].trim();
       const text = messageText || (await getSetting("auto_reply", accountId))?.value || "👋 Welcome! This is a test welcome message from BotFlow.";
       
-      await client.sendMessage(firstTarget, { message: text });
+      const peer = await getCachedInputEntity(client, firstTarget, accountId);
+      await client.sendMessage(peer, { message: text });
       await saveLog(`Test welcome message sent to ${firstTarget}`, 'info', 'USERBOT', '/api/test-welcome', { target: firstTarget, text }, accountId);
       res.json({ success: true, message: `Welcome message test sent to ${firstTarget}!` });
     } catch (err: any) {
@@ -6170,12 +6221,13 @@ async function startServer() {
       }
 
       // Update Telegram Bot message to remove buttons
-      if (bot && approval.bot_chat_id && approval.bot_message_id) {
+      const targetBot = getBotForAccount(approval.account_id);
+      if (targetBot && approval.bot_chat_id && approval.bot_message_id) {
         const text = action === 'approve'
           ? `✅ <b>Approved & Reply Sent! (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`
           : `❌ <b>Not Approved / Rejected (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`;
 
-        bot.editMessageText(text, {
+        targetBot.editMessageText(text, {
           chat_id: approval.bot_chat_id,
           message_id: approval.bot_message_id,
           parse_mode: 'HTML',
@@ -6846,18 +6898,7 @@ async function startServer() {
       }
       console.error("Error fetching messages:", err);
       if (err.message?.includes("AUTH_KEY_UNREGISTERED")) {
-        await deleteSetting("session_string", accountId);
-        if (accountClients.has(accountId)) {
-          const s = accountClients.get(accountId);
-          try { await s?.client.disconnect(); } catch (e) {}
-          await recordSessionEnd(accountId, s?.sessionStartTime);
-          accountClients.delete(accountId);
-        }
-        if (accountId === 'default') {
-          if (userClient) { try { await userClient.disconnect(); } catch (e) {} }
-          userClient = null;
-          cachedAuthStatus = false;
-        }
+        await handleAuthError(accountId);
       }
       res.status(500).json({ error: `[GET /api/group/messages] ${err.message}` });
     }
@@ -6895,7 +6936,8 @@ async function startServer() {
         if (target === 'general') {
           for (const gId of allowedGroupIds) {
             try {
-              await client.sendMessage(gId, { message });
+              const peer = await getCachedInputEntity(client, gId, accountId);
+              await client.sendMessage(peer, { message });
             } catch (err: any) {
               console.error(`Broadcast failed for general section in group ${gId}:`, err.message);
               await saveLog(`General broadcast failed for group ${gId}: ${err.message}`, 'error', 'API', '/api/broadcast', undefined, accountId);
@@ -6913,7 +6955,8 @@ async function startServer() {
         if (filteredTopics.length === 0) {
           for (const gId of allowedGroupIds) {
             try {
-              await client.sendMessage(gId, { message });
+              const peer = await getCachedInputEntity(client, gId, accountId);
+              await client.sendMessage(peer, { message });
             } catch (err: any) {
               console.error(`Broadcast failed for main group ${gId}:`, err.message);
             }
@@ -6944,7 +6987,8 @@ async function startServer() {
               const topic = filteredTopics[i];
               const destChatId = topic.chat_id || groupId;
               try {
-                await client.sendMessage(destChatId, {
+                const peer = await getCachedInputEntity(client, destChatId, accountId);
+                await client.sendMessage(peer, {
                   message,
                   replyTo: topic.telegram_topic_id
                 });
@@ -6959,7 +7003,8 @@ async function startServer() {
                   await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
                   
                   try {
-                    await client.sendMessage(destChatId, {
+                    const peer = await getCachedInputEntity(client, destChatId, accountId);
+                    await client.sendMessage(peer, {
                       message,
                       replyTo: topic.telegram_topic_id
                     });
@@ -7075,7 +7120,7 @@ async function startServer() {
         try {
           const result = await client.invoke(
             new Api.channels.GetForumTopics({
-              channel: await client.getInputEntity(currentGroupId),
+              channel: await getCachedInputEntity(client, currentGroupId, accountId),
               q: "",
               offsetDate: 0,
               offsetId: 0,
@@ -7542,7 +7587,8 @@ async function startServer() {
 
   app.get("/api/logs", async (req, res) => {
     try {
-      const logs = await Log.find({}).sort({ timestamp: -1 }).limit(100);
+      const accountId = getAccountId(req);
+      const logs = await Log.find(getAccountFilter(accountId)).sort({ timestamp: -1 }).limit(100);
       res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -7640,7 +7686,8 @@ async function startServer() {
 
   app.get("/api/logs/export", async (req, res) => {
     try {
-      const logs = await Log.find({}).sort({ timestamp: -1 });
+      const accountId = getAccountId(req);
+      const logs = await Log.find(getAccountFilter(accountId)).sort({ timestamp: -1 });
       const format = req.query.format || 'json';
       
       if (format === 'csv') {
@@ -8037,8 +8084,9 @@ For each suggested rule, provide:
 
         for (const doc of expiredDocs) {
           sendSseEvent('approval_processed', { id: doc._id, status: 'expired' });
-          if (bot && doc.bot_chat_id && doc.bot_message_id) {
-            bot.editMessageText(
+          const targetBot = getBotForAccount(doc.account_id);
+          if (targetBot && doc.bot_chat_id && doc.bot_message_id) {
+            targetBot.editMessageText(
               `⏳ <b>Approval Request Expired</b>\n\n<b>Keyword:</b> <code>${escapeHtml(doc.matched_keyword)}</code>\n<i>This request expired after 24 hours.</i>`,
               {
                 chat_id: doc.bot_chat_id,
@@ -8058,8 +8106,15 @@ For each suggested rule, provide:
   // Graceful shutdown
   const shutdown = async () => {
     console.log("Shutting down...");
+    for (const [accId, b] of accountBots.entries()) {
+      if (b && b.isPolling()) {
+        try {
+          await b.stopPolling();
+        } catch (e) {}
+      }
+    }
     if (bot && bot.isPolling()) {
-      await bot.stopPolling();
+      await bot.stopPolling().catch(() => {});
     }
     if (userClient) {
       await userClient.disconnect();

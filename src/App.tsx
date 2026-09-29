@@ -295,7 +295,14 @@ const useDebounce = (value: any, delay: number) => {
 };
 
 export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const profileId = localStorage.getItem('currentProfileId') || 'default';
+  let profileId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId');
+  if (!profileId && typeof window !== 'undefined') {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      profileId = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+    } catch (e) {}
+  }
+  profileId = profileId || 'default';
   const scopedKey = `${profileId}_${key}`;
   
   const [state, setState] = useState<T>(() => {
@@ -340,7 +347,14 @@ if (typeof window !== "undefined") {
   try {
     const originalFetch = window.fetch;
     const customFetch = async function (input: any, init: any) {
-      const activeAccId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
+      let activeAccId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId');
+      if (!activeAccId && typeof window !== 'undefined') {
+        try {
+          const urlParams = new URLSearchParams(window.location.search);
+          activeAccId = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+        } catch (e) {}
+      }
+      activeAccId = activeAccId || 'default';
       let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
       if (url.startsWith('/api') || url.includes('/api/')) {
         init = init || {};
@@ -397,7 +411,22 @@ if (typeof window !== "undefined") {
 }
 
 export default function App() {
-  const [currentProfileId, setCurrentProfileId] = useState(() => localStorage.getItem('currentProfileId') || 'default');
+  const [currentProfileId, setCurrentProfileId] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlAcc = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+        if (urlAcc) {
+          const trimmed = urlAcc.trim();
+          localStorage.setItem('currentProfileId', trimmed);
+          localStorage.setItem('activeAccountId', trimmed);
+          return trimmed;
+        }
+      } catch (e) {}
+      return localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
+    }
+    return 'default';
+  });
 
   useEffect(() => {
     let deviceId = localStorage.getItem('botflow_device_id');
@@ -660,7 +689,7 @@ export default function App() {
   const handleSaveLogo = async (logoUrl: string) => {
     setAppLogoInput(logoUrl);
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiJson("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ appLogo: logoUrl })
@@ -1472,6 +1501,10 @@ export default function App() {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [authStep, setAuthStep] = useState<'credentials' | 'phone' | 'code'>('credentials');
+  const authStepRef = useRef(authStep);
+  useEffect(() => {
+    authStepRef.current = authStep;
+  }, [authStep]);
   const [authLoading, setAuthLoading] = useState(false);
   const [isResendingCode, setIsResendingCode] = useState(false);
   const hasLoadedInitialSettingsRef = useRef(false);
@@ -1534,10 +1567,12 @@ export default function App() {
             setNotificationSoundType(sData.notificationSoundType || "default");
             setPhone(sData.defaultPhone || "");
             
-            if (sData.apiId && sData.apiHash && sData.apiId !== "0" && sData.apiHash !== "") {
-              setAuthStep('phone');
-            } else {
-              setAuthStep('credentials');
+            if (authStepRef.current !== 'code') {
+              if (sData.apiId && sData.apiHash && sData.apiId !== "0" && sData.apiHash !== "") {
+                setAuthStep('phone');
+              } else {
+                setAuthStep('credentials');
+              }
             }
           } else if (sData.defaultPhone && !phone) {
             setPhone(sData.defaultPhone || "");
@@ -1822,7 +1857,7 @@ export default function App() {
 
   const handleAddSuggestedKeyword = async (suggestion: any) => {
     try {
-      const res = await fetch("/api/keywords", {
+      const res = await apiJson("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2129,7 +2164,7 @@ export default function App() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         console.log("App returned to foreground — performing instant refresh");
-        fetchAppState(true);
+        fetchAppState();
         fetchAnalytics();
         pingDeviceSession(currentProfileId);
       }
@@ -2190,7 +2225,7 @@ export default function App() {
     setStats({ ...stats, isSystemPaused: newPausedState });
     
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiJson("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ systemPaused: newPausedState }),
@@ -2633,7 +2668,7 @@ export default function App() {
     // Optimistic state update
     setKeywords(prev => prev.map(k => k._id === id ? { ...k, enabled } : k));
     try {
-      const res = await fetch(`/api/keywords/${id}`, {
+      const res = await apiJson(`/api/keywords/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -2678,7 +2713,7 @@ export default function App() {
     // Optimistic state update
     setKeywords(prev => prev.map(k => k._id === id ? { ...k, approval_mode } : k));
     try {
-      const res = await fetch(`/api/keywords/${id}/approval`, {
+      const res = await apiJson(`/api/keywords/${id}/approval`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approval_mode }),
@@ -2714,7 +2749,7 @@ export default function App() {
   const handleSendCode = async () => {
     setAuthLoading(true);
     try {
-      const res = await fetch("/api/auth/send-code", {
+      const res = await apiJson("/api/auth/send-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -2724,19 +2759,11 @@ export default function App() {
         }),
       });
       
-      const text = await res.text();
-      if (text.includes("Rate exceeded")) {
-        showNotification('error', 'Rate limit exceeded. Please try again later.');
-        return;
-      }
-      
-      const data = text ? JSON.parse(text) : null;
-
       if (res.ok) {
         setAuthStep('code');
         showNotification('success', 'Code sent! Please check Telegram on your phone or desktop.');
       } else {
-        showNotification('error', data?.error || `Failed to send code: ${res.statusText}`);
+        showNotification('error', res.error || (res.data as any)?.error || `Failed to send code: ${res.status}`);
       }
     } catch (err: any) {
       console.error("handleSendCode error:", err);
@@ -2749,7 +2776,7 @@ export default function App() {
   const handleResendCode = async () => {
     setIsResendingCode(true);
     try {
-      const res = await fetch("/api/auth/resend-code", {
+      const res = await apiJson("/api/auth/resend-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2759,14 +2786,10 @@ export default function App() {
         }),
       });
 
-      const text = await res.text();
-      let data: any = null;
-      try { data = JSON.parse(text); } catch (e) {}
-
       if (res.ok) {
         showNotification('success', 'Telegram verification code resent! Please check your Telegram app.');
       } else {
-        showNotification('error', data?.error || `Failed to resend code: ${res.statusText}`);
+        showNotification('error', res.error || (res.data as any)?.error || `Failed to resend code: ${res.status}`);
       }
     } catch (err: any) {
       console.error("handleResendCode error:", err);
@@ -2779,20 +2802,12 @@ export default function App() {
   const handleSignIn = async () => {
     setAuthLoading(true);
     try {
-      const res = await fetch("/api/auth/signin", {
+      const res = await apiJson("/api/auth/signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, password }),
       });
       
-      const text = await res.text();
-      if (text.includes("Rate exceeded")) {
-        showNotification('error', 'Rate limit exceeded. Please try again later.');
-        return;
-      }
-      
-      const data = text ? JSON.parse(text) : null;
-
       if (res.ok) {
         showNotification('success', 'Connected!');
         fetchStats();
@@ -2800,7 +2815,7 @@ export default function App() {
         setCode("");
         setPassword("");
       } else {
-        showNotification('error', data?.error || `Sign in failed: ${res.statusText}`);
+        showNotification('error', res.error || (res.data as any)?.error || `Sign in failed: ${res.status}`);
       }
     } catch (err) {
       console.error(err);

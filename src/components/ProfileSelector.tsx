@@ -16,7 +16,9 @@ import {
   RefreshCw,
   Layers,
   Bot,
-  Pencil
+  Pencil,
+  Share2,
+  Copy
 } from 'lucide-react';
 
 export interface Profile {
@@ -63,6 +65,8 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editProfileName, setEditProfileName] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
   
   // Lock & PIN states
   const [pinMode, setPinMode] = useState<'set' | 'verify' | 'remove' | null>(null);
@@ -78,6 +82,22 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  const handleCopyShareLink = (p: Profile, e: React.MouseEvent) => {
+    e.stopPropagation();
+    let origin = window.location.origin;
+    // Automatically convert internal ais-dev URL to public ais-pre URL so external phones never get blocked by AI Studio cookies!
+    if (origin.includes('ais-dev-')) {
+      origin = origin.replace('ais-dev-', 'ais-pre-');
+    }
+    const shareUrl = `${origin}/?account=${encodeURIComponent(p.id)}`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        setCopiedId(p.id);
+        setTimeout(() => setCopiedId(null), 3500);
+      });
+    }
+  };
 
   const fetchProfiles = async () => {
     try {
@@ -100,11 +120,42 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
           setProfiles(loaded);
           localStorage.setItem('profiles', JSON.stringify(loaded));
 
-          const savedCurrent = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
-          const validCurrent = loaded.some(p => p.id === savedCurrent) ? savedCurrent : 'default';
+          // Check URL query param first (allows direct link sharing: ?account=acc_xxx or ?account=prakash)
+          const urlParams = new URLSearchParams(window.location.search);
+          const requestedAcc = (urlParams.get('account') || urlParams.get('profile') || urlParams.get('user') || '').trim();
+          let matchedFromUrl: Profile | undefined;
+          if (requestedAcc) {
+            matchedFromUrl = loaded.find(p => 
+              p.id.toLowerCase() === requestedAcc.toLowerCase() || 
+              p.name.toLowerCase() === requestedAcc.toLowerCase() ||
+              p.name.toLowerCase().includes(requestedAcc.toLowerCase())
+            );
+          }
+
+          const savedCurrent = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId');
+          let validCurrent = 'default';
+
+          if (matchedFromUrl) {
+            validCurrent = matchedFromUrl.id;
+          } else if (savedCurrent && loaded.some(p => p.id === savedCurrent)) {
+            validCurrent = savedCurrent;
+          } else {
+            // Fresh device! If multiple profiles exist and no account in localStorage, open modal so user can pick!
+            validCurrent = loaded[0].id;
+            if (loaded.length > 1 && !sessionStorage.getItem('account_modal_shown')) {
+              sessionStorage.setItem('account_modal_shown', 'true');
+              setIsOpen(true);
+            }
+          }
+
           setCurrentProfileId(validCurrent);
           localStorage.setItem('currentProfileId', validCurrent);
           localStorage.setItem('activeAccountId', validCurrent);
+
+          // If matched from URL and different from previously active or current, notify app
+          if (matchedFromUrl) {
+            window.dispatchEvent(new CustomEvent('account_changed', { detail: { accountId: matchedFromUrl.id, profile: matchedFromUrl } }));
+          }
           return;
         }
       }
@@ -771,6 +822,21 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
 
                           {!isEditingThis && (
                             <div className="flex items-center gap-1 px-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              {/* Direct Share Link Button for another phone */}
+                              <button
+                                type="button"
+                                id={`share-link-btn-${p.id}`}
+                                onClick={(e) => handleCopyShareLink(p, e)}
+                                className={`p-1.5 rounded-lg border transition-all ${
+                                  copiedId === p.id
+                                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 scale-105 shadow-sm'
+                                    : 'bg-white/5 border-white/5 text-slate-400 hover:text-emerald-300 hover:bg-emerald-500/10 hover:border-emerald-500/25 hover:scale-105'
+                                }`}
+                                title={`Copy direct link for ${p.name} (Dusre phone par kholne ke liye link copy karein)`}
+                              >
+                                {copiedId === p.id ? <Check size={12} className="text-emerald-400" /> : <Share2 size={12} />}
+                              </button>
+
                               {/* Toggle Lock / Passcode Lock Button */}
                               <button
                                 type="button"
@@ -814,6 +880,23 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Multi-Device / Phone Access Guide Box */}
+                <div className="mt-3 px-3 py-2.5 rounded-xl bg-gradient-to-r from-emerald-950/40 via-neutral-900/60 to-teal-950/40 border border-emerald-500/25 text-left space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-[11px]">
+                    <Smartphone size={14} className="shrink-0" />
+                    <span>Dusre Mobile me Data Show Kaise Karein:</span>
+                  </div>
+                  <p className="text-[10px] text-slate-300 leading-relaxed">
+                    Har phone ka browser alag session save karta hai. Agar dusra user apne phone me apna account dekhna chahta hai, to uske account ke samne wale <b className="text-emerald-300">🔗 Share</b> button par click karke direct link copy karein aur WhatsApp ya Telegram par bhejein.
+                  </p>
+                  {copiedId && (
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 py-1 px-2 rounded-lg border border-emerald-500/20 animate-pulse">
+                      <Check size={12} />
+                      <span>Direct link copy ho gaya! Ab dusre phone par paste karein.</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Add Account Section */}
@@ -933,19 +1016,25 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                             })
                           });
                           if (res.ok) {
-                            alert('Test notification dispatched! Check your device notification bar.');
+                            setPushStatusMessage('✅ Test notification dispatched! Check notification bar.');
                           } else {
-                            alert('Could not dispatch test. Ensure notification permissions are enabled in your browser/device settings.');
+                            setPushStatusMessage('⚠️ Enable notification permissions in browser settings.');
                           }
                         } catch (e) {
-                          alert('Error sending test notification.');
+                          setPushStatusMessage('❌ Error sending test notification.');
                         }
+                        setTimeout(() => setPushStatusMessage(null), 4000);
                       }}
                       className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold transition active:scale-95 text-[10px]"
                     >
                       Test Push 🔔
                     </button>
                   </div>
+                  {pushStatusMessage && (
+                    <div className="mt-1.5 text-[10px] text-center font-bold text-amber-300 bg-amber-500/10 py-1 px-2 rounded-lg border border-amber-500/20">
+                      {pushStatusMessage}
+                    </div>
+                  )}
                 </div>
               </>
             )}

@@ -63,10 +63,22 @@ export async function apiFetch(
     await acquireQueue();
     try {
       const token = localStorage.getItem('token');
-      const activeAccountId =
+      let activeAccountId =
         localStorage.getItem('currentProfileId') ||
-        localStorage.getItem('activeAccountId') ||
-        'default';
+        localStorage.getItem('activeAccountId');
+
+      if (!activeAccountId && typeof window !== 'undefined') {
+        try {
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlAcc = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+          if (urlAcc) {
+            activeAccountId = urlAcc.trim();
+            localStorage.setItem('currentProfileId', activeAccountId);
+            localStorage.setItem('activeAccountId', activeAccountId);
+          }
+        } catch (e) {}
+      }
+      activeAccountId = activeAccountId || 'default';
 
       const headers: Record<string, string> = {
         'X-Account-Id': activeAccountId,
@@ -122,7 +134,14 @@ export async function apiJson<T = any>(
 ): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
   // Check memory cache for GET requests
   const method = (options.method || 'GET').toUpperCase();
-  const cacheKey = `${url}_${localStorage.getItem('currentProfileId') || 'default'}`;
+  let activeProfileKey = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId');
+  if (!activeProfileKey && typeof window !== 'undefined') {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      activeProfileKey = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+    } catch (e) {}
+  }
+  const cacheKey = `${url}_${activeProfileKey || 'default'}`;
 
   if (method === 'GET' && !options.bypassCache) {
     const cached = responseCache.get(cacheKey);
