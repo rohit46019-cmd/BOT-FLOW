@@ -19,6 +19,8 @@
 
   body {
     @apply font-sans text-[13px] antialiased transition-colors duration-500;
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
   }
 }
 

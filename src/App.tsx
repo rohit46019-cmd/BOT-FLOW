@@ -258,7 +258,8 @@ const TabButton = ({
   return (
     <motion.button
       type="button"
-      whileTap={{ scale: 0.92 }}
+      whileTap={{ scale: 0.95 }}
+      whileHover={{ scale: 1.02 }}
       onClick={() => {
         const currentIndex = TABS.indexOf(activeTab);
         const newIndex = TABS.indexOf(id);
@@ -428,49 +429,16 @@ export default function App() {
     return 'default';
   });
 
-  useEffect(() => {
-    let deviceId = localStorage.getItem('botflow_device_id');
-    if (!deviceId) {
-      deviceId = 'dev_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
-      localStorage.setItem('botflow_device_id', deviceId);
-    }
-
-    const sendHeartbeat = async () => {
-      try {
-        const activeAcc = localStorage.getItem('currentProfileId') || 'default';
-        await fetch('/api/device/heartbeat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-account-id': activeAcc,
-            'x-device-id': deviceId!
-          },
-          body: JSON.stringify({
-            deviceId,
-            accountId: activeAcc
-          })
-        }).catch(() => {});
-      } catch (e) {}
-    };
-
-    sendHeartbeat();
-    const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-
-    const handleAccountChanged = (e: any) => {
-      const newId = e.detail?.accountId || 'default';
-      setCurrentProfileId(newId);
-      sendHeartbeat();
-      // Re-register push subscription for the switched account
-      subscribeToPush(true);
-    };
-    window.addEventListener('account_changed', handleAccountChanged);
-    return () => {
-      clearInterval(heartbeatInterval);
-      window.removeEventListener('account_changed', handleAccountChanged);
-    };
-  }, []);
+  const lastStatusUpdateTimeRef = useRef<number>(Date.now());
 
   const [stats, setStats] = useCachedState<Stats | null>("botflow_stats", null);
+
+  // Update last status update time whenever stats updates
+  useEffect(() => {
+    if (stats) {
+      lastStatusUpdateTimeRef.current = Date.now();
+    }
+  }, [stats]);
   const [targetGroupId, setTargetGroupId] = useCachedState("botflow_targetGroupId", "");
   const [telegramBotToken, setTelegramBotToken] = useCachedState("botflow_telegramBotToken", "");
   const [autoReplyInput, setAutoReplyInput] = useCachedState("botflow_autoReplyInput", "");
@@ -594,6 +562,7 @@ export default function App() {
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [isFirebaseModalOpen, setIsFirebaseModalOpen] = useState(false);
+  const [modalHistoryActive, setModalHistoryActive] = useState(false);
   const keywordsTopRef = useRef<HTMLDivElement>(null);
   const keywordsBottomRef = useRef<HTMLDivElement>(null);
   const castTopRef = useRef<HTMLDivElement>(null);
@@ -704,6 +673,40 @@ export default function App() {
       showNotification('error', 'Network error saving logo');
     }
   };
+
+  const isEditorOpen = isAddingNewRule || !!editingKeywordId;
+
+  // Mobile Back Navigation Handler: Sync isAddingNewRule/editingKeywordId with browser history
+  useEffect(() => {
+    if (isEditorOpen) {
+      if (!modalHistoryActive) {
+        window.history.pushState({ modal: 'rule-editor' }, '');
+        setModalHistoryActive(true);
+      }
+    } else {
+      if (modalHistoryActive) {
+        // Only pop if we're actually in the modal state (to prevent accidental double-back)
+        if (window.history.state?.modal === 'rule-editor') {
+          window.history.back();
+        }
+        setModalHistoryActive(false);
+      }
+    }
+  }, [isEditorOpen]);
+
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      if (modalHistoryActive && !event.state?.modal) {
+        // Physical back button pressed or swipe gesture
+        setIsAddingNewRule(false);
+        setEditingKeywordId(null);
+        setModalHistoryActive(false);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [modalHistoryActive]);
 
   // Automatically synchronize app icon to browser tab, home screen, and PWA manifest when changed in settings
   useEffect(() => {
@@ -1873,7 +1876,7 @@ export default function App() {
         showNotification('success', `Added rule "${suggestion.keyword}" successfully!`);
         fetchKeywords();
       } else {
-        const errData = await res.json();
+        const errData = res.data || { error: res.error };
         showNotification('error', errData.error || "Failed to add keyword");
       }
     } catch (err: any) {
@@ -2533,6 +2536,7 @@ export default function App() {
         match_mode: data.match_mode,
         message_links: data.message_links ? data.message_links.filter((l: string) => l.trim().length > 0) : [],
         max_replies: parseInt(data.max_replies.toString()) || 0,
+        cooldown_minutes: parseInt(data.cooldown_minutes?.toString() || "0") || 0,
         ai_reply_enabled: !!data.ai_reply_enabled,
         approval_mode: !!data.approval_mode,
         notify_on_hit: !!data.notify_on_hit,
@@ -3109,29 +3113,38 @@ export default function App() {
     }
   };
 
-  // Swift simultaneous sliding page transition animation
+  // Ultra-smooth simultaneous sliding page transition animation with spring dynamics
   const slideVariants = {
     initial: (dir: number) => ({
       x: (dir || 1) > 0 ? '100%' : '-100%',
       opacity: 0,
+      scale: 1,
       zIndex: 10,
     }),
     animate: {
       x: 0,
       opacity: 1,
+      scale: 1,
       zIndex: 10,
       transition: { 
-        duration: 0.35,
-        ease: [0.22, 1, 0.36, 1],
+        type: 'spring',
+        stiffness: 260,
+        damping: 32,
+        mass: 1,
+        restDelta: 0.001
       }
     },
     exit: (dir: number) => ({
-      x: (dir || 1) > 0 ? '-30%' : '30%',
+      x: (dir || 1) > 0 ? '-100%' : '100%',
       opacity: 0,
+      scale: 1,
       zIndex: 0,
       transition: { 
-        duration: 0.35,
-        ease: [0.22, 1, 0.36, 1],
+        type: 'spring',
+        stiffness: 260,
+        damping: 32,
+        mass: 1,
+        restDelta: 0.001
       }
     })
   };
@@ -3257,7 +3270,7 @@ export default function App() {
         darkMode 
           ? 'bg-[#1c3443]/80 text-white border-white/10 shadow-[0_10px_30px_rgba(0,0,0,0.35)]' 
           : 'bg-[#1c3443]/70 text-white border-[#1c3443]/15 shadow-[0_10px_30px_rgba(28,52,67,0.15)]'
-      } ${activeTab === 'logs' ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
+      } ${activeTab === 'logs' || isAddingNewRule || editingKeywordId ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
         
         {/* Oval glow effect */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-b-[24px]">
@@ -3592,8 +3605,8 @@ export default function App() {
       </motion.button>
 
       <main 
-        className={`mx-auto relative z-10 overflow-x-hidden ${
-          activeTab === 'logs' 
+        className={`mx-auto relative overflow-x-hidden will-change-transform ${
+          activeTab === 'logs' || isAddingNewRule || editingKeywordId
             ? 'max-w-none w-full p-0 pt-0 pb-0' 
             : 'max-w-md p-4 pt-24 pb-28'
         }`}
@@ -4780,7 +4793,7 @@ export default function App() {
         </main>
 
       {/* Floating Bottom Navigation Bar */}
-      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-sm sm:max-w-md z-50 transition-all duration-300">
+      <div className={`fixed bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-sm sm:max-w-md z-50 transition-all duration-300 ${isAddingNewRule || editingKeywordId ? 'opacity-0 pointer-events-none translate-y-20' : 'opacity-100 translate-y-0'}`}>
         <nav className={`rounded-full border p-1 sm:p-1.5 flex items-stretch justify-between gap-1 transition-all duration-300 shadow-2xl backdrop-blur-xl ${
           darkMode 
             ? 'bg-neutral-900/95 border-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.85)]' 

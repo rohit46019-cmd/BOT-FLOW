@@ -71,12 +71,12 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   onCancel, 
   darkMode 
 }) => {
-  const [isExpanded, setIsExpanded] = useState(true);
   const [newKeywords, setNewKeywords] = useState<string[]>([""]);
   const [newReply, setNewReply] = useState("");
   const [newMatchMode, setNewMatchMode] = useState<'exact' | 'partial'>('exact');
   const [newMessageLinks, setNewMessageLinks] = useState<string[]>([""]);
   const [newMaxReplies, setNewMaxReplies] = useState<number | string>(0);
+  const [newCooldownMinutes, setNewCooldownMinutes] = useState<number | string>(0);
   const [newAiReplyEnabled, setNewAiReplyEnabled] = useState(false);
   const [newApprovalMode, setNewApprovalMode] = useState(false);
   const [newNotifyOnHit, setNewNotifyOnHit] = useState(false);
@@ -139,7 +139,6 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
     prevEditingIdRef.current = currentId;
 
     if (editingKeyword) {
-      setIsExpanded(true);
       const kws = editingKeyword.keywords && editingKeyword.keywords.length > 0 
         ? [...editingKeyword.keywords] 
         : (editingKeyword.keyword ? [editingKeyword.keyword] : [""]);
@@ -150,6 +149,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
         : (editingKeyword.message_link ? [editingKeyword.message_link] : [""]);
       setNewMessageLinks(links);
       setNewMaxReplies(editingKeyword.max_replies !== undefined ? editingKeyword.max_replies : 0);
+      setNewCooldownMinutes(editingKeyword.cooldown_minutes !== undefined ? editingKeyword.cooldown_minutes : 0);
       setNewMatchMode(editingKeyword.match_mode || 'exact');
       setNewAiReplyEnabled(!!editingKeyword.ai_reply_enabled);
       setNewApprovalMode(!!editingKeyword.approval_mode);
@@ -160,6 +160,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewReply("");
       setNewMessageLinks([""]);
       setNewMaxReplies(0);
+      setNewCooldownMinutes(0);
       setNewMatchMode('exact');
       setNewAiReplyEnabled(false);
       setNewApprovalMode(false);
@@ -237,7 +238,8 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       reply: newReply,
       match_mode: newMatchMode,
       message_links: newMessageLinks,
-      max_replies: newMaxReplies,
+      max_replies: Number(newMaxReplies) || 0,
+      cooldown_minutes: Number(newCooldownMinutes) || 0,
       ai_reply_enabled: newAiReplyEnabled,
       approval_mode: newApprovalMode,
       notify_on_hit: newNotifyOnHit,
@@ -247,61 +249,13 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
 
   return (
     <div 
-      className={`p-3.5 rounded-xl border transition duration-300 ${
-        darkMode 
-          ? 'bg-neutral-900/90 border-blue-500/30 shadow-lg shadow-black/40' 
-          : 'bg-white border-blue-200 shadow-lg shadow-blue-500/5'
+      className={`p-3 sm:p-5 transition duration-300 w-full h-full ${
+        darkMode ? 'text-white' : 'text-slate-900'
       }`}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-white/5">
-        <div className="flex items-center gap-2">
-          <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
-            <Plus className="w-3.5 h-3.5" />
-          </div>
-          <div>
-            <h2 className={`text-xs font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-              {editingKeyword ? "Edit Auto-Reply Rule" : "Create New Rule"}
-            </h2>
-            <p className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              Configure keywords, actions, notifications & targets
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button 
-            type="button"
-            onClick={() => setIsExpanded(!isExpanded)}
-            className={`p-1 rounded-md text-[10px] font-bold transition flex items-center gap-1 ${
-              darkMode ? 'bg-white/5 text-slate-400 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          </button>
-          {editingKeyword && (
-            <button 
-              type="button"
-              onClick={onCancel} 
-              className={`p-1 rounded-md transition ${darkMode ? 'hover:bg-white/5 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
-              title="Cancel Edit"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {isExpanded && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-              {/* Left Column: Keywords & Message */}
-              <div className="space-y-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 xl:gap-8">
+        {/* Left Column: Keywords & Message */}
+        <div className="space-y-4">
                 {/* Keywords List */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
@@ -369,17 +323,17 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                   />
                 </div>
 
-                {/* Match Mode & Max Replies */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                {/* Match Mode, Max Replies & Cooldown */}
+                <div className="flex flex-wrap sm:flex-nowrap items-end gap-2 xl:gap-4">
+                  <div className="flex-1 min-w-[120px] space-y-1.5">
+                    <label className={`block text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                       Match Mode
                     </label>
-                    <div className={`p-0.5 rounded-lg flex ${darkMode ? 'bg-white/5 border border-white/5' : 'bg-slate-100'}`}>
+                    <div className={`p-0.5 rounded-lg flex h-9 items-stretch ${darkMode ? 'bg-white/5 border border-white/5' : 'bg-slate-100'}`}>
                       <button 
                         type="button"
                         onClick={() => setNewMatchMode('exact')}
-                        className={`flex-1 py-1 px-2 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
+                        className={`flex-1 px-1.5 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
                           newMatchMode === 'exact' 
                             ? (darkMode ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-blue-600 shadow-sm') 
                             : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
@@ -390,7 +344,7 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                       <button 
                         type="button"
                         onClick={() => setNewMatchMode('partial')}
-                        className={`flex-1 py-1 px-2 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
+                        className={`flex-1 px-1.5 rounded-md text-[10px] font-black uppercase tracking-tight transition ${
                           newMatchMode === 'partial' 
                             ? (darkMode ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-blue-600 shadow-sm') 
                             : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800')
@@ -401,9 +355,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                     </div>
                   </div>
 
-                  <div>
-                    <label className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                      Max Replies / Topic
+                  <div className="flex-1 min-w-[90px] space-y-1.5">
+                    <label className={`block text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Max Replies
                     </label>
                     <div className="relative">
                       <Hash size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
@@ -411,8 +365,27 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                         type="number"
                         value={newMaxReplies}
                         onChange={(e) => setNewMaxReplies(e.target.value)}
-                        placeholder="0 = Unlimited"
-                        className={`w-full pl-7 pr-2.5 py-1 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition ${
+                        placeholder="0=Unlimited"
+                        className={`w-full h-9 pl-7 pr-2 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-[90px] space-y-1.5">
+                    <label className={`block text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Cooldown (Min)
+                    </label>
+                    <div className="relative">
+                      <Zap size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-amber-500 pointer-events-none" />
+                      <input
+                        type="number"
+                        min="0"
+                        value={newCooldownMinutes}
+                        onChange={(e) => setNewCooldownMinutes(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0))}
+                        placeholder="0=Off"
+                        className={`w-full h-9 pl-7 pr-2 border rounded-lg focus:ring-1 focus:ring-blue-500 outline-none text-xs transition ${
                           darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'
                         }`}
                       />
@@ -659,30 +632,29 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
             </div>
 
             {/* Action Buttons */}
-            <div className="mt-3.5 pt-2.5 border-t border-white/5 flex gap-2">
-              <button 
+            <div className="mt-6 pt-4 border-t border-white/10 flex gap-3">
+              <motion.button 
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.95 }}
                 type="button"
                 onClick={handleSave}
-                className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-1.5 px-3 rounded-lg font-black uppercase tracking-wider text-[10px] shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-1.5"
+                className="flex-2 bg-blue-600 hover:bg-blue-500 text-white py-3 px-6 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg shadow-blue-500/30 transition flex items-center justify-center gap-2"
               >
-                <Zap size={12} />
+                <Zap size={14} />
                 <span>{editingKeyword ? "Update Rule" : "Save Rule"}</span>
-              </button>
-              {editingKeyword && (
-                <button 
-                  type="button"
-                  onClick={onCancel}
-                  className={`px-3 py-1.5 rounded-lg font-black uppercase tracking-wider text-[10px] transition ${
-                    darkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  Cancel
-                </button>
-              )}
+              </motion.button>
+              <motion.button 
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.95 }}
+                type="button"
+                onClick={onCancel}
+                className={`flex-1 px-4 py-3 rounded-xl font-black uppercase tracking-widest text-xs transition border ${
+                  darkMode ? 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/10' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                }`}
+              >
+                Cancel
+              </motion.button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };

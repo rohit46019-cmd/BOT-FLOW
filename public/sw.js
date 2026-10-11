@@ -68,6 +68,7 @@ self.addEventListener('push', (event) => {
     badge: '/pwa-192x192.png',
     vibrate: [200, 100, 200],
     tag: `botflow-${Date.now()}`,
+    silent: false,
     data: { url: baseUrl + '/' }
   };
 
@@ -80,6 +81,20 @@ self.addEventListener('push', (event) => {
       if (data.url) options.data = { url: data.url.startsWith('http') ? data.url : baseUrl + data.url };
       if (data.tag) options.tag = data.tag;
       if (data.data) options.data = { ...options.data, ...data.data };
+      
+      // High-performance options for instant visibility
+      options.requireInteraction = true; 
+      options.vibrate = data.vibrate || [500, 110, 500, 110, 450, 110, 200, 110, 170, 40, 500];
+      options.renotify = true;
+      options.priority = 'high';
+      options.urgency = 'high';
+      
+      // Stronger alerts for urgent items (like approvals or errors)
+      if (title.includes('Approval') || title.includes('⚠️') || title.includes('🛑')) {
+        options.requireInteraction = true; 
+        options.vibrate = [500, 110, 500, 110, 450, 110, 500, 110, 500, 110, 500]; // Extra long pattern
+      }
+      
     } catch (e) {
       console.warn('[Service Worker] Parsing push data as plain text');
       options.body = event.data.text() || options.body;

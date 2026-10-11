@@ -220,6 +220,28 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [showToken, setShowToken] = useState(false);
   const [botInfo, setBotInfo] = useState<{ id: number; firstName: string; username: string } | null>(null);
   const [isTestingWelcome, setIsTestingWelcome] = useState(false);
+  const [isTestingTopic, setIsTestingTopic] = useState(false);
+
+  const handleTestTopicRename = async () => {
+    setIsTestingTopic(true);
+    try {
+      const res = await fetch("/api/test-topic-rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topicIcon, topicRenameEmoji })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification('success', data.message || `Topic #${data.topicId} updated!`);
+      } else {
+        showNotification('error', data?.error || 'Failed to update topic');
+      }
+    } catch (err: any) {
+      showNotification('error', `Connection error: ${err.message}`);
+    } finally {
+      setIsTestingTopic(false);
+    }
+  };
 
   const handleTestWelcome = async () => {
     setIsTestingWelcome(true);
@@ -1145,6 +1167,23 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   />
                   <p className={`text-[8.5px] leading-tight ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Daily limit per user.</p>
                 </div>
+              </div>
+
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-white/5">
+                <button
+                  type="button"
+                  disabled={isTestingTopic}
+                  onClick={handleTestTopicRename}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition active:scale-95 shadow-xs ${
+                    darkMode ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30' : 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-200'
+                  } ${isTestingTopic ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  <Zap size={11} className={isTestingTopic ? 'animate-spin' : ''} />
+                  <span>{isTestingTopic ? 'Updating Topic...' : '⚡ Test Topic Icon & Emoji Rename'}</span>
+                </button>
+                <span className={`text-[8.5px] leading-tight ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  Live updates latest active topic with badge {topicIcon} & prefix "{topicRenameEmoji}"
+                </span>
               </div>
             </motion.div>
           )}

@@ -11,6 +11,7 @@ import { CustomFile } from "telegram/client/uploads.js";
 import { GoogleGenAI, Type } from "@google/genai";
 import path from "path";
 import fs from "fs";
+import http from "http";
 import { fileURLToPath } from "url";
 
 // Path resolution safe for both ESM (dev tsx) and bundled CommonJS (production)
@@ -478,14 +479,11 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
   }
   
   accountBot.on("polling_error", (error: any) => {
-    if (error.message && error.message.includes("409 Conflict")) return;
-    if (error.message && error.message.includes("401 Unauthorized")) {
-      console.error(`[Telegram Bot] 401 Unauthorized for account "${acc}". Stopping polling.`);
-      accountBot.stopPolling();
-      saveLog(`Telegram Bot Token is unauthorized (401) for account "${acc}". Please update it in settings.`, "error", "SYSTEM", undefined, undefined, acc);
+    const errStr = String(error?.message || error || "");
+    if (errStr.includes("409 Conflict") || errStr.includes("401") || errStr.includes("Unauthorized") || errStr.includes("ETELEGRAM: 401")) {
       return;
     }
-    console.error(`[Telegram Bot] Polling Error (${acc}):`, error.message || "Unknown error");
+    console.error(`[Telegram Bot] Polling Error (${acc}):`, errStr);
   });
 
   accountBot.on("message", async (msg) => {
@@ -614,7 +612,7 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
 
         const existing = await BlockedTopic.findOne({ telegram_topic_id: topicInfo.topicId, ...getAccountFilter(acc) });
         if (existing) {
-          const topicName = existing.name || topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
+          const topicName = existing.name || getTopicNameFromCache(topicInfo.topicId, acc) || `Topic #${topicInfo.topicId}`;
           await BlockedTopic.findByIdAndDelete(existing._id);
           removeBlockedTopicFromCache(topicInfo.topicId);
 
@@ -632,7 +630,7 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
             }
           });
         } else {
-          const topicName = topicNamesCache[topicInfo.topicId] || `Topic #${topicInfo.topicId}`;
+          const topicName = getTopicNameFromCache(topicInfo.topicId, acc) || `Topic #${topicInfo.topicId}`;
           await accountBot.sendMessage(chatId, `ℹ️ <b>Topic is not blocked</b>\n\n📌 <b>Topic:</b> ${escapeHtml(topicName)}\n🆔 <b>Topic ID:</b> <code>${topicInfo.topicId}</code> is already active.`, { parse_mode: 'HTML' });
         }
         return;
@@ -644,7 +642,7 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
         const topicId = topicInfo.topicId;
         const normalizedLink = topicInfo.normalizedLink;
 
-        let name = topicNamesCache[topicId] || "";
+        let name = getTopicNameFromCache(topicId, acc) || "";
         if (!name) {
           const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
           if (foundTopic && foundTopic.name) {
@@ -735,7 +733,7 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
         return;
       }
 
-      let name = topicNamesCache[topicId] || "";
+      let name = getTopicNameFromCache(topicId, acc) || "";
       if (!name) {
         const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) });
         if (foundTopic && foundTopic.name) name = foundTopic.name;
@@ -936,6 +934,7 @@ const KeywordSchema = new mongoose.Schema({
   message_link: { type: String }, // Legacy Telegram message link
   message_links: { type: [String], default: [] }, // Multiple Telegram message links
   max_replies: { type: Number, default: 2 }, // Max replies per topic per keyword rule
+  cooldown_minutes: { type: Number, default: 0 }, // Cooldown time in minutes between replies for the same keyword in the same topic
   match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
   ai_reply_enabled: { type: Boolean, default: false },
   approval_mode: { type: Boolean, default: false },
@@ -1253,8 +1252,19 @@ export function getAccountFilter(accountId: string = 'default') {
 
 let settingsCache: Record<string, Record<string, string | null>> = {};
 let blockedTopicsCache: Map<string, Set<number>> = new Map();
-let topicNamesCache: Record<number, string> = {};
+let topicNamesCache: Record<string, Record<string, string>> = {}; // Account-isolated topic names
 const processedTopicCreations = new Set<string>();
+
+export function getTopicNameFromCache(topicId: any, accountId: string = 'default'): string {
+  const acc = accountId || 'default';
+  return topicNamesCache[acc]?.[String(topicId)] || "";
+}
+
+export function setTopicNameInCache(topicId: any, name: string, accountId: string = 'default') {
+  const acc = accountId || 'default';
+  if (!topicNamesCache[acc]) topicNamesCache[acc] = {};
+  topicNamesCache[acc][String(topicId)] = name;
+}
 
 export function isTopicBlocked(topicId: number, accountId: string = 'default'): boolean {
   const acc = accountId || 'default';
@@ -1557,18 +1567,20 @@ export function incrementCachedPhotoReplyCount(chatId: string, topicId: any, acc
 }
 
 // Fast In-Memory Keyword Reply Count Cache
-const replyHistoryCache = new Map<string, { count: number; dateStr: string }>();
+const replyHistoryCache = new Map<string, { count: number; dateStr: string; lastHit?: number }>();
 
 function getReplyHistoryKey(topicId: any, chatId: string, keywordId: any, accountId: string): string {
   const normChat = (chatId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
-  const numTopic = Number(topicId) || 0;
-  return `${normChat}:${numTopic}:${String(keywordId)}:${accountId || 'default'}`;
+  const numTopic = (topicId === undefined || topicId === null || isNaN(Number(topicId))) ? 0 : Number(topicId);
+  const normTopic = (numTopic === 0 || numTopic === 1) ? 0 : numTopic;
+  return `${normChat}:${normTopic}:${String(keywordId)}:${accountId || 'default'}`;
 }
 
 const recentApprovalDeduplicationMap = new Map<string, number>();
 
-export function isDuplicateApprovalEvent(chatId: string, topicId: number | undefined, messageId: number, keyword: string): boolean {
-  const key = `${chatId}:${topicId || 0}:${messageId}:${keyword.toLowerCase()}`;
+export function isDuplicateApprovalEvent(chatId: string, topicId: number | undefined, messageId: number, keyword: string, accountId: string = 'default'): boolean {
+  const acc = accountId || 'default';
+  const key = `${acc}:${chatId}:${topicId || 0}:${messageId}:${keyword.toLowerCase()}`;
   const now = Date.now();
   for (const [k, time] of recentApprovalDeduplicationMap.entries()) {
     if (now - time > 120000) {
@@ -1621,10 +1633,12 @@ async function refreshSettingsCache(targetAccountId?: string) {
       blockedTopicsCache.get(acc)!.add(bt.telegram_topic_id);
     }
     
-    const topics = await Topic.find();
+    const topics = await Topic.find().lean();
     topicNamesCache = {};
     for (const t of topics) {
-      topicNamesCache[t.telegram_topic_id] = t.name || '';
+      const acc = t.account_id || 'default';
+      if (!topicNamesCache[acc]) topicNamesCache[acc] = {};
+      topicNamesCache[acc][String(t.telegram_topic_id)] = t.name || '';
     }
   } catch (err) {
     console.error("Failed to refresh settings cache:", err);
@@ -1635,32 +1649,47 @@ const getSetting = async (key: string, accountId: string = "default") => {
   const acc = accountId || "default";
   if (!settingsCache[acc]) settingsCache[acc] = {};
   if (settingsCache[acc].hasOwnProperty(key)) {
-    return settingsCache[acc][key] === null ? null : { value: settingsCache[acc][key] };
+    const val = settingsCache[acc][key];
+    return val === null ? null : { value: val };
   }
-  let setting = null;
-  if (acc === "default") {
-    setting = await Setting.findOne({ key, ...getAccountFilter('default') });
-  } else {
-    setting = await Setting.findOne({ key, account_id: acc });
-    const noFallbackKeys = new Set([
-      'telegram_bot_token',
-      'telegram_group_ids',
-      'target_group_id',
-      'telegram_admin_id',
-      'admin_chat_id',
-      'session_string',
-      'default_phone'
-    ]);
-    if (!setting && !noFallbackKeys.has(key)) {
-      setting = await Setting.findOne({ key, ...getAccountFilter('default') });
+  
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return null;
     }
+    
+    let setting = null;
+    const queryPromise = async () => {
+      if (acc === "default") {
+        return await Setting.findOne({ key, ...getAccountFilter('default') }).maxTimeMS(4000);
+      } else {
+        let s = await Setting.findOne({ key, account_id: acc }).maxTimeMS(4000);
+        const noFallbackKeys = new Set([
+          'telegram_bot_token', 'telegram_group_ids', 'target_group_id',
+          'telegram_admin_id', 'admin_chat_id', 'session_string', 'default_phone'
+        ]);
+        if (!s && !noFallbackKeys.has(key)) {
+          s = await Setting.findOne({ key, ...getAccountFilter('default') }).maxTimeMS(4000);
+        }
+        return s;
+      }
+    };
+
+    setting = await Promise.race([
+      queryPromise(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("DB_TIMEOUT")), 5000))
+    ]);
+
+    if (setting) {
+      settingsCache[acc][key] = setting.value;
+      return setting;
+    } else {
+      settingsCache[acc][key] = null;
+      return null;
+    }
+  } catch (err) {
+    return settingsCache[acc][key] ? { value: settingsCache[acc][key] } : null;
   }
-  if (setting) {
-    settingsCache[acc][key] = setting.value;
-  } else {
-    settingsCache[acc][key] = null;
-  }
-  return setting;
 };
 
 const setSetting = async (key: string, value: string, accountId: string = "default") => {
@@ -1668,19 +1697,32 @@ const setSetting = async (key: string, value: string, accountId: string = "defau
   if (!settingsCache[acc]) settingsCache[acc] = {};
   settingsCache[acc][key] = value;
   
-  if (acc === "default") {
-    return await Setting.findOneAndUpdate(
-      { key, ...getAccountFilter('default') },
-      { key, value, account_id: 'default' },
-      { upsert: true, new: true }
-    );
-  } else {
-    return await Setting.findOneAndUpdate(
-      { key, account_id: acc },
-      { key, value, account_id: acc },
-      { upsert: true, new: true }
-    );
+  try {
+    if (mongoose.connection.readyState === 1) {
+      const savePromise = async () => {
+        if (acc === "default") {
+          return await Setting.findOneAndUpdate(
+            { key, ...getAccountFilter('default') },
+            { key, value, account_id: 'default' },
+            { upsert: true, new: true }
+          ).maxTimeMS(4000);
+        } else {
+          return await Setting.findOneAndUpdate(
+            { key, account_id: acc },
+            { key, value, account_id: acc },
+            { upsert: true, new: true }
+          ).maxTimeMS(4000);
+        }
+      };
+      await Promise.race([
+        savePromise(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("DB_TIMEOUT")), 5000))
+      ]);
+    }
+  } catch (err) {
+    console.warn(`[Setting Cache Fallback] Saved "${key}" to memory cache (DB timeout/offline).`);
   }
+  return { key, value };
 };
 
 const deleteSetting = async (key: string, accountId: string = "default") => {
@@ -1688,11 +1730,16 @@ const deleteSetting = async (key: string, accountId: string = "default") => {
   if (settingsCache[acc]) {
     delete settingsCache[acc][key];
   }
-  if (acc === "default") {
-    return await Setting.deleteMany({ key, ...getAccountFilter('default') });
-  } else {
-    return await Setting.deleteMany({ key, account_id: acc });
-  }
+  try {
+    if (mongoose.connection.readyState === 1) {
+      if (acc === "default") {
+        await Setting.deleteMany({ key, ...getAccountFilter('default') }).maxTimeMS(4000);
+      } else {
+        await Setting.deleteMany({ key, account_id: acc }).maxTimeMS(4000);
+      }
+    }
+  } catch (err) {}
+  return { success: true };
 };
 
 const getTelegramDevice = async (accountId: string = "default") => {
@@ -1877,7 +1924,7 @@ const logTopic = async (topicId: number, name: string, chatIdOrDate?: string | D
       }
     }
 
-    topicNamesCache[topicId] = name;
+    setTopicNameInCache(topicId, name, accountId);
     await Topic.findOneAndUpdate(
       { telegram_topic_id: topicId, chat_id: finalChatId, ...getAccountFilter(accountId) },
       { 
@@ -2016,22 +2063,87 @@ const DEFAULT_TOPIC_ICONS: Record<string, bigint> = {
   "🤡": 5238234236955148254n,
   "🧠": 5237889595894414384n,
   "🦮": 5237999392438371490n,
-  "🐈": 5235912661102773458n
+  "🐈": 5235912661102773458n,
+  "🛑": 5379748062124056162n // Fallback red alert / stop badge
 };
 
-// Helper function for topic renaming
-const handleTopicRenaming = async (client: TelegramClient, message: any, topicId: number, topicIcon: string, topicRenameEmoji: string, renameKeywordsStr: string, renameMatchMode: string, bypassKeywordCheck: boolean = false) => {
-  if (!topicId) return "Unknown Topic";
+// Helper to resolve topic custom icon emoji document ID across variation selectors and formats
+export function resolveTopicIconEmojiId(iconStr?: string | null): bigint | undefined {
+  if (!iconStr) return undefined;
+  const raw = String(iconStr).trim();
+  if (!raw) return undefined;
+
+  // 1. Direct BigInt if already numeric ID
+  if (/^\d{10,}$/.test(raw)) {
+    try {
+      return BigInt(raw);
+    } catch {}
+  }
+
+  // 2. Direct lookup
+  if (DEFAULT_TOPIC_ICONS[raw]) return DEFAULT_TOPIC_ICONS[raw];
+
+  // 3. Strip variation selector \uFE0F
+  const stripped = raw.replace(/\uFE0F/g, "");
+  if (DEFAULT_TOPIC_ICONS[stripped]) return DEFAULT_TOPIC_ICONS[stripped];
+
+  // 4. Add variation selector \uFE0F
+  const withSelector = raw + "\uFE0F";
+  if (DEFAULT_TOPIC_ICONS[withSelector]) return DEFAULT_TOPIC_ICONS[withSelector];
+
+  // 5. Try Unicode NFC & NFD normalization
+  const nfc = raw.normalize("NFC");
+  if (DEFAULT_TOPIC_ICONS[nfc]) return DEFAULT_TOPIC_ICONS[nfc];
+  const nfd = raw.normalize("NFD");
+  if (DEFAULT_TOPIC_ICONS[nfd]) return DEFAULT_TOPIC_ICONS[nfd];
+
+  // 6. Look for matching key
+  for (const [key, id] of Object.entries(DEFAULT_TOPIC_ICONS)) {
+    if (key.replace(/\uFE0F/g, "") === stripped) {
+      return id;
+    }
+  }
+
+  return undefined;
+}
+
+// Helper function for topic renaming & icon updating
+export const handleTopicRenaming = async (
+  client: TelegramClient,
+  message: any,
+  topicId: number,
+  topicIcon: string,
+  topicRenameEmoji: string,
+  renameKeywordsStr: string = "",
+  renameMatchMode: string = "exact",
+  bypassKeywordCheck: boolean = false,
+  accountId: string = "default"
+) => {
+  if (!topicId || topicId === 1) return "Unknown Topic";
+
+  const acc = accountId || "default";
 
   // Fetch Topic Name
   let topicName = "Unknown Topic";
   
   // 1. Try Cache
-  if (topicNamesCache[topicId]) {
-    topicName = topicNamesCache[topicId];
-  } 
+  const nameFromCache = getTopicNameFromCache(topicId, acc);
+  if (nameFromCache && nameFromCache !== "Unknown Topic" && !nameFromCache.startsWith("Topic #")) {
+    topicName = nameFromCache;
+  }
+
+  // 2. Try DB
+  if (topicName === "Unknown Topic") {
+    try {
+      const dbTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) }).lean();
+      if (dbTopic && dbTopic.name) {
+        topicName = dbTopic.name;
+        setTopicNameInCache(topicId, topicName, acc);
+      }
+    } catch (e) {}
+  }
   
-  // 2. Try fetching the topic creation message
+  // 3. Try fetching the topic creation message
   if (topicName === "Unknown Topic") {
     try {
       const messages = await client.getMessages(message.peerId, { ids: [topicId] });
@@ -2039,22 +2151,22 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
         const topicMsg = messages[0];
         if (topicMsg.action && topicMsg.action instanceof Api.MessageActionTopicCreate) {
           topicName = topicMsg.action.title;
-          await logTopic(topicId, topicName, topicMsg.date ? new Date(topicMsg.date * 1000) : undefined);
+          await logTopic(topicId, topicName, topicMsg.date ? new Date(topicMsg.date * 1000) : undefined, undefined, acc);
         }
       }
-    } catch (e) {
-      console.error("Failed to fetch topic info from message", e);
+    } catch (e: any) {
+      console.warn("Failed to fetch topic info from message:", e.message);
     }
   }
 
-  // 3. Try fetching from Forum Topics list (most reliable for existing topics)
+  // 4. Try fetching from Forum Topics list (most reliable for existing topics)
   if (topicName === "Unknown Topic") {
     try {
-      console.log(`Fetching forum topics to find name for ${topicId}...`);
+      const inputChannel = await getCachedInputEntity(client, message.peerId, acc);
       const result = await client.invoke(
         new Api.channels.GetForumTopics({
-          channel: await getCachedInputEntity(client, message.peerId),
-          q: "", // Empty query
+          channel: inputChannel,
+          q: "",
           offsetDate: 0,
           offsetId: 0,
           offsetTopic: 0,
@@ -2062,34 +2174,27 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
         })
       );
       
-      if (result && result.topics) {
-        // Cache all topics found to avoid future lookups
-        for (const t of result.topics) {
+      if (result && (result as any).topics) {
+        for (const t of (result as any).topics) {
           if (t instanceof Api.ForumTopic && t.title) {
-            // Update DB with found topic
-            await logTopic(t.id, t.title);
-            
+            await logTopic(t.id, t.title, undefined, undefined, acc);
             if (t.id === topicId) {
               topicName = t.title;
-              console.log(`Found topic name via GetForumTopics: ${topicName}`);
             }
           }
         }
       }
-    } catch (e) {
-      console.error("Failed to fetch topic info from GetForumTopics", e);
+    } catch (e: any) {
+      console.warn("Failed to fetch topic info from GetForumTopics:", e.message);
     }
   }
 
-  // Rename Logic
+  // Rename & Icon Logic
   try {
-    let shouldRename = true;
-    
     // If keywords are set, check if message matches (UNLESS bypassed)
-    if (!bypassKeywordCheck && renameKeywordsStr.trim()) {
-      const keywords = renameKeywordsStr.split(",").map(k => k.trim()).filter(k => k);
+    if (!bypassKeywordCheck && renameKeywordsStr && renameKeywordsStr.trim()) {
+      const keywords = renameKeywordsStr.split(",").map(k => k.trim()).filter(Boolean);
       if (keywords.length > 0) {
-        // Check both message (caption) and text (if different)
         const text = (message.message || message.text || "").toLowerCase();
         let matchFound = false;
         
@@ -2101,7 +2206,6 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
               break;
             }
           } else {
-            // Exact match (word boundary)
             const regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}])${escapeRegExp(kwLower)}(?=$|[^\\p{L}\\p{N}])`, 'gui');
             if (regex.test(text)) {
               matchFound = true;
@@ -2111,75 +2215,69 @@ const handleTopicRenaming = async (client: TelegramClient, message: any, topicId
         }
         
         if (!matchFound) {
-          shouldRename = false;
-          console.log(`Topic rename skipped: Message "${text}" did not match keywords [${keywords.join(", ")}] with mode ${renameMatchMode}`);
+          console.log(`Topic rename skipped: Message "${text}" did not match keywords [${keywords.join(", ")}]`);
+          return topicName;
         }
       }
     }
 
-    if (topicName === "Unknown Topic") {
-       console.log(`Skipping rename for topic ${topicId}: Name is unknown`);
-       shouldRename = false;
-       topicName = `Topic ${topicId}`; // Use ID as fallback for return value
-    }
+    const editParams: any = {
+      channel: await getCachedInputEntity(client, message.peerId, acc),
+      topicId: topicId,
+    };
 
-    topicName = topicName.trim();
-    const prefix = `${topicRenameEmoji}${topicRenameEmoji}`;
+    let nameChanged = false;
+    let newTopicName = topicName;
+    const cleanRenameEmoji = (topicRenameEmoji || "").trim();
 
-    if (shouldRename) {
-      let newTopicName = topicName;
-      let nameChanged = false;
-      
-      if (!topicName.startsWith(prefix)) {
-        newTopicName = `${prefix} ${topicName}`;
+    if (cleanRenameEmoji && topicName !== "Unknown Topic") {
+      let baseTitle = topicName.trim();
+      // Check if title already starts with cleanRenameEmoji
+      if (!baseTitle.startsWith(cleanRenameEmoji)) {
+        // Strip common leading status emojis or previous rename prefixes: e.g. 🟢, 🔴, 🟡, 🛑, 👤, ✅
+        const strippedTitle = baseTitle.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\uFE0F\s]+/u, "").trim();
+        newTopicName = `${cleanRenameEmoji} ${strippedTitle || baseTitle}`.trim();
         if (newTopicName.length > 128) {
-            newTopicName = newTopicName.substring(0, 128);
+          newTopicName = newTopicName.substring(0, 128);
         }
-        nameChanged = true;
+        if (newTopicName !== topicName) {
+          editParams.title = newTopicName;
+          nameChanged = true;
+        }
       }
+    }
 
-      const editParams: any = {
-        channel: await getCachedInputEntity(client, message.peerId),
-        topicId: topicId,
-      };
+    // Resolve Topic Icon Emoji ID
+    let iconChanged = false;
+    const iconEmojiId = resolveTopicIconEmojiId(topicIcon);
+    if (iconEmojiId !== undefined) {
+      editParams.iconEmojiId = iconEmojiId;
+      iconChanged = true;
+    } else if (topicIcon) {
+      console.log(`DEBUG: Topic icon '${topicIcon}' not mapped to Telegram document ID`);
+    }
 
+    if (nameChanged || iconChanged) {
+      console.log(`[TOPIC UPDATE] Updating topic #${topicId}. Title changed: ${nameChanged} ("${editParams.title || 'unchanged'}"), Icon changed: ${iconChanged}`);
+      await client.invoke(new Api.channels.EditForumTopic(editParams));
+      
       if (nameChanged) {
-        editParams.title = newTopicName;
-      }
-
-      let iconChanged = false;
-      console.log(`DEBUG: topicIcon: '${topicIcon}', DEFAULT_TOPIC_ICONS[topicIcon]: ${DEFAULT_TOPIC_ICONS[topicIcon]}`);
-      if (DEFAULT_TOPIC_ICONS[topicIcon]) {
-        editParams.iconEmojiId = DEFAULT_TOPIC_ICONS[topicIcon];
-        iconChanged = true;
+        await logTopic(topicId, newTopicName, undefined, undefined, acc);
+        setTopicNameInCache(topicId, newTopicName, acc);
+        await saveLog(`Renamed topic #${topicId} to "${newTopicName}" (Icon: ${topicIcon || 'default'})`, 'info', 'USERBOT', undefined, { topicId, newTopicName, topicIcon }, acc);
       } else {
-        console.log(`DEBUG: Icon '${topicIcon}' not found in DEFAULT_TOPIC_ICONS`);
+        await saveLog(`Updated topic #${topicId} icon to "${topicIcon}"`, 'info', 'USERBOT', undefined, { topicId, topicIcon }, acc);
       }
-
-      if (nameChanged || iconChanged) {
-        console.log(`Updating topic ${topicId}. Name changed: ${nameChanged}, Icon changed: ${iconChanged}`);
-        await client.invoke(
-          new Api.channels.EditForumTopic(editParams)
-        );
-        
-        if (nameChanged) {
-          // Update DB
-          await logTopic(topicId, newTopicName);
-          await saveLog(`Renamed topic ${topicId} to "${newTopicName}"`, 'info', 'USERBOT');
-        } else {
-          await saveLog(`Updated topic icon for ${topicId}`, 'info', 'USERBOT');
-        }
-        return newTopicName;
-      } else {
-        console.log(`Topic ${topicId} already has prefix "${prefix}" and no icon to update. Skipping.`);
-      }
+      return newTopicName;
+    } else {
+      console.log(`Topic #${topicId} already has correct title prefix and icon. Skipping.`);
     }
   } catch (renameErr: any) {
     if (renameErr.message && (renameErr.message.includes('CHAT_NOT_MODIFIED') || renameErr.message.includes('NOT_MODIFIED'))) {
-      console.log(`Topic ${topicId} already has the correct name and icon. Skipping.`);
+      console.log(`Topic #${topicId} already has the correct title and icon.`);
     } else {
-      console.error("Failed to rename topic:", renameErr);
-      await saveLog(`Failed to rename topic ${topicId}: ${renameErr.message}`, 'error', 'USERBOT');
+      console.error(`Failed to update topic #${topicId}:`, renameErr.message);
+      await saveLog(`Failed to update topic #${topicId}: ${renameErr.message}`, 'error', 'USERBOT', undefined, { topicId, error: renameErr.message }, acc);
     }
   }
   
@@ -2200,6 +2298,14 @@ setInterval(() => {
     }
   });
 }, 15000);
+
+// Self-ping keep-alive timer to prevent cloud container idle sleep / scale-to-zero after inactivity
+setInterval(() => {
+  const port = process.env.PORT || 3000;
+  http.get(`http://127.0.0.1:${port}/api/health`, (res: any) => {
+    res.on('data', () => {});
+  }).on('error', () => {});
+}, 3 * 60 * 1000);
 let broadcastCancelled = false;
 let broadcastInProgress = false;
 let broadcastStatus = {
@@ -2377,18 +2483,24 @@ async function sendPushNotification(title: string, body: string, data: any = {},
       title: finalTitle, 
       body: finalBody, 
       url: data.url || '/',
-      tag: data.tag || 'botflow-alert',
+      tag: data.tag || `msg-${Date.now()}`,
       timestamp: Date.now(),
       badge: '/pwa-192x192.png',
       icon: '/pwa-192x192.png',
+      renotify: true,
+      requireInteraction: true, // Force interaction for all botflow alerts to ensure user sees them
+      silent: false,
+      vibrate: [500, 110, 500, 110, 450, 110, 200, 110, 170, 40, 450, 110, 200, 110, 170, 40, 500],
       data: {
         ...data,
-        targetAccountId: accId
+        targetAccountId: accId,
+        priority: 'high',
+        urgency: 'high'
       }
     });
     
     let sentCount = 0;
-    const promises = subscriptions.map(sub => {
+    const sendWithRetry = async (sub: any, attempt = 1): Promise<void> => {
       const subscription = {
         endpoint: sub.endpoint,
         keys: {
@@ -2396,32 +2508,37 @@ async function sendPushNotification(title: string, body: string, data: any = {},
           auth: sub.keys.auth
         }
       };
-      
-      return webpush.sendNotification(subscription, payload, {
-        TTL: 86400,
-        urgency: 'high'
-      }).then(() => {
+
+      try {
+        await webpush.sendNotification(subscription, payload, {
+          TTL: 86400,
+          urgency: 'high',
+          topic: data.tag || 'botflow-updates'
+        });
         sentCount++;
-        console.log(`[Push] Successfully sent push notification to device: ${sub.endpoint.substring(0, 30)}...`);
-      }).catch(async (err: any) => {
-        const isLegacyFcm = sub.endpoint.includes('fcm.googleapis.com/fcm/send/');
+        console.log(`[Push] Sent attempt ${attempt} successful: ${sub.endpoint.substring(0, 30)}...`);
+      } catch (err: any) {
         const status = err?.statusCode;
         const errMsg = err?.message || '';
-        if (isLegacyFcm || status === 404 || status === 410 || status === 400 || status === 401 || status === 403 || errMsg.includes('unexpected response code')) {
-          // Obsolete or invalid subscription endpoint
-          try {
-            await PushSubscription.deleteOne({ endpoint: sub.endpoint });
-            await DeviceSession.updateOne({ endpoint: sub.endpoint }, { has_push: false });
-            console.log(`Purged obsolete/invalid push subscription: ${sub.endpoint}`);
-          } catch (delErr) {
-            console.error("Error deleting expired subscription:", delErr);
-          }
+        const isPermanentError = status === 404 || status === 410 || status === 400 || status === 401 || status === 403;
+        
+        if (isPermanentError) {
+          console.log(`[Push] Permanent failure (${status}). Purging subscription: ${sub.endpoint.substring(0, 30)}...`);
+          await PushSubscription.deleteOne({ endpoint: sub.endpoint }).catch(() => {});
+          await DeviceSession.updateOne({ endpoint: sub.endpoint }, { has_push: false }).catch(() => {});
+        } else if (attempt < 3) {
+          // Retry transient errors (network timeouts, 5xx, etc)
+          const delay = attempt * 1000;
+          console.warn(`[Push] Transient error (${status || 'Network'}). Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+          return sendWithRetry(sub, attempt + 1);
         } else {
-          console.error(`Error sending push notification to ${sub.endpoint}:`, err ? err.message : err);
+          console.error(`[Push] Failed after ${attempt} attempts:`, errMsg);
         }
-      });
-    });
-    
+      }
+    };
+
+    const promises = subscriptions.map(sub => sendWithRetry(sub));
     await Promise.all(promises);
     if (sentCount > 0) {
       saveLog(`Web Push: Dispatched "${title}" to ${sentCount} device(s) [${summaryIpList}]`, "info", "Push", undefined, undefined, accId).catch(() => {});
@@ -2528,6 +2645,10 @@ export async function sendPhotoReceivedNotification(params: {
         if (!targetChat) continue;
         await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
           .catch(async (e) => {
+            if (String(e.message).includes("401") || String(e.message).includes("Unauthorized")) {
+              console.warn(`[NOTIFY] Telegram Bot token is invalid or unauthorized (401). Please update your Telegram Bot Token in Settings.`);
+              return;
+            }
             console.warn(`[NOTIFY] HTML Bot photo send failed to ${targetChat}, sending plain:`, e.message);
             const plainText = `📸 New Photo Received!\nGroup: ${chatTitle}\nTopic: ${topicName}`;
             await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
@@ -2625,6 +2746,10 @@ export async function sendKeywordHitNotification(params: {
         if (!targetChat) continue;
         await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
           .catch(async (e) => {
+            if (String(e.message).includes("401") || String(e.message).includes("Unauthorized")) {
+              console.warn(`[NOTIFY] Telegram Bot token is invalid or unauthorized (401). Please update your Telegram Bot Token in Settings.`);
+              return;
+            }
             console.warn(`[NOTIFY] HTML Bot keyword send failed to ${targetChat}, sending plain:`, e.message);
             const plainText = `🎯 Keyword Hit Alert!\nKeyword: ${matchedWord}\nTopic: ${topicName}\nGroup: ${chatTitle}\nMessage: ${userMessage || ''}`;
             await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
@@ -2670,16 +2795,22 @@ export async function getKeywordReplyCount(
       }
     }
 
-    const numTopicId = Number(topicId);
-    const topicFilter = (!numTopicId || isNaN(numTopicId)) ? { $in: [0, 1, null, undefined] } : numTopicId;
+    const numTopicId = (topicId === undefined || topicId === null || isNaN(Number(topicId))) ? 0 : Number(topicId);
+    const topicFilter = (numTopicId === 0 || numTopicId === 1) ? { $in: [0, 1] } : numTopicId;
     
     const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
     const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
 
+    // Force keyword_id to ObjectId if it's a valid string
+    let finalKeywordId = keywordId;
+    if (typeof keywordId === 'string' && mongoose.Types.ObjectId.isValid(keywordId)) {
+      finalKeywordId = new mongoose.Types.ObjectId(keywordId);
+    }
+
     const history = await ReplyHistory.findOne({
       topic_id: topicFilter,
       chat_id: chatFilter,
-      keyword_id: keywordId,
+      keyword_id: finalKeywordId,
       ...getAccountFilter(accountId)
     });
 
@@ -2693,10 +2824,10 @@ export async function getKeywordReplyCount(
 
     if (lastUpdatedIST === todayIST || !autoResetEnabled) {
       const count = history.count || 0;
-      replyHistoryCache.set(key, { count, dateStr: todayIST });
+      replyHistoryCache.set(key, { count, dateStr: todayIST, lastHit: lastUpdated.getTime() });
       return count;
     } else {
-      replyHistoryCache.set(key, { count: 0, dateStr: todayIST });
+      replyHistoryCache.set(key, { count: 0, dateStr: todayIST, lastHit: lastUpdated.getTime() });
       return 0; // New day, count resets to 0
     }
   } catch (err: any) {
@@ -2705,27 +2836,144 @@ export async function getKeywordReplyCount(
   }
 }
 
+export async function isKeywordInCooldown(
+  topicId: number | string | undefined | null,
+  chatId: string,
+  keyword: any,
+  accountId: string = "default"
+): Promise<boolean> {
+  const cooldownMin = Number(keyword.cooldown_minutes || 0);
+  if (cooldownMin <= 0) return false;
+
+  const numTopicId = (topicId === undefined || topicId === null || isNaN(Number(topicId))) ? 0 : Number(topicId);
+  const saveTopicId = (numTopicId === 0 || numTopicId === 1) ? 0 : numTopicId;
+
+  // 1. Check in-memory fast cache first
+  const key = getReplyHistoryKey(saveTopicId, chatId, keyword._id, accountId);
+  const cached = replyHistoryCache.get(key);
+  if (cached && cached.lastHit) {
+    const diffMs = Date.now() - cached.lastHit;
+    const diffMin = diffMs / (1000 * 60);
+    if (diffMin < cooldownMin) {
+      return true;
+    }
+  }
+
+  // 2. Check MongoDB for persistent cooldown tracking across server restarts
+  try {
+    const topicFilter = saveTopicId === 0 ? { $in: [0, 1, null] } : saveTopicId;
+    const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
+    const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
+
+    let finalKeywordId = keyword._id;
+    if (typeof keyword._id === 'string' && mongoose.Types.ObjectId.isValid(keyword._id)) {
+      finalKeywordId = new mongoose.Types.ObjectId(keyword._id);
+    }
+
+    const history = await ReplyHistory.findOne({
+      topic_id: topicFilter,
+      chat_id: chatFilter,
+      keyword_id: { $in: [finalKeywordId, String(keyword._id)] },
+      ...getAccountFilter(accountId)
+    }).lean();
+
+    if (history && history.last_updated) {
+      const lastHit = new Date(history.last_updated).getTime();
+      const diffMs = Date.now() - lastHit;
+      const diffMin = diffMs / (1000 * 60);
+      
+      const todayIST = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+      replyHistoryCache.set(key, { 
+        count: (cached && cached.count) || (history as any).count || 0, 
+        dateStr: (cached && cached.dateStr) || todayIST,
+        lastHit 
+      });
+
+      if (diffMin < cooldownMin) {
+        return true;
+      }
+    }
+  } catch (err: any) {
+    console.error("Error checking keyword cooldown:", err.message);
+  }
+  return false;
+}
+
+// Helper to update last hit time for keyword cooldown tracking without necessarily incrementing count
+export async function updateKeywordLastHit(
+  topicId: number | string | undefined | null,
+  chatId: string,
+  keywordId: any,
+  accountId: string = "default"
+): Promise<void> {
+  try {
+    const numTopicId = (topicId === undefined || topicId === null || isNaN(Number(topicId))) ? 0 : Number(topicId);
+    const saveTopicId = (numTopicId === 0 || numTopicId === 1) ? 0 : numTopicId;
+    const now = Date.now();
+    const today = new Date(now);
+    const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
+
+    const key = getReplyHistoryKey(saveTopicId, chatId, keywordId, accountId);
+    const cached = replyHistoryCache.get(key);
+    if (cached) {
+      cached.lastHit = now;
+      if (cached.dateStr !== todayIST) {
+        cached.dateStr = todayIST;
+        cached.count = 0;
+      }
+    } else {
+      replyHistoryCache.set(key, { count: 0, dateStr: todayIST, lastHit: now });
+    }
+
+    const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
+    const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
+
+    let finalKeywordId = keywordId;
+    if (typeof keywordId === 'string' && mongoose.Types.ObjectId.isValid(keywordId)) {
+      finalKeywordId = new mongoose.Types.ObjectId(keywordId);
+    }
+
+    ReplyHistory.findOneAndUpdate(
+      {
+        topic_id: saveTopicId,
+        chat_id: chatFilter,
+        keyword_id: finalKeywordId,
+        ...getAccountFilter(accountId)
+      },
+      { 
+        $set: { last_updated: today, chat_id: chatId },
+        $setOnInsert: { count: 0, account_id: accountId || 'default' }
+      },
+      { upsert: true }
+    ).catch(e => console.warn("ReplyHistory updateKeywordLastHit DB warning:", e?.message || e));
+  } catch (err: any) {
+    console.error("Error updating keyword last hit:", err.message);
+  }
+}
+
 // Helper to increment keyword reply count per topic per rule (Instant In-Memory Update)
 export async function incrementKeywordReplyCount(
-  topicId: number | string,
+  topicId: number | string | undefined | null,
   chatId: string,
   keywordId: any,
   accountId: string = "default",
   autoResetEnabled: boolean = true
 ): Promise<void> {
   try {
-    const numTopicId = Number(topicId);
-    if (!numTopicId || isNaN(numTopicId)) return;
-
-    const key = getReplyHistoryKey(topicId, chatId, keywordId, accountId);
-    const today = new Date();
+    const numTopicId = (topicId === undefined || topicId === null || isNaN(Number(topicId))) ? 0 : Number(topicId);
+    const saveTopicId = (numTopicId === 0 || numTopicId === 1) ? 0 : numTopicId;
+    
+    const key = getReplyHistoryKey(saveTopicId, chatId, keywordId, accountId);
+    const now = Date.now();
+    const today = new Date(now);
     const todayIST = today.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
 
     let cached = replyHistoryCache.get(key);
     if (!cached || (cached.dateStr !== todayIST && autoResetEnabled)) {
-      cached = { count: 1, dateStr: todayIST };
+      cached = { count: 1, dateStr: todayIST, lastHit: now };
     } else {
       cached.count += 1;
+      cached.lastHit = now;
     }
     replyHistoryCache.set(key, cached);
 
@@ -2733,32 +2981,35 @@ export async function incrementKeywordReplyCount(
     const normChat = chatId ? chatId.toString().replace(/^-100|^ -100|^-/, "").trim() : "";
     const chatFilter = normChat ? { $in: [chatId, normChat, `-100${normChat}`] } : chatId;
 
+    let finalKeywordId = keywordId;
+    if (typeof keywordId === 'string' && mongoose.Types.ObjectId.isValid(keywordId)) {
+      finalKeywordId = new mongoose.Types.ObjectId(keywordId);
+    }
+
     ReplyHistory.findOne({
-      topic_id: numTopicId,
+      topic_id: saveTopicId,
       chat_id: chatFilter,
-      keyword_id: keywordId,
+      keyword_id: finalKeywordId,
       ...getAccountFilter(accountId)
-    }).then(async (history) => {
-      if (!history) {
+    }).then(async (doc) => {
+      if (!doc) {
         await ReplyHistory.create({
-          topic_id: numTopicId,
-          chat_id: chatId || "",
-          keyword_id: keywordId,
+          topic_id: saveTopicId,
+          chat_id: chatId,
+          keyword_id: finalKeywordId,
+          account_id: accountId || 'default',
           count: 1,
-          last_updated: today,
-          account_id: accountId || 'default'
+          last_updated: today
         }).catch(() => {});
       } else {
-        const lastUpdated = new Date(history.last_updated);
-        const lastUpdatedIST = lastUpdated.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-        if (lastUpdatedIST === todayIST || !autoResetEnabled) {
-          history.count = (history.count || 0) + 1;
+        const lastDate = doc.last_updated ? new Date(doc.last_updated).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }) : "";
+        if (autoResetEnabled && lastDate !== todayIST) {
+          doc.count = 1;
         } else {
-          history.count = 1;
+          doc.count = (doc.count || 0) + 1;
         }
-        history.last_updated = today;
-        history.chat_id = chatId || history.chat_id;
-        await history.save().catch(() => {});
+        doc.last_updated = today;
+        await doc.save().catch(() => {});
       }
     }).catch(err => {
       console.warn("Background ReplyHistory update error:", err?.message || err);
@@ -3080,6 +3331,19 @@ async function startServer() {
   app.post("/api/devices/ping", handleDevicePing);
   app.post("/api/device/heartbeat", handleDevicePing);
 
+  // Keep-alive endpoint for frontend auto-ping mechanism
+  app.post("/api/keep-alive", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      console.log(`[Keep-Alive] Received forced keep-alive ping from frontend for account "${accountId}". Reconnecting/verifying userbot...`);
+      await verifyAndConnectAccount(accountId, true);
+      res.json({ success: true, message: "Keep-alive command executed, userbot session refreshed." });
+    } catch (err: any) {
+      console.error("[Keep-Alive Error]:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Get all registered / active devices with IP, login state and push readiness
   app.get("/api/devices", async (req, res) => {
     try {
@@ -3261,6 +3525,9 @@ async function startServer() {
     // Asynchronously connect to MongoDB and initialize background services
     mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      connectTimeoutMS: 10000,
+      waitQueueTimeoutMS: 5000,
     })
       .then(async () => {
         console.log("Connected to MongoDB");
@@ -3314,6 +3581,9 @@ async function startServer() {
       const currentTargetGroupId = getCachedSetting("telegram_group_ids", accountId) || targetGroupId || "";
       const registered = parseRegisteredGroups(undefined, accountId);
       const allowedGroupIds = registered.map(r => r.normalizedId);
+      const allowedFullIds = registered.map(r => r.id);
+      const allowedTitles = registered.map(r => r.title.toLowerCase().trim()).filter(Boolean);
+
       if (currentTargetGroupId && currentTargetGroupId.trim()) {
         const normTarget = currentTargetGroupId.toString().trim().replace(/^-100|^ -100|^-/, "");
         if (normTarget && !allowedGroupIds.includes(normTarget)) {
@@ -3321,7 +3591,16 @@ async function startServer() {
         }
       }
       const normalizedChatId = chatId.toString().trim().replace(/^-100|^ -100|^-/, "");
-      if (allowedGroupIds.length > 0 && !allowedGroupIds.includes(normalizedChatId)) {
+      const chatTitle = ((message.chat && (message.chat as any).title) || "").toLowerCase().trim();
+
+      const isGroupAllowed = 
+        registered.length === 0 || 
+        allowedGroupIds.includes(normalizedChatId) ||
+        allowedFullIds.includes(chatId) ||
+        allowedGroupIds.includes(chatId) ||
+        (chatTitle && allowedTitles.some(t => chatTitle.includes(t) || t.includes(chatTitle)));
+
+      if (registered.length > 0 && !isGroupAllowed) {
         console.log(`[New Topic] Ignored topic in group ${chatId} (not in allowed list).`);
         return;
       }
@@ -3345,7 +3624,7 @@ async function startServer() {
       console.log(`🌟 [NEW TOPIC DETECTED] "${topicName}" (ID: #${topicId}) created in group ${chatId} for account ${accountId}`);
 
       // 1. Cache topic name & persist in DB
-      topicNamesCache[topicId] = topicName;
+      setTopicNameInCache(topicId, topicName, accountId);
       await logTopic(topicId, topicName, chatId, undefined, accountId);
 
       // 2. Real-time SSE event for dashboard
@@ -3639,6 +3918,9 @@ async function startServer() {
           const currentTargetGroupId = getCachedSetting("telegram_group_ids", accountId) || targetGroupId || "";
           const registered = parseRegisteredGroups(undefined, accountId);
           const allowedGroupIds = registered.map(r => r.normalizedId);
+          const allowedFullIds = registered.map(r => r.id);
+          const allowedTitles = registered.map(r => r.title.toLowerCase().trim()).filter(Boolean);
+
           if (currentTargetGroupId && currentTargetGroupId.trim()) {
             const normTarget = currentTargetGroupId.toString().trim().replace(/^-100|^ -100|^-/, "");
             if (normTarget && !allowedGroupIds.includes(normTarget)) {
@@ -3646,10 +3928,18 @@ async function startServer() {
             }
           }
           const normalizedChatId = chatId.toString().trim().replace(/^-100|^ -100|^-/, "");
-          
-          if (allowedGroupIds.length > 0 && !allowedGroupIds.includes(normalizedChatId)) {
+          const chatTitle = ((message.chat && (message.chat as any).title) || "").toLowerCase().trim();
+
+          const isGroupAllowed = 
+            registered.length === 0 || 
+            allowedGroupIds.includes(normalizedChatId) ||
+            allowedFullIds.includes(chatId) ||
+            allowedGroupIds.includes(chatId) ||
+            (chatTitle && allowedTitles.some(t => chatTitle.includes(t) || t.includes(chatTitle)));
+
+          if (registered.length > 0 && !isGroupAllowed) {
             if (rawText.length > 1) {
-              console.log(`[UserBot] Ignored message from unauthorized group/chat ${chatId} (Allowed: ${allowedGroupIds.join(", ")})`);
+              console.log(`[UserBot] Ignored message from unauthorized group/chat ${chatId} (Title: "${chatTitle}", Allowed IDs: ${allowedGroupIds.join(", ")})`);
             }
             return;
           }
@@ -3774,7 +4064,7 @@ async function startServer() {
         if (shouldBlock) {
           console.log(`Auto-blocking topic ${topicId} due to keyword match: "${matchedKeyword}" for account ${accountId}`);
           
-          const name = topicNamesCache[topicId] || "Unknown Topic";
+          const name = getTopicNameFromCache(topicId, accountId) || "Unknown Topic";
           const link = `https://t.me/c/${targetGroupId.replace("-100", "")}/${topicId}`;
 
           await BlockedTopic.findOneAndUpdate(
@@ -3914,8 +4204,8 @@ async function startServer() {
               // 3. Run background logging, notifications, and topic renaming asynchronously (non-blocking)
               setImmediate(async () => {
                 try {
-                  const topicName = topicNamesCache[topicId] || (topicId ? `Topic #${topicId}` : "General");
-                  const chatTitle = (message.chat && (message.chat as any).title) || topicNamesCache[chatId] || topicNamesCache[targetGroupId] || "Telegram Group";
+                  const topicName = getTopicNameFromCache(topicId, accountId) || (topicId ? `Topic #${topicId}` : "General");
+                  const chatTitle = (message.chat && (message.chat as any).title) || getTopicNameFromCache(chatId, accountId) || getTopicNameFromCache(targetGroupId, accountId) || "Telegram Group";
                   const cleanGroupId = (chatId || targetGroupId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
                   const link = topicId ? `https://t.me/c/${cleanGroupId}/${topicId}` : `https://t.me/c/${cleanGroupId}`;
 
@@ -3974,7 +4264,7 @@ async function startServer() {
                   const topicRenameEmoji = getCachedSetting("topic_rename_emoji", accountId) || "🛑";
                   const renameKeywordsStr = getCachedSetting("topic_rename_keywords", accountId) || "";
                   const renameMatchMode = getCachedSetting("topic_rename_match_mode", accountId) || "exact";
-                  handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true).catch(renErr => {
+                  handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true, accountId).catch(renErr => {
                     console.warn("Topic renaming non-fatal warning in background photo handler:", renErr);
                   });
                 } catch (bgErr: any) {
@@ -4003,6 +4293,17 @@ async function startServer() {
           console.log(`[UserBot] No keywords configured for account "${accountId}".`);
         } else {
           console.log(`[UserBot] Checking ${accountKeywords.length} keywords for message: "${text}" from ${chatId} in account ${accountId}`);
+        }
+        
+        // Check topic renaming keywords on incoming text messages if configured
+        const topicRenameKeywordsStr = getCachedSetting("topic_rename_keywords", accountId) || "";
+        if (topicRenameKeywordsStr.trim() && topicId && topicId !== 1) {
+          const tIcon = getCachedSetting("topic_icon", accountId) || "✅";
+          const tEmoji = getCachedSetting("topic_rename_emoji", accountId) || "🛑";
+          const tMatchMode = getCachedSetting("topic_rename_match_mode", accountId) || "exact";
+          handleTopicRenaming(client, message, topicId, tIcon, tEmoji, topicRenameKeywordsStr, tMatchMode, false, accountId).catch(err => {
+            console.warn("Topic renaming non-fatal warning on text message:", err);
+          });
         }
         
         for (const kw of accountKeywords) {
@@ -4075,8 +4376,8 @@ async function startServer() {
           const keywordDelaySeconds = parseInt(getCachedSetting("keyword_delay_seconds", accountId) || "0", 10);
           
           const matchedWordsList = matches.map(m => m.matchedWord).join(", ");
-          let topicName = topicNamesCache[topicId] || (topicId ? `Topic #${topicId}` : "General");
-          let chatTitle = (message.chat && (message.chat as any).title) || topicNamesCache[chatId] || topicNamesCache[targetGroupId] || "Telegram Group";
+          let topicName = getTopicNameFromCache(topicId, accountId) || (topicId ? `Topic #${topicId}` : "General");
+          let chatTitle = (message.chat && (message.chat as any).title) || getTopicNameFromCache(chatId, accountId) || getTopicNameFromCache(targetGroupId, accountId) || "Telegram Group";
 
           // Log in background non-blocking
           saveLog(`Keyword(s) detected: "${matchedWordsList}" in ${chatTitle} > ${topicName}`, 'info', 'USERBOT', undefined, { 
@@ -4095,14 +4396,21 @@ async function startServer() {
           }
 
           const processedRuleIds = new Set<string>();
+          const processedMatchedWords = new Set<string>();
 
           for (const match of matches) {
             const kw = match.kw;
+            const normWord = (match.matchedWord || "").toLowerCase().trim();
             
             if (processedRuleIds.has(kw._id.toString())) {
               continue;
             }
+            if (processedMatchedWords.has(normWord)) {
+              console.log(`[DEDUP] Already handled keyword word "${normWord}" by higher priority rule. Skipping rule ${kw._id}.`);
+              continue;
+            }
             processedRuleIds.add(kw._id.toString());
+            processedMatchedWords.add(normWord);
             
             const linksToProcess = [...(kw.message_links || [])];
             if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
@@ -4133,12 +4441,19 @@ async function startServer() {
                 }
               }
 
+              // Check cooldown limit
+              if (await isKeywordInCooldown(topicId, chatId, kw, accountId)) {
+                const skipMsg = `Keyword "${match.matchedWord}" is in cooldown (${kw.cooldown_minutes} min) in topic ${topicId || 'General'}. Skipping reply.`;
+                console.log(`[COOLDOWN] ${skipMsg}`);
+                continue;
+              }
+
               const isGlobalApproval = getCachedSetting("global_approval_mode", accountId) === "true";
               const requiresApproval = isGlobalApproval || !!kw.approval_mode;
 
               if (requiresApproval) {
                 // 1. Fast in-memory deduplication check across accounts & loops
-                if (isDuplicateApprovalEvent(chatId, topicId, message.id, match.matchedWord)) {
+                if (isDuplicateApprovalEvent(chatId, topicId, message.id, match.matchedWord, accountId)) {
                   console.log(`[Approval Dedup] Skipping duplicate approval event in memory for msgId=${message.id}, kw="${match.matchedWord}"`);
                   continue;
                 }
@@ -4155,6 +4470,9 @@ async function startServer() {
                   console.log(`[Approval Dedup] Skipping duplicate approval in DB for msgId=${message.id}, kw="${match.matchedWord}"`);
                   continue;
                 }
+
+                // Update last hit time for cooldown tracking
+                await updateKeywordLastHit(topicId, chatId, kw._id, accountId);
 
                 const approval = await PendingApproval.create({
                   matched_keyword: match.matchedWord,
@@ -4345,6 +4663,11 @@ async function startServer() {
                 }
               }
 
+              // Update last hit time & reply count immediately for real-time cooldown enforcement
+              const effectiveTopicId = (topicId === undefined || topicId === null || isNaN(Number(topicId)) || Number(topicId) === 1) ? 0 : Number(topicId);
+              await updateKeywordLastHit(effectiveTopicId, chatId, kw._id, accountId);
+              await incrementKeywordReplyCount(effectiveTopicId, chatId, kw._id, accountId, autoResetEnabled);
+
               // Instant Enqueued Dispatch: Send Text or Photo with topic-aware topMsgId and fallback
               const targetTopMsgId = replyInGeneral ? undefined : (topicId && topicId !== 1 ? topicId : undefined);
               const targetReplyTo = replyInGeneral ? undefined : (replyTo || message.id);
@@ -4499,10 +4822,8 @@ async function startServer() {
               
               saveLog(`Auto-reply sent for keyword "${match.matchedWord}" in ${chatTitle} > ${topicName}`, 'info', 'USERBOT', undefined, { topicId, chatId, ruleId: kw._id }, accountId).catch(() => {});
 
-              // Update Reply History for this keyword in topic
-              if (topicId) {
-                incrementKeywordReplyCount(topicId, chatId, kw._id, accountId, autoResetEnabled).catch(() => {});
-              }
+              // Ensure Reply History is refreshed for this keyword in topic / chat
+              incrementKeywordReplyCount(effectiveTopicId, chatId, kw._id, accountId, autoResetEnabled).catch(() => {});
             } catch (err: any) {
               console.error(`UserBot failed to reply to keyword "${kw.keyword}":`, err);
               saveLog(`Failed to reply to keyword ${kw.keyword}: ${err.message}`, 'error', 'USERBOT', undefined, undefined, accountId).catch(() => {});
@@ -5242,21 +5563,29 @@ async function startServer() {
       const currentSession = accountClients.get(accId);
       let client = currentSession?.client || (accId === 'default' ? userClient : null);
 
-      if (client && client.connected && !forceReconnect) {
+      const sessionAge = currentSession?.sessionStartTime ? (Date.now() - currentSession.sessionStartTime) : 0;
+      const isTooOld = sessionAge > 2 * 60 * 60 * 1000; // Proactive refresh every 2 hours to prevent 6-7 hour TCP drop/sleep
+
+      if (client && client.connected && !forceReconnect && !isTooOld) {
         try {
-          const isAuthed = await Promise.race([
-            client.isUserAuthorized().catch(() => false),
-            new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error("PING_TIMEOUT")), 8000))
+          const livenessCheck = await Promise.race([
+            Promise.all([
+              client.isUserAuthorized().catch(() => false),
+              client.getMe().catch(() => null)
+            ]),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("PING_TIMEOUT")), 8000))
           ]);
-          if (isAuthed) {
+          if (livenessCheck && livenessCheck[0] && livenessCheck[1]) {
             consecutiveAuthFailures.set(accId, 0);
             const targetGroupId = getCachedSetting("telegram_group_ids", accId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
             setupUserBotHandlers(client, targetGroupId, accId);
             return true;
           }
         } catch (e) {
-          console.warn(`[UserBot Background] Stale connection for "${accId}", reconnecting.`);
+          console.warn(`[UserBot Background] Stale or timed-out connection for "${accId}", reconnecting.`);
         }
+      } else if (isTooOld) {
+        console.log(`[UserBot Background] Proactively refreshing session for "${accId}" (age > 2 hours) to maintain 24/7 uptime.`);
       }
 
       if (client) try { await client.disconnect().catch(() => {}); } catch (e) {}
@@ -5954,6 +6283,67 @@ async function startServer() {
     }
   });
 
+  app.post("/api/test-topic-rename", async (req, res) => {
+    const accountId = getAccountId(req);
+    try {
+      const client = getAccountClient(accountId) || userClient;
+      if (!client || !client.connected) {
+        return res.status(400).json({ error: "UserBot is not connected. Please connect your Telegram account first." });
+      }
+
+      const { topicId, topicIcon, topicRenameEmoji } = req.body;
+      const currentTopicIcon = topicIcon || getCachedSetting("topic_icon", accountId) || "✅";
+      const currentRenameEmoji = topicRenameEmoji || getCachedSetting("topic_rename_emoji", accountId) || "🛑";
+
+      let targetTopicId = Number(topicId);
+      let targetPeerId: any = null;
+
+      if (!targetTopicId || isNaN(targetTopicId)) {
+        // Pick the most recent topic from DB
+        const latestTopic = await Topic.findOne({ telegram_topic_id: { $gt: 1 }, ...getAccountFilter(accountId) }).sort({ created_at: -1 }).lean();
+        if (latestTopic) {
+          targetTopicId = latestTopic.telegram_topic_id;
+          if (latestTopic.chat_id) targetPeerId = latestTopic.chat_id;
+        }
+      }
+
+      if (!targetTopicId || isNaN(targetTopicId)) {
+        return res.status(404).json({ error: "No active forum topic found in database to test. Please specify a Topic ID or receive a message in a topic first." });
+      }
+
+      const currentTargetGroupId = getCachedSetting("telegram_group_ids", accountId) || "";
+      const peerToUse = targetPeerId || currentTargetGroupId;
+      if (!peerToUse) {
+        return res.status(400).json({ error: "Target Group ID is not configured in Settings." });
+      }
+
+      const dummyMessage = { peerId: peerToUse };
+      const updatedName = await handleTopicRenaming(
+        client,
+        dummyMessage,
+        targetTopicId,
+        currentTopicIcon,
+        currentRenameEmoji,
+        "",
+        "exact",
+        true,
+        accountId
+      );
+
+      res.json({
+        success: true,
+        topicId: targetTopicId,
+        updatedName,
+        topicIcon: currentTopicIcon,
+        topicRenameEmoji: currentRenameEmoji,
+        message: `Topic #${targetTopicId} updated! Title: "${updatedName}", Icon: ${currentTopicIcon}`
+      });
+    } catch (err: any) {
+      console.error("Error in /api/test-topic-rename:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/verify-gemini", async (req, res) => {
     try {
       const { apiKey } = req.body;
@@ -6074,7 +6464,7 @@ async function startServer() {
 
   app.post("/api/keywords", async (req, res) => {
     const accountId = getAccountId(req);
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, match_mode, ai_reply_enabled, approval_mode, notify_on_hit, target_groups } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, cooldown_minutes, match_mode, ai_reply_enabled, approval_mode, notify_on_hit, target_groups } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
@@ -6087,7 +6477,8 @@ async function startServer() {
         photo: photo || "", 
         message_link: message_link || "", 
         message_links,
-        max_replies: typeof max_replies === 'number' ? max_replies : 0,
+        max_replies: (max_replies !== undefined && max_replies !== null) ? Number(max_replies) : 0,
+        cooldown_minutes: (cooldown_minutes !== undefined && cooldown_minutes !== null) ? Number(cooldown_minutes) : 0,
         match_mode: match_mode || 'exact',
         ai_reply_enabled: !!ai_reply_enabled,
         approval_mode: !!approval_mode,
@@ -6166,19 +6557,15 @@ async function startServer() {
   app.get("/api/approvals", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
-      // Auto-expire older pending approvals in DB
-      await PendingApproval.updateMany(
-        { status: 'pending', created_at: { $lt: twentyFourHoursAgo } },
-        { $set: { status: 'expired', processed_at: new Date() } }
-      ).catch(() => {});
-
-      const approvals = await PendingApproval.find({
+      
+      let approvals = await PendingApproval.find({
         status: 'pending',
-        created_at: { $gte: twentyFourHoursAgo },
         ...getAccountFilter(accountId)
       }).sort({ created_at: -1 });
+
+      if (approvals.length === 0) {
+        approvals = await PendingApproval.find({ status: 'pending' }).sort({ created_at: -1 }).limit(50);
+      }
 
       res.json(approvals);
     } catch (err: any) {
@@ -6192,26 +6579,30 @@ async function startServer() {
     const { id } = req.params;
     
     try {
-      const approval = await PendingApproval.findOne({ _id: id, ...getAccountFilter(accountId) }).populate('rule_id');
-      const is24hExpired = approval && approval.created_at && (Date.now() - new Date(approval.created_at).getTime() > 24 * 60 * 60 * 1000);
+      let approval = await PendingApproval.findOne({ _id: id, ...getAccountFilter(accountId) }).populate('rule_id');
+      if (!approval) {
+        approval = await PendingApproval.findById(id).populate('rule_id');
+      }
 
-      if (!approval || approval.status !== 'pending' || is24hExpired) {
-        if (approval && approval.status === 'pending' && is24hExpired) {
-          approval.status = 'expired';
-          await approval.save().catch(() => {});
-          sendSseEvent('approval_processed', { id, status: 'expired' });
-        }
-        return res.status(400).json({ error: "Approval request has expired (24 hours passed) or already processed." });
+      if (!approval || approval.status !== 'pending') {
+        return res.status(400).json({ error: "Approval request has already been processed or does not exist." });
       }
       
       if (action === 'approve') {
-        await executeApprovedReply(approval);
-
         approval.status = 'approved';
         approval.processed_at = new Date();
         await approval.save();
 
         sendSseEvent('approval_processed', { id, status: 'approved' });
+
+        // Execute reply in background asynchronously so UI responds instantly
+        setImmediate(async () => {
+          try {
+            await executeApprovedReply(approval);
+          } catch (execErr: any) {
+            console.error("Background executeApprovedReply error:", execErr.message);
+          }
+        });
       } else {
         approval.status = 'rejected';
         approval.processed_at = new Date();
@@ -6220,20 +6611,22 @@ async function startServer() {
         sendSseEvent('approval_processed', { id, status: 'rejected' });
       }
 
-      // Update Telegram Bot message to remove buttons
-      const targetBot = getBotForAccount(approval.account_id);
-      if (targetBot && approval.bot_chat_id && approval.bot_message_id) {
-        const text = action === 'approve'
-          ? `✅ <b>Approved & Reply Sent! (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`
-          : `❌ <b>Not Approved / Rejected (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`;
+      // Update Telegram Bot message to remove buttons asynchronously
+      setImmediate(() => {
+        const targetBot = getBotForAccount(approval.account_id);
+        if (targetBot && approval.bot_chat_id && approval.bot_message_id) {
+          const text = action === 'approve'
+            ? `✅ <b>Approved & Reply Sent! (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`
+            : `❌ <b>Not Approved / Rejected (Via Dashboard)</b>\n\n<b>Keyword:</b> <code>${escapeHtml(approval.matched_keyword)}</code>\n<b>Group:</b> ${escapeHtml(approval.chat_title || 'Group')}\n<b>Topic:</b> ${escapeHtml(approval.topic_name || 'Topic')}`;
 
-        targetBot.editMessageText(text, {
-          chat_id: approval.bot_chat_id,
-          message_id: approval.bot_message_id,
-          parse_mode: 'HTML',
-          reply_markup: { inline_keyboard: [] }
-        }).catch(e => console.error("Failed to edit Telegram bot message from API:", e.message));
-      }
+          targetBot.editMessageText(text, {
+            chat_id: approval.bot_chat_id,
+            message_id: approval.bot_message_id,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: [] }
+          }).catch(e => console.error("Failed to edit Telegram bot message from API:", e.message));
+        }
+      });
       
       res.json({ success: true });
     } catch (err: any) {
@@ -7632,7 +8025,7 @@ async function startServer() {
       }
 
       // Try to find topic name from our Topic collection or cache
-      let name = topicNamesCache[topicId] || "";
+      let name = getTopicNameFromCache(topicId, accountId) || "";
       if (!name) {
         const foundTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(accountId) });
         if (foundTopic && foundTopic.name) name = foundTopic.name;
@@ -7788,7 +8181,7 @@ async function startServer() {
       ]);
 
       const topicData = topTopics.map(t => ({
-        name: topicNamesCache[t._id] || `Topic ${t._id}`,
+        name: getTopicNameFromCache(t._id, accountId) || `Topic ${t._id}`,
         value: t.total
       }));
 
@@ -7971,6 +8364,20 @@ For each suggested rule, provide:
   app.use("/api/*", (req, res) => {
     console.log(`API endpoint not found: ${req.originalUrl}`);
     res.status(404).json({ error: "API endpoint not found" });
+  });
+
+  // Global Error Handler for API routes
+  app.use((err: any, req: any, res: any, next: any) => {
+    if (res.headersSent) return next(err);
+    const acc = getAccountId(req);
+    console.error(`[API ERROR] (${acc}) ${req.method} ${req.path}:`, err.message || err);
+    
+    // Suppress Telegram 403 Forbidden / 401 Unauthorized errors from spamming the logs
+    if (String(err.message).includes("403") || String(err.message).includes("401")) {
+      return res.status(err.status || 400).json({ error: "Telegram API Error: Unauthorized or Forbidden" });
+    }
+    
+    res.status(err.status || 500).json({ error: err.message || "Internal server error" });
   });
 
   const publicDir = path.join(process.cwd(), "public");

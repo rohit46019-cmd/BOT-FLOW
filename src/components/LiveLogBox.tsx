@@ -1,4 +1,5 @@
 import React, { memo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Terminal, Activity, ChevronRight } from 'lucide-react';
 
 interface LiveLogBoxProps {
@@ -60,33 +61,39 @@ const LiveLogBox: React.FC<LiveLogBoxProps> = ({ logs, darkMode }) => {
 
       {/* Log Feed */}
       <div className="space-y-1.5 font-mono text-[10.5px]">
-        {latestLogs.map((log, i) => {
-          const badge = getLogBadge(log.message || '', log.level);
-          const timeStr = log.timestamp 
-            ? new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            : '--:--:--';
+        <AnimatePresence initial={false} mode="popLayout">
+          {latestLogs.map((log) => {
+            const logKey = log._id || log.timestamp || Math.random();
+            const badge = getLogBadge(log.message || '', log.level);
+            const timeStr = log.timestamp 
+              ? new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              : '--:--:--';
 
-          return (
-            <div 
-              key={i} 
-              className={`flex items-center gap-2 p-1.5 rounded-lg transition-colors ${
-                darkMode ? 'bg-black/40 hover:bg-white/5' : 'bg-slate-50 hover:bg-slate-100'
-              }`}
-            >
-              <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-bold uppercase border shrink-0 ${badge.color}`}>
-                {badge.label}
-              </span>
-              <span className="text-[9.5px] opacity-40 shrink-0 select-none">
-                [{timeStr}]
-              </span>
-              <span className={`truncate flex-1 font-medium ${
-                log.level === 'error' ? 'text-rose-400 font-bold' : (darkMode ? 'text-slate-300' : 'text-slate-700')
-              }`}>
-                {log.message}
-              </span>
-            </div>
-          );
-        })}
+            return (
+              <motion.div 
+                key={logKey}
+                initial={{ opacity: 0, x: -5 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className={`flex items-center gap-2 p-1.5 rounded-lg transition-colors ${
+                  darkMode ? 'bg-black/40 hover:bg-white/5' : 'bg-slate-50 hover:bg-slate-100'
+                }`}
+              >
+                <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-bold uppercase border shrink-0 ${badge.color}`}>
+                  {badge.label}
+                </span>
+                <span className="text-[9.5px] opacity-40 shrink-0 select-none">
+                  [{timeStr}]
+                </span>
+                <span className={`truncate flex-1 font-medium ${
+                  log.level === 'error' ? 'text-rose-400 font-bold' : (darkMode ? 'text-slate-300' : 'text-slate-700')
+                }`}>
+                  {log.message}
+                </span>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
 
         {latestLogs.length === 0 && (
           <div className="flex items-center justify-center py-4 text-center text-slate-500 text-xs">

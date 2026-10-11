@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   User, 
   Plus, 
@@ -18,7 +19,8 @@ import {
   Bot,
   Pencil,
   Share2,
-  Copy
+  Copy,
+  Bell
 } from 'lucide-react';
 
 export interface Profile {
@@ -558,23 +560,34 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
       </button>
 
       {/* FULL PORTAL MODAL (Completely detached from header CSS bounding box) */}
-      {isOpen && mounted && createPortal(
-        <div 
-          id="account-modal-backdrop"
-          className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md transition-opacity duration-200"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setIsOpen(false);
-              setIsAdding(false);
-              setErrorMsg('');
-            }
-          }}
-        >
-          <div 
-            id="account-modal-card"
-            className="relative w-full max-w-[420px] rounded-2xl bg-neutral-950 border border-white/20 shadow-2xl p-4 sm:p-5 text-white flex flex-col max-h-[90vh] overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
+      {mounted && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <div 
+              id="account-modal-backdrop"
+              className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 transition-opacity duration-200"
+            >
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  setIsOpen(false);
+                  setIsAdding(false);
+                  setErrorMsg('');
+                }}
+                className="absolute inset-0 bg-black/80 backdrop-blur-md"
+              />
+              
+              <motion.div 
+                id="account-modal-card"
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+                className="relative w-full max-w-[420px] rounded-2xl bg-neutral-950 border border-white/20 shadow-2xl p-4 sm:p-5 text-white flex flex-col max-h-[90vh] overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10 shrink-0">
               <div className="flex items-center gap-2.5">
@@ -994,52 +1007,91 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                   )}
 
                   {/* Background Live Sync & Test Notification Footer */}
-                  <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
-                    <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                      </span>
-                      <span>24/7 Cloud Background Sync Active</span>
+                  <div className="pt-2 border-t border-white/10 flex flex-col gap-2">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        </span>
+                        <span>Background Sync Active</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                         <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${
+                           Notification.permission === 'granted' 
+                             ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                             : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                         }`}>
+                           Notify: {Notification.permission}
+                         </span>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      id="test-push-btn"
-                      onClick={async () => {
-                        try {
-                          const res = await fetch('/api/push/test', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              title: `🔔 [${profiles.find(p => p.id === currentProfileId)?.name || 'BotFlow'}] Background Test`,
-                              body: `Background notifications are working perfectly on this device for ${profiles.find(p => p.id === currentProfileId)?.name || 'Account'}!`
-                            })
-                          });
-                          if (res.ok) {
-                            setPushStatusMessage('✅ Test notification dispatched! Check notification bar.');
-                          } else {
-                            setPushStatusMessage('⚠️ Enable notification permissions in browser settings.');
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        id="test-push-btn"
+                        onClick={async () => {
+                          if (Notification.permission !== 'granted') {
+                            const res = await Notification.requestPermission();
+                            if (res !== 'granted') {
+                               setPushStatusMessage('⚠️ Kripya Browser settings mein "Notifications" allow karein!');
+                               return;
+                            }
                           }
-                        } catch (e) {
-                          setPushStatusMessage('❌ Error sending test notification.');
-                        }
-                        setTimeout(() => setPushStatusMessage(null), 4000);
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold transition active:scale-95 text-[10px]"
-                    >
-                      Test Push 🔔
-                    </button>
-                  </div>
-                  {pushStatusMessage && (
-                    <div className="mt-1.5 text-[10px] text-center font-bold text-amber-300 bg-amber-500/10 py-1 px-2 rounded-lg border border-amber-500/20">
-                      {pushStatusMessage}
+                          try {
+                            const res = await fetch('/api/push/test', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                title: `🔔 [${profiles.find(p => p.id === currentProfileId)?.name || 'BotFlow'}] Background Test`,
+                                body: `Background notifications are working perfectly on this device for ${profiles.find(p => p.id === currentProfileId)?.name || 'Account'}!`
+                              })
+                            });
+                            if (res.ok) {
+                              setPushStatusMessage('✅ Test notification dispatched! Check notification bar.');
+                            } else {
+                              setPushStatusMessage('⚠️ Subscription check failed. Refresh page & try again.');
+                            }
+                          } catch (e) {
+                            setPushStatusMessage('❌ Error sending test notification.');
+                          }
+                          setTimeout(() => setPushStatusMessage(null), 5000);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold transition active:scale-95 text-[10px]"
+                      >
+                        <Bell size={13} />
+                        Test Instant Push
+                      </button>
+
+                      {Notification.permission !== 'granted' && (
+                        <button
+                          onClick={() => Notification.requestPermission().then(() => window.location.reload())}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-[10px] shadow-lg active:scale-95"
+                        >
+                          Enable Alert
+                        </button>
+                      )}
                     </div>
+                  </div>
+
+                  {pushStatusMessage && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mt-2 text-[10px] text-center font-bold text-amber-300 bg-amber-500/10 py-1.5 px-3 rounded-xl border border-amber-500/20"
+                    >
+                      {pushStatusMessage}
+                    </motion.div>
                   )}
                 </div>
               </>
             )}
-          </div>
-        </div>,
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>,
         document.body
       )}
     </>

@@ -1,4 +1,5 @@
 import React, { memo, useState, useMemo, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, 
@@ -108,7 +109,7 @@ const RuleCard = memo(function RuleCard({
 
   return (
     <div 
-      className={`p-2.5 rounded-xl border transition-all duration-150 relative overflow-hidden group shadow-xs hover:shadow-md will-change-transform ${
+      className={`p-2.5 rounded-xl border transition-all duration-150 relative overflow-hidden group shadow-xs hover:shadow-md will-change-transform transform-gpu ${
         darkMode 
           ? `${isEnabled ? 'bg-neutral-900/95' : 'bg-neutral-900/40 opacity-65'} border-white/10 hover:border-blue-500/40 shadow-black/40` 
           : `${isEnabled ? 'bg-white' : 'bg-slate-50 opacity-65'} border-slate-200/90 hover:border-blue-300 shadow-slate-200/60`
@@ -351,9 +352,14 @@ const RuleCard = memo(function RuleCard({
             >
               <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono">
                 <span>Rule ID: {kw._id?.slice(-6)}</span>
-                {typeof kw.max_replies === 'number' && kw.max_replies > 0 && (
-                  <span>Limit: {kw.max_replies}</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {typeof kw.max_replies === 'number' && kw.max_replies > 0 && (
+                    <span>Limit: {kw.max_replies}</span>
+                  )}
+                  {typeof kw.cooldown_minutes === 'number' && kw.cooldown_minutes > 0 && (
+                    <span className="text-amber-500 font-bold">Cooldown: {kw.cooldown_minutes}m</span>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-1 pt-1">
@@ -437,6 +443,17 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
     cachedGroupsByAccount.get(localStorage.getItem('currentProfileId') || 'default') || {}
   );
   const [expandedAdvanceIds, setExpandedAdvanceIds] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (isAddingNewRule || editingKeywordId) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isAddingNewRule, editingKeywordId]);
 
   const toggleAdvance = useCallback((id: string) => {
     setExpandedAdvanceIds(prev => ({
@@ -523,16 +540,17 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
   ];
 
   return (
-    <motion.div
-      key="keywords"
-      ref={keywordsTopRef}
-      custom={direction}
-      variants={slideVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="space-y-3 pb-24"
-    >
+    <>
+      <motion.div
+        key="keywords"
+        ref={keywordsTopRef}
+        custom={direction}
+        variants={slideVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        className="space-y-3 pb-24 will-change-transform transform-gpu"
+      >
       {/* Sticky Header: Search Bar & Filter Bar */}
       <div className={`sticky top-0 z-20 pb-2 pt-1 transition-colors ${
         darkMode ? 'bg-neutral-950/90 backdrop-blur-md' : 'bg-slate-50/90 backdrop-blur-md'
@@ -656,78 +674,47 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
         </div>
       </div>
 
-      {/* Add/Edit Rule Form Section (Full Screen Modal) */}
-      <AnimatePresence>
-        {(isAddingNewRule || editingKeywordId) && (
-          <motion.div
-            initial={{ opacity: 0, y: 50, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 50, scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-            className={`fixed inset-0 z-[200] flex flex-col pt-12 pb-4 px-4 overflow-y-auto backdrop-blur-xl ${
-              darkMode ? 'bg-neutral-950/95' : 'bg-slate-50/95'
-            }`}
-          >
-            <div className="flex-1 w-full max-w-2xl mx-auto flex flex-col">
-              <div className="flex items-center justify-between mb-4 mt-8 px-2 shrink-0">
-                <h2 className={`text-xl font-black uppercase tracking-tight flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                  {editingKeywordId ? <><Edit3 size={20} className="text-amber-500" /> Edit Rule</> : <><Plus size={20} className="text-emerald-500" /> Create New Rule</>}
-                </h2>
-                <button
-                  onClick={() => {
-                    cancelEdit();
-                    setIsAddingNewRule(false);
-                  }}
-                  className={`p-2 rounded-full transition-colors active:scale-90 ${
-                    darkMode ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-800'
-                  }`}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className={`p-1 rounded-2xl flex-1 min-h-0 overflow-y-auto pb-24 ${darkMode ? 'bg-neutral-900 border border-white/10 shadow-2xl' : 'bg-white border border-slate-200 shadow-xl'}`}>
-                <AddKeywordSection 
-                  editingKeyword={editingKeywordId ? keywords.find(k => k._id === editingKeywordId) : null}
-                  onSave={(data: any) => {
-                    handleAddKeyword(data);
-                    setIsAddingNewRule(false);
-                  }}
-                  onCancel={() => {
-                    cancelEdit();
-                    setIsAddingNewRule(false);
-                  }}
-                  darkMode={darkMode}
-                />
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* RULES LIST: Compact, Responsive, Ultra-Fast Memoized Cards */}
       {keywords.length > 0 ? (
         <div className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            {displayedKeywords.map((kw, index) => (
-              <RuleCard
-                key={kw._id}
-                kw={kw}
-                index={index}
-                darkMode={darkMode}
-                isAdvanceExpanded={!!expandedAdvanceIds[kw._id]}
-                copiedKeywordsId={copiedKeywordsId}
-                copiedId={copiedId}
-                onToggleAdvance={toggleAdvance}
-                onCopyKeyword={handleCopyKeyword}
-                onCopyGroups={handleCopyGroups}
-                onToggleKeyword={handleToggleKeyword}
-                onToggleNotify={handleToggleNotifyOnHit}
-                onToggleApproval={handleToggleApprovalMode}
-                onEdit={handleEditKeyword}
-                onDelete={handleDeleteKeyword}
-                onDuplicate={handleDuplicateKeyword}
-              />
-            ))}
+            <AnimatePresence mode="popLayout">
+              {displayedKeywords.map((kw, index) => (
+                <motion.div
+                  key={kw._id}
+                  layout
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ 
+                    type: 'spring',
+                    stiffness: 300,
+                    damping: 30,
+                    mass: 0.8,
+                    delay: Math.min(index * 0.01, 0.1) 
+                  }}
+                  className="will-change-transform transform-gpu"
+                >
+                  <RuleCard
+                    kw={kw}
+                    index={index}
+                    darkMode={darkMode}
+                    isAdvanceExpanded={!!expandedAdvanceIds[kw._id]}
+                    copiedKeywordsId={copiedKeywordsId}
+                    copiedId={copiedId}
+                    onToggleAdvance={toggleAdvance}
+                    onCopyKeyword={handleCopyKeyword}
+                    onCopyGroups={handleCopyGroups}
+                    onToggleKeyword={handleToggleKeyword}
+                    onToggleNotify={handleToggleNotifyOnHit}
+                    onToggleApproval={handleToggleApprovalMode}
+                    onEdit={handleEditKeyword}
+                    onDelete={handleDeleteKeyword}
+                    onDuplicate={handleDuplicateKeyword}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
 
           {filteredKeywords.length === 0 && (
@@ -788,7 +775,69 @@ const KeywordsManager: React.FC<KeywordsManagerProps> = ({
         </div>
       )}
     </motion.div>
-  );
+
+    {/* Add/Edit Rule Form Section (Full Screen Modal - Portaled to body to prevent container clipping) */}
+    {createPortal(
+      <AnimatePresence>
+        {(isAddingNewRule || editingKeywordId) && (
+          <motion.div
+            initial={{ opacity: 0, x: '100%', scale: 1 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: '100%', scale: 1 }}
+            transition={{ 
+              type: 'spring',
+              stiffness: 280,
+              damping: 30,
+              mass: 1
+            }}
+            className={`fixed inset-0 z-[10000] flex flex-col overflow-hidden ${
+              darkMode ? 'bg-neutral-950' : 'bg-slate-50'
+            }`}
+          >
+            <div className="flex-1 w-full flex flex-col h-full overflow-y-auto">
+              <div className="flex items-center justify-between mb-4 mt-6 px-6 shrink-0">
+                <div className="flex-1">
+                  <h2 className={`text-2xl font-black uppercase tracking-tight flex items-center gap-3 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {editingKeywordId ? <><Edit3 size={24} className="text-amber-500" /> Edit Rule</> : <><Plus size={24} className="text-emerald-500" /> New Rule</>}
+                  </h2>
+                  <p className={`text-xs font-bold opacity-50 uppercase tracking-widest mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {editingKeywordId ? 'Modify existing automation' : 'Create automated trigger'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    cancelEdit();
+                    setIsAddingNewRule(false);
+                  }}
+                  className={`p-3 rounded-2xl transition-all active:scale-90 shadow-xl border ${
+                    darkMode ? 'bg-white/10 hover:bg-white/20 text-white border-white/10' : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
+                  }`}
+                >
+                  <X size={24} />
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 pb-32 px-1 sm:px-2">
+                <AddKeywordSection 
+                  editingKeyword={editingKeywordId ? keywords.find(k => k._id === editingKeywordId) : null}
+                  onSave={(data: any) => {
+                    handleAddKeyword(data);
+                    setIsAddingNewRule(false);
+                  }}
+                  onCancel={() => {
+                    cancelEdit();
+                    setIsAddingNewRule(false);
+                  }}
+                  darkMode={darkMode}
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>,
+      document.body
+    )}
+  </>
+);
 };
 
 export default memo(KeywordsManager);

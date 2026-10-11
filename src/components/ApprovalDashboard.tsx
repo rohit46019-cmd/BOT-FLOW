@@ -60,6 +60,8 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
   const handleDecision = async (id: string, action: 'approve' | 'reject') => {
     setProcessingId(id);
     setErrorMsg(null);
+    // Optimistic instant update
+    setApprovals(prev => prev.filter(a => a._id !== id));
     try {
       const res = await fetch(`/api/approvals/${id}/decide`, {
         method: 'POST',
@@ -67,9 +69,7 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
         body: JSON.stringify({ action })
       });
       const data = await res.json();
-      if (res.ok && data.success) {
-        setApprovals(prev => prev.filter(a => a._id !== id));
-      } else {
+      if (!res.ok || !data.success) {
         setErrorMsg(data.error || "Failed to process decision");
         fetchApprovals();
       }

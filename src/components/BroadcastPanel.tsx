@@ -39,11 +39,11 @@ const BroadcastPanel: React.FC<BroadcastPanelProps> = ({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="space-y-4 w-full"
+      className="space-y-4 w-full will-change-transform transform-gpu"
     >
-      <div ref={castTopRef} />
-      <div className={`border p-4.5 rounded-xl space-y-4 transition-all duration-300 relative overflow-hidden group ${
-        darkMode ? 'bg-neutral-900/60 border-purple-500/20 shadow-xs' : 'bg-white border-slate-200 shadow-xs'
+      <div ref={castTopRef} className="h-2" />
+      <div className={`border p-4.5 rounded-2xl space-y-4 transition-all duration-300 relative overflow-hidden group shadow-lg ${
+        darkMode ? 'bg-neutral-900/80 border-purple-500/20 shadow-black/40' : 'bg-white border-slate-200 shadow-slate-200/50'
       }`}>
         <div className="relative z-10 space-y-2 pointer-events-auto">
           <div className="flex items-center justify-between">
@@ -112,7 +112,7 @@ const BroadcastPanel: React.FC<BroadcastPanelProps> = ({
               <motion.div
                 initial={{ width: 0 }}
                 animate={{ width: `${(broadcastProgress.current / (broadcastProgress.total || 1)) * 100}%` }}
-                className="h-full bg-gradient-to-r from-purple-500 to-blue-500"
+                className="h-full bg-gradient-to-r from-purple-500 to-blue-500 will-change-[width] transform-gpu"
               />
             </div>
             <div className="flex justify-center">
@@ -129,7 +129,9 @@ const BroadcastPanel: React.FC<BroadcastPanelProps> = ({
           </div>
         )}
 
-        <button
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
           type="button"
           onClick={handleBroadcast}
           disabled={broadcasting || !broadcastMessage.trim() || broadcastMessage.length > 500}
@@ -141,7 +143,7 @@ const BroadcastPanel: React.FC<BroadcastPanelProps> = ({
         >
           <Send size={13} />
           <span>{broadcasting ? 'Sending...' : 'Broadcast Now'}</span>
-        </button>
+        </motion.button>
       </div>
     </motion.div>
   );

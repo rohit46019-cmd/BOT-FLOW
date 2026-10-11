@@ -1,4 +1,5 @@
 import React, { memo } from 'react';
+import { motion } from 'motion/react';
 import { 
   Key, 
   LayoutDashboard, 
@@ -61,9 +62,13 @@ const Dashboard: React.FC<DashboardProps> = ({
     <div className="space-y-4 w-full animate-in fade-in duration-300">
       {/* PWA Install Banner if prompt available */}
       {deferredPrompt && (
-        <div 
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
           onClick={handleInstallApp}
-          className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all hover:scale-[1.01] active:scale-[0.99] shadow-sm ${
+          className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all shadow-sm ${
             darkMode 
               ? 'bg-gradient-to-r from-blue-600/20 via-indigo-600/20 to-purple-600/20 border-blue-500/40 text-blue-300' 
               : 'bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50 border-blue-300 text-blue-700'
@@ -81,19 +86,24 @@ const Dashboard: React.FC<DashboardProps> = ({
           <div className="px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider bg-blue-600 hover:bg-blue-500 text-white shadow-md transition">
             Install
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Hero Telegram Account & Live Status Banner (Colourful & Modern) */}
-      <div className={`p-4 rounded-3xl border relative overflow-hidden transition-all duration-300 shadow-lg ${
-        isConnected 
-          ? (darkMode 
-              ? 'bg-gradient-to-br from-indigo-950/80 via-neutral-900 to-purple-950/70 border-indigo-500/30' 
-              : 'bg-gradient-to-br from-indigo-50 via-white to-purple-50 border-indigo-200')
-          : (darkMode 
-              ? 'bg-gradient-to-br from-rose-950/70 via-neutral-900 to-amber-950/60 border-rose-500/30' 
-              : 'bg-gradient-to-br from-rose-50 via-white to-amber-50 border-rose-200')
-      }`}>
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
+        className={`p-4 rounded-3xl border relative overflow-hidden transition-all duration-300 shadow-lg ${
+          isConnected 
+            ? (darkMode 
+                ? 'bg-gradient-to-br from-indigo-950/80 via-neutral-900 to-purple-950/70 border-indigo-500/30' 
+                : 'bg-gradient-to-br from-indigo-50 via-white to-purple-50 border-indigo-200')
+            : (darkMode 
+                ? 'bg-gradient-to-br from-rose-950/70 via-neutral-900 to-amber-950/60 border-rose-500/30' 
+                : 'bg-gradient-to-br from-rose-50 via-white to-amber-50 border-rose-200')
+        }`}
+      >
         {/* Glow ambient spots */}
         <div className="absolute -top-12 -right-12 w-44 h-44 rounded-full bg-blue-500/15 blur-3xl pointer-events-none" />
         <div className="absolute -bottom-12 -left-12 w-44 h-44 rounded-full bg-purple-500/15 blur-3xl pointer-events-none" />
@@ -193,14 +203,19 @@ const Dashboard: React.FC<DashboardProps> = ({
             </div>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* 6 Colourful Metric & Action Cards */}
       <div className="grid grid-cols-2 gap-3">
         {/* Card 1: Active Keywords (Violet/Purple Theme) */}
-        <div 
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.02, y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ duration: 0.3 }}
           onClick={() => setActiveTab('keywords')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
             darkMode 
               ? 'bg-gradient-to-br from-violet-600/15 via-purple-600/10 to-neutral-900/90 border-violet-500/30 hover:border-violet-400' 
               : 'bg-gradient-to-br from-violet-50 via-purple-50/50 to-white border-violet-200 hover:border-violet-400'
@@ -238,12 +253,17 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span>Manage Rules</span>
             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
           </div>
-        </div>
+        </motion.div>
 
         {/* Card 2: Topics Activity (Cyan/Sky Theme) */}
-        <div 
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.02, y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ duration: 0.3, delay: 0.05 }}
           onClick={() => setActiveTab('keywords')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
             darkMode 
               ? 'bg-gradient-to-br from-cyan-600/15 via-sky-600/10 to-neutral-900/90 border-cyan-500/30 hover:border-cyan-400' 
               : 'bg-gradient-to-br from-cyan-50 via-sky-50/50 to-white border-cyan-200 hover:border-cyan-400'
@@ -281,12 +301,17 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span>Target Groups</span>
             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
           </div>
-        </div>
+        </motion.div>
 
         {/* Card 3: Photos Sent Today (Fuchsia/Pink Theme) */}
-        <div 
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.02, y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
           onClick={() => setActiveTab('photo_stats')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
             darkMode 
               ? 'bg-gradient-to-br from-fuchsia-600/15 via-pink-600/10 to-neutral-900/90 border-fuchsia-500/30 hover:border-fuchsia-400' 
               : 'bg-gradient-to-br from-fuchsia-50 via-pink-50/50 to-white border-fuchsia-200 hover:border-fuchsia-400'
@@ -320,12 +345,17 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span>View Gallery</span>
             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
           </div>
-        </div>
+        </motion.div>
 
         {/* Card 4: Catch Up Missed (Amber/Orange Theme) */}
-        <div
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={!isCatchingUp && !isPaused ? { scale: 1.02, y: -2 } : {}}
+          whileTap={!isCatchingUp && !isPaused ? { scale: 0.98 } : {}}
+          transition={{ duration: 0.3, delay: 0.15 }}
           onClick={!isCatchingUp && !isPaused ? () => setActiveTab('catchup') : undefined}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group flex flex-col justify-between shadow-2xs hover:shadow-md ${
             isPaused 
               ? `${darkMode ? 'bg-neutral-900/40 border-white/5 opacity-60' : 'bg-slate-100 border-slate-200 opacity-60'} cursor-not-allowed`
               : `${darkMode ? 'bg-gradient-to-br from-amber-600/15 via-orange-600/10 to-neutral-900/90 border-amber-500/30 hover:border-amber-400' : 'bg-gradient-to-br from-amber-50 via-orange-50/50 to-white border-amber-200 hover:border-amber-400'} cursor-pointer`
@@ -378,12 +408,17 @@ const Dashboard: React.FC<DashboardProps> = ({
               </>
             )}
           </div>
-        </div>
+        </motion.div>
 
         {/* Card 5: Scan Recent Topics (Electric Blue Theme) */}
-        <div 
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.02, y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ duration: 0.3, delay: 0.2 }}
           onClick={handleScanMissed}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
             darkMode 
               ? 'bg-gradient-to-br from-blue-600/15 via-indigo-600/10 to-neutral-900/90 border-blue-500/30 hover:border-blue-400' 
               : 'bg-gradient-to-br from-blue-50 via-indigo-50/50 to-white border-blue-200 hover:border-blue-400'
@@ -417,12 +452,17 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span>{isScanningMissed ? 'Please wait' : 'Start Radar'}</span>
             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
           </div>
-        </div>
+        </motion.div>
 
         {/* Card 6: System Engine Controller (Emerald/Teal vs Rose Theme) */}
-        <div
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileHover={{ scale: 1.02, y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ duration: 0.3, delay: 0.25 }}
           onClick={handleTogglePause}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
             isPaused 
               ? (darkMode 
                   ? 'bg-gradient-to-br from-rose-600/15 via-red-600/10 to-neutral-900/90 border-rose-500/30 hover:border-rose-400' 
@@ -472,7 +512,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span>{isPaused ? 'Click to Resume' : 'Click to Pause'}</span>
             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
           </div>
-        </div>
+        </motion.div>
 
         {/* Quick Launch Control Hub */}
         <div className="col-span-2 pt-1">
