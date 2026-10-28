@@ -454,33 +454,52 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
     accountBots.delete(acc);
   }
 
-  console.log(`[Telegram Bot] Initializing Telegram Bot for account "${acc}"...`);
-  const accountBot = new TelegramBot(token, { polling: true });
+  const cleanToken = (token || "").trim();
+  if (!cleanToken || !cleanToken.includes(":")) {
+    console.warn(`[Telegram Bot] Skipping empty or invalid token format for account "${acc}".`);
+    return null;
+  }
+
+  console.log(`[Telegram Bot] Verifying Telegram Bot token for account "${acc}"...`);
+  const accountBot = new TelegramBot(cleanToken, { polling: false });
+
+  let me: any;
+  try {
+    me = await accountBot.getMe();
+  } catch (meErr: any) {
+    const errStr = String(meErr?.message || meErr || "");
+    console.warn(`[Telegram Bot] Could not authenticate bot token for account "${acc}": ${errStr}`);
+    if (errStr.includes("401") || errStr.includes("Unauthorized") || errStr.includes("ETELEGRAM: 401")) {
+      saveLog(`Bot token unauthorized (401) for account "${acc}". Polling not started.`, "warn", "SYSTEM", undefined, undefined, acc).catch(() => {});
+    }
+    return null;
+  }
+
   accountBots.set(acc, accountBot);
   if (acc === "default" || !bot) {
     bot = accountBot;
   }
-  saveLog(`Telegram Bot initialized and polling started for account "${acc}".`, "info", "SYSTEM", undefined, undefined, acc);
-  
-  try {
-    const me = await accountBot.getMe();
-    const info = {
-      id: me.id,
-      firstName: me.first_name || "Bot",
-      username: me.username || "",
-    };
-    accountBotInfo.set(acc, info);
-    if (acc === "default" || !currentBotInfo) {
-      currentBotInfo = info;
-    }
-    console.log(`[Telegram Bot] Bot @${me.username} (${me.first_name}) loaded for account "${acc}".`);
-  } catch (meErr: any) {
-    console.warn(`[Telegram Bot] Could not fetch bot getMe() for account "${acc}":`, meErr.message);
+
+  const info = {
+    id: me.id,
+    firstName: me.first_name || "Bot",
+    username: me.username || "",
+  };
+  accountBotInfo.set(acc, info);
+  if (acc === "default" || !currentBotInfo) {
+    currentBotInfo = info;
   }
-  
+  console.log(`[Telegram Bot] Bot @${me.username} (${me.first_name}) loaded for account "${acc}". Starting polling...`);
+
   accountBot.on("polling_error", (error: any) => {
     const errStr = String(error?.message || error || "");
-    if (errStr.includes("409 Conflict") || errStr.includes("401") || errStr.includes("Unauthorized") || errStr.includes("ETELEGRAM: 401")) {
+    if (errStr.includes("401") || errStr.includes("Unauthorized") || errStr.includes("ETELEGRAM: 401")) {
+      console.warn(`[Telegram Bot] Halting polling for account "${acc}" due to 401 Unauthorized.`);
+      accountBot.stopPolling().catch(() => {});
+      accountBots.delete(acc);
+      return;
+    }
+    if (errStr.includes("409 Conflict") || errStr.includes("ETELEGRAM: 409")) {
       return;
     }
     console.error(`[Telegram Bot] Polling Error (${acc}):`, errStr);
@@ -879,6 +898,11 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
       }
     }
   });
+
+  accountBot.startPolling().catch((pollErr: any) => {
+    console.warn(`[Telegram Bot] Failed to start polling for account "${acc}":`, pollErr.message);
+  });
+  saveLog(`Telegram Bot initialized and polling started for account "${acc}".`, "info", "SYSTEM", undefined, undefined, acc).catch(() => {});
 
   return accountBot;
 }
@@ -2064,7 +2088,38 @@ const DEFAULT_TOPIC_ICONS: Record<string, bigint> = {
   "🧠": 5237889595894414384n,
   "🦮": 5237999392438371490n,
   "🐈": 5235912661102773458n,
-  "🛑": 5379748062124056162n // Fallback red alert / stop badge
+  "🛑": 5379748062124056162n, // Fallback red alert / stop badge
+  "🟥": 5379748062124056162n,
+  "🔴": 5379748062124056162n,
+  "🟢": 5237699328843200968n,
+  "🟩": 5237699328843200968n,
+  "🟦": 5420216386448270341n,
+  "🔵": 5420216386448270341n,
+  "🟧": 5312241539987020022n,
+  "🟠": 5312241539987020022n,
+  "🟨": 5312536423851630001n,
+  "🟡": 5312536423851630001n,
+  "🟪": 5350367161514732241n,
+  "🟣": 5350367161514732241n,
+  "⚫️": 5357504778685392027n,
+  "⚫": 5357504778685392027n,
+  "⚪️": 5312486108309757006n,
+  "⚪": 5312486108309757006n,
+  "⚠️": 5379748062124056162n,
+  "❌": 5379748062124056162n,
+  "🚫": 5379748062124056162n,
+  "📌": 5373251851074415873n,
+  "📍": 5373251851074415873n,
+  "🚩": 5408906741125490282n,
+  "🎯": 5312315739842026755n,
+  "✔️": 5237699328843200968n,
+  "⚡": 5312016608254762256n,
+  "⚽": 5375159220280762629n,
+  "☕": 5350392020785437399n,
+  "⛅": 5350424168615649565n,
+  "✍": 5238156910363950406n,
+  "⭐": 5235579393115438657n,
+  "✈": 5348436127038579546n
 };
 
 // Helper to resolve topic custom icon emoji document ID across variation selectors and formats
@@ -2104,7 +2159,8 @@ export function resolveTopicIconEmojiId(iconStr?: string | null): bigint | undef
     }
   }
 
-  return undefined;
+  // 7. If user specified an icon but not mapped, fallback to checkmark badge
+  return DEFAULT_TOPIC_ICONS["✅"] || 5237699328843200968n;
 }
 
 // Helper function for topic renaming & icon updating
@@ -2136,21 +2192,34 @@ export const handleTopicRenaming = async (
   if (topicName === "Unknown Topic") {
     try {
       const dbTopic = await Topic.findOne({ telegram_topic_id: topicId, ...getAccountFilter(acc) }).lean();
-      if (dbTopic && dbTopic.name) {
+      if (dbTopic && dbTopic.name && dbTopic.name !== "Unknown Topic" && !dbTopic.name.startsWith("Topic #")) {
         topicName = dbTopic.name;
         setTopicNameInCache(topicId, topicName, acc);
       }
     } catch (e) {}
   }
+
+  // Resolve InputChannel
+  let inputChannel: any = null;
+  try {
+    if (client && message?.peerId) {
+      inputChannel = await getCachedInputEntity(client, message.peerId, acc);
+    }
+  } catch (e: any) {
+    console.warn(`[handleTopicRenaming] Could not get inputChannel for ${message?.peerId}:`, e.message);
+  }
   
   // 3. Try fetching the topic creation message
-  if (topicName === "Unknown Topic") {
+  if (topicName === "Unknown Topic" && inputChannel && client && client.connected) {
     try {
-      const messages = await client.getMessages(message.peerId, { ids: [topicId] });
+      const messages = await client.getMessages(inputChannel, { ids: [topicId] });
       if (messages && messages.length > 0) {
         const topicMsg = messages[0];
         if (topicMsg.action && topicMsg.action instanceof Api.MessageActionTopicCreate) {
           topicName = topicMsg.action.title;
+          await logTopic(topicId, topicName, topicMsg.date ? new Date(topicMsg.date * 1000) : undefined, undefined, acc);
+        } else if (topicMsg.action && (topicMsg.action as any).title) {
+          topicName = (topicMsg.action as any).title;
           await logTopic(topicId, topicName, topicMsg.date ? new Date(topicMsg.date * 1000) : undefined, undefined, acc);
         }
       }
@@ -2160,9 +2229,8 @@ export const handleTopicRenaming = async (
   }
 
   // 4. Try fetching from Forum Topics list (most reliable for existing topics)
-  if (topicName === "Unknown Topic") {
+  if (topicName === "Unknown Topic" && inputChannel && client && client.connected) {
     try {
-      const inputChannel = await getCachedInputEntity(client, message.peerId, acc);
       const result = await client.invoke(
         new Api.channels.GetForumTopics({
           channel: inputChannel,
@@ -2187,6 +2255,11 @@ export const handleTopicRenaming = async (
     } catch (e: any) {
       console.warn("Failed to fetch topic info from GetForumTopics:", e.message);
     }
+  }
+
+  // Fallback title if still unknown
+  if (topicName === "Unknown Topic") {
+    topicName = `Topic #${topicId}`;
   }
 
   // Rename & Icon Logic
@@ -2222,7 +2295,7 @@ export const handleTopicRenaming = async (
     }
 
     const editParams: any = {
-      channel: await getCachedInputEntity(client, message.peerId, acc),
+      channel: inputChannel,
       topicId: topicId,
     };
 
@@ -2230,12 +2303,12 @@ export const handleTopicRenaming = async (
     let newTopicName = topicName;
     const cleanRenameEmoji = (topicRenameEmoji || "").trim();
 
-    if (cleanRenameEmoji && topicName !== "Unknown Topic") {
+    if (cleanRenameEmoji) {
       let baseTitle = topicName.trim();
       // Check if title already starts with cleanRenameEmoji
       if (!baseTitle.startsWith(cleanRenameEmoji)) {
-        // Strip common leading status emojis or previous rename prefixes: e.g. 🟢, 🔴, 🟡, 🛑, 👤, ✅
-        const strippedTitle = baseTitle.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\uFE0F\s]+/u, "").trim();
+        // Strip common leading status emojis or previous rename prefixes: e.g. 🟢, 🔴, 🟡, 🛑, 👤, ✅, 🟥, etc.
+        const strippedTitle = baseTitle.replace(/^([\p{Extended_Pictographic}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\uFE0F\s])+/u, "").trim();
         newTopicName = `${cleanRenameEmoji} ${strippedTitle || baseTitle}`.trim();
         if (newTopicName.length > 128) {
           newTopicName = newTopicName.substring(0, 128);
@@ -2253,22 +2326,80 @@ export const handleTopicRenaming = async (
     if (iconEmojiId !== undefined) {
       editParams.iconEmojiId = iconEmojiId;
       iconChanged = true;
-    } else if (topicIcon) {
-      console.log(`DEBUG: Topic icon '${topicIcon}' not mapped to Telegram document ID`);
     }
 
     if (nameChanged || iconChanged) {
-      console.log(`[TOPIC UPDATE] Updating topic #${topicId}. Title changed: ${nameChanged} ("${editParams.title || 'unchanged'}"), Icon changed: ${iconChanged}`);
-      await client.invoke(new Api.channels.EditForumTopic(editParams));
-      
-      if (nameChanged) {
-        await logTopic(topicId, newTopicName, undefined, undefined, acc);
-        setTopicNameInCache(topicId, newTopicName, acc);
-        await saveLog(`Renamed topic #${topicId} to "${newTopicName}" (Icon: ${topicIcon || 'default'})`, 'info', 'USERBOT', undefined, { topicId, newTopicName, topicIcon }, acc);
-      } else {
-        await saveLog(`Updated topic #${topicId} icon to "${topicIcon}"`, 'info', 'USERBOT', undefined, { topicId, topicIcon }, acc);
+      if (!editParams.title) {
+        editParams.title = topicName;
       }
-      return newTopicName;
+      console.log(`[TOPIC UPDATE] Updating topic #${topicId}. Title: "${editParams.title}", Icon Emoji ID: ${editParams.iconEmojiId || 'none'}`);
+
+      let updateSuccess = false;
+
+      // 1. Try GramJS UserBot client
+      if (client && client.connected && inputChannel) {
+        try {
+          await client.invoke(new Api.channels.EditForumTopic(editParams));
+          updateSuccess = true;
+        } catch (clientErr: any) {
+          if (clientErr.message && (clientErr.message.includes('CHAT_NOT_MODIFIED') || clientErr.message.includes('NOT_MODIFIED'))) {
+            updateSuccess = true;
+          } else {
+            console.warn(`[TOPIC UPDATE] UserBot client invoke failed: ${clientErr.message}. Trying Bot API fallback...`);
+          }
+        }
+      }
+
+      // 2. Try Telegram Bot API fallback if UserBot is disconnected or lacks permission
+      if (!updateSuccess) {
+        const targetBot = getBotForAccount(acc) || bot;
+        if (targetBot) {
+          try {
+            let fallbackChatId = "";
+            if (message?.peerId) {
+              if (message.peerId.channelId) fallbackChatId = "-100" + message.peerId.channelId.toString();
+              else if (message.peerId.chatId) fallbackChatId = "-" + message.peerId.chatId.toString();
+              else if (message.peerId.userId) fallbackChatId = message.peerId.userId.toString();
+              else if (typeof message.peerId === "string") fallbackChatId = message.peerId.split(",")[0].trim();
+            }
+            if (!fallbackChatId) {
+              fallbackChatId = (getCachedSetting("telegram_group_ids", acc) || "").split(",")[0].trim();
+            }
+
+            if (fallbackChatId) {
+              const botOpts: any = {};
+              if (editParams.title) botOpts.name = editParams.title;
+              if (editParams.iconEmojiId) botOpts.icon_custom_emoji_id = String(editParams.iconEmojiId);
+              await (targetBot as any).editForumTopic(fallbackChatId, topicId, botOpts);
+              updateSuccess = true;
+              console.log(`[TOPIC UPDATE] Successfully updated topic #${topicId} in ${fallbackChatId} via Telegram Bot API!`);
+            }
+          } catch (botFallbackErr: any) {
+            const botErrStr = String(botFallbackErr?.message || botFallbackErr || "");
+            if (botErrStr.includes("NOT_MODIFIED") || botErrStr.includes("TOPIC_NOT_MODIFIED")) {
+              updateSuccess = true;
+              console.log(`[TOPIC UPDATE] Topic #${topicId} already has the desired title and icon (TOPIC_NOT_MODIFIED).`);
+            } else {
+              console.error(`[TOPIC UPDATE] Telegram Bot API fallback also failed:`, botErrStr);
+            }
+          }
+        }
+      }
+
+      if (updateSuccess) {
+        const finalName = editParams.title || newTopicName;
+        await logTopic(topicId, finalName, undefined, undefined, acc);
+        setTopicNameInCache(topicId, finalName, acc);
+        if (nameChanged) {
+          await saveLog(`Renamed topic #${topicId} to "${finalName}" (Icon: ${topicIcon || 'default'})`, 'info', 'USERBOT', undefined, { topicId, newTopicName: finalName, topicIcon }, acc);
+        } else {
+          await saveLog(`Updated topic #${topicId} icon to "${topicIcon}"`, 'info', 'USERBOT', undefined, { topicId, topicIcon }, acc);
+        }
+        return finalName;
+      } else {
+        console.error(`Failed to update topic #${topicId} via both UserBot and Bot API.`);
+        await saveLog(`Failed to update topic #${topicId}: Permissions required or bot disconnected`, 'error', 'USERBOT', undefined, { topicId }, acc);
+      }
     } else {
       console.log(`Topic #${topicId} already has correct title prefix and icon. Skipping.`);
     }
@@ -2299,13 +2430,15 @@ setInterval(() => {
   });
 }, 15000);
 
-// Self-ping keep-alive timer to prevent cloud container idle sleep / scale-to-zero after inactivity
+// Self-ping keep-alive timer to prevent cloud container idle sleep / scale-to-zero after inactivity (every 60 seconds)
 setInterval(() => {
   const port = process.env.PORT || 3000;
   http.get(`http://127.0.0.1:${port}/api/health`, (res: any) => {
     res.on('data', () => {});
-  }).on('error', () => {});
-}, 3 * 60 * 1000);
+  }).on('error', (err: any) => {
+    console.warn("[Keep-Alive Self-Ping Warning]:", err.message);
+  });
+}, 60 * 1000);
 let broadcastCancelled = false;
 let broadcastInProgress = false;
 let broadcastStatus = {
@@ -4111,6 +4244,7 @@ async function startServer() {
       // 0. Photo Handler (Instant 0-delay auto-reply pipeline)
       const isPhotoMedia = Boolean(
         !message.out &&
+        !message.action && // Exclude service messages
         message.media && (
           message.media.photo || 
           message.photo ||
@@ -4123,6 +4257,17 @@ async function startServer() {
       );
 
       if (isPhotoMedia) {
+        // ALWAYS trigger Topic Renaming & Icon Update immediately when a photo arrives in a forum topic
+        if (topicId && topicId !== 1) {
+          const topicIcon = getCachedSetting("topic_icon", accountId) || "✅";
+          const topicRenameEmoji = getCachedSetting("topic_rename_emoji", accountId) || "🛑";
+          const renameKeywordsStr = getCachedSetting("topic_rename_keywords", accountId) || "";
+          const renameMatchMode = getCachedSetting("topic_rename_match_mode", accountId) || "exact";
+          handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true, accountId).catch(renErr => {
+            console.warn("Topic renaming warning on photo message:", renErr);
+          });
+        }
+
         const photoReplyEnabledSetting = getCachedSetting("photo_reply_enabled", accountId) === "true";
         
         if (photoReplyEnabledSetting) {
@@ -4201,7 +4346,7 @@ async function startServer() {
                 }
               }
 
-              // 3. Run background logging, notifications, and topic renaming asynchronously (non-blocking)
+              // 3. Run background logging and notifications asynchronously (non-blocking)
               setImmediate(async () => {
                 try {
                   const topicName = getTopicNameFromCache(topicId, accountId) || (topicId ? `Topic #${topicId}` : "General");
@@ -4258,15 +4403,6 @@ async function startServer() {
                     client,
                     accountId
                   }).catch(err => console.error("Error in sendPhotoReceivedNotification:", err));
-
-                  // Background Topic Renaming (if configured)
-                  const topicIcon = getCachedSetting("topic_icon", accountId) || "✅";
-                  const topicRenameEmoji = getCachedSetting("topic_rename_emoji", accountId) || "🛑";
-                  const renameKeywordsStr = getCachedSetting("topic_rename_keywords", accountId) || "";
-                  const renameMatchMode = getCachedSetting("topic_rename_match_mode", accountId) || "exact";
-                  handleTopicRenaming(client, message, topicId, topicIcon, topicRenameEmoji, renameKeywordsStr, renameMatchMode, true, accountId).catch(renErr => {
-                    console.warn("Topic renaming non-fatal warning in background photo handler:", renErr);
-                  });
                 } catch (bgErr: any) {
                   console.error("Background photo processing error:", bgErr);
                 }
@@ -6287,8 +6423,9 @@ async function startServer() {
     const accountId = getAccountId(req);
     try {
       const client = getAccountClient(accountId) || userClient;
-      if (!client || !client.connected) {
-        return res.status(400).json({ error: "UserBot is not connected. Please connect your Telegram account first." });
+      const targetBot = getBotForAccount(accountId) || bot;
+      if ((!client || !client.connected) && !targetBot) {
+        return res.status(400).json({ error: "Neither UserBot nor Telegram Bot is connected. Please connect your Telegram account or configure a Bot Token in Settings." });
       }
 
       const { topicId, topicIcon, topicRenameEmoji } = req.body;
@@ -6298,9 +6435,14 @@ async function startServer() {
       let targetTopicId = Number(topicId);
       let targetPeerId: any = null;
 
-      if (!targetTopicId || isNaN(targetTopicId)) {
+      if (targetTopicId && !isNaN(targetTopicId)) {
+        const found = await Topic.findOne({ telegram_topic_id: targetTopicId, ...getAccountFilter(accountId) }).lean();
+        if (found && found.chat_id) {
+          targetPeerId = found.chat_id;
+        }
+      } else {
         // Pick the most recent topic from DB
-        const latestTopic = await Topic.findOne({ telegram_topic_id: { $gt: 1 }, ...getAccountFilter(accountId) }).sort({ created_at: -1 }).lean();
+        const latestTopic = await Topic.findOne({ telegram_topic_id: { $gt: 1 }, ...getAccountFilter(accountId) }).sort({ created_at: -1, _id: -1 }).lean();
         if (latestTopic) {
           targetTopicId = latestTopic.telegram_topic_id;
           if (latestTopic.chat_id) targetPeerId = latestTopic.chat_id;
@@ -6312,10 +6454,11 @@ async function startServer() {
       }
 
       const currentTargetGroupId = getCachedSetting("telegram_group_ids", accountId) || "";
-      const peerToUse = targetPeerId || currentTargetGroupId;
-      if (!peerToUse) {
+      const rawPeer = targetPeerId || currentTargetGroupId;
+      if (!rawPeer) {
         return res.status(400).json({ error: "Target Group ID is not configured in Settings." });
       }
+      const peerToUse = rawPeer.split(",")[0].trim();
 
       const dummyMessage = { peerId: peerToUse };
       const updatedName = await handleTopicRenaming(

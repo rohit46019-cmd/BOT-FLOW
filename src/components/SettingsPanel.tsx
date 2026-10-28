@@ -50,6 +50,8 @@ interface SettingsPanelProps {
   setTopicIcon: (val: string) => void;
   topicRenameEmoji: string;
   setTopicRenameEmoji: (val: string) => void;
+  topicRenameKeywords?: string;
+  setTopicRenameKeywords?: (val: string) => void;
   photoReplyMax: number | string;
   setPhotoReplyMax: (val: number | string) => void;
   notificationSoundEnabled: boolean;
@@ -160,6 +162,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   setTopicIcon,
   topicRenameEmoji,
   setTopicRenameEmoji,
+  topicRenameKeywords = "",
+  setTopicRenameKeywords = (_val: string) => {},
   photoReplyMax,
   setPhotoReplyMax,
   notificationSoundEnabled,
@@ -225,10 +229,14 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const handleTestTopicRename = async () => {
     setIsTestingTopic(true);
     try {
+      const activeAccId = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
       const res = await fetch("/api/test-topic-rename", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topicIcon, topicRenameEmoji })
+        headers: { 
+          "Content-Type": "application/json",
+          "x-account-id": activeAccId
+        },
+        body: JSON.stringify({ topicIcon, topicRenameEmoji, accountId: activeAccId })
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -348,6 +356,29 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
           <span>Activity Logs</span>
         </button>
       </div>
+
+      {settingsSubTab === 'settings' && (
+        <div className={`p-3 rounded-xl border flex items-center justify-between shadow-sm ${
+          darkMode ? 'bg-neutral-900 border-rose-500/30' : 'bg-rose-50 border-rose-200'
+        }`}>
+          <div className="flex items-center gap-2">
+            <Save size={16} className="text-rose-500 animate-pulse shrink-0" />
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-rose-500">Settings Form</p>
+              <p className="text-[10px] text-neutral-500 font-medium">Click save button to apply all updates</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleUpdateSettings}
+            disabled={saving}
+            className="py-2 px-4 rounded-lg bg-gradient-to-r from-rose-600 to-red-600 text-white font-black uppercase text-[10px] tracking-wider shadow-md hover:brightness-110 active:scale-95 transition flex items-center gap-1.5 shrink-0"
+          >
+            {saving ? <RefreshCw className="animate-spin" size={13} /> : <Save size={13} />}
+            <span>{saving ? 'Saving...' : 'Save Settings'}</span>
+          </button>
+        </div>
+      )}
 
       {settingsSubTab === 'logs' ? (
         <div className="rounded-xl overflow-hidden border border-white/10">
@@ -1120,7 +1151,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </AnimatePresence>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-white/5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2 border-t border-white/5">
                 <div className="space-y-1">
                   <label className={`text-[9px] font-black uppercase tracking-wider block ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                     Topic Icon
@@ -1132,7 +1163,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       darkMode ? 'bg-black/30 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
                     }`}
                   >
-                    {["📰", "💡", "⚡️", "🎙", "🔝", "🗣", "🆒", "❗️", "📝", "📆", "📁", "🔎", "📣", "🔥", "❤️", "❓", "📈", "📉", "💎", "💰", "💸", "🪙", "💱", "⁉️", "🎮", "💻", "📱", "🚗", "🏠", "💘", "🎉", "‼️", "🏆", "🏁", "🎬", "🎵", "🔞", "📚", "👑", "⚽️", "🏀", "📺", "👀", "🫦", "🍓", "💄", "👠", "✈️", "🧳", "🏖", "⛅️", "🦄", "🛍", "👜", "🛒", "🚂", "🛥", "🏔", "🏕", "🤖", "🪩", "🎟", "🏴‍☠️", "🗳", "🎓", "🔭", "🔬", "🎶", "🎤", "🕺", "💃", "🪖", "💼", "🧪", "👨‍👩‍👧‍👦", "👶", "🤰", "💅", "🏛", "🧮", "🖨", "👮‍♂️", "🩺", "💊", "💉", "🧼", "🪪", "🛃", "🍽", "🐟", "🎨", "🎭", "🎩", "🔮", "🍹", "🎂", "☕️", "🍣", "🍔", "🍕", "🦠", "💬", "🎄", "🎃", "✍️", "⭐️", "✅", "🎖", "🤡", "🧠", "🦮", "🐈"].map(emoji => (
+                    {["✅", "🛑", "🟥", "🟢", "🔴", "💡", "⚡️", "🎙", "🔝", "🗣", "🆒", "❗️", "📝", "📆", "📁", "🔎", "📣", "🔥", "❤️", "❓", "📈", "📉", "💎", "💰", "💸", "🪙", "💱", "⁉️", "🎮", "💻", "📱", "🚗", "🏠", "💘", "🎉", "‼️", "🏆", "🏁", "🎬", "🎵", "🔞", "📚", "👑", "⚽️", "🏀", "📺", "👀", "🫦", "🍓", "💄", "👠", "✈️", "🧳", "🏖", "⛅️", "🦄", "🛍", "👜", "🛒", "🚂", "🛥", "🏔", "🏕", "🤖", "🪩", "🎟", "🏴‍☠️", "🗳", "🎓", "🔭", "🔬", "🎶", "🎤", "🕺", "💃", "🪖", "💼", "🧪", "👨‍👩‍👧‍👦", "👶", "🤰", "💅", "🏛", "🧮", "🖨", "👮‍♂️", "🩺", "💊", "💉", "🧼", "🪪", "🛃", "🍽", "🐟", "🎨", "🎭", "🎩", "🔮", "🍹", "🎂", "☕️", "🍣", "🍔", "🍕", "🦠", "💬", "🎄", "🎃", "✍️", "⭐️", "🎖", "🤡", "🧠", "🦮", "🐈"].map(emoji => (
                       <option key={emoji} value={emoji}>{emoji}</option>
                     ))}
                   </select>
@@ -1149,9 +1180,24 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     className={`w-full p-1.5 border rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-xs transition ${
                       darkMode ? 'bg-black/30 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
                     }`}
-                    placeholder="e.g. 🛑"
+                    placeholder="e.g. 🛑 or 🟥"
                   />
                   <p className={`text-[8.5px] leading-tight ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Prefix added to topic title.</p>
+                </div>
+                <div className="space-y-1">
+                  <label className={`text-[9px] font-black uppercase tracking-wider block ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                    Trigger Keywords (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={topicRenameKeywords}
+                    onChange={(e) => setTopicRenameKeywords(e.target.value)}
+                    className={`w-full p-1.5 border rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-xs transition ${
+                      darkMode ? 'bg-black/30 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                    }`}
+                    placeholder="e.g. done, paid, screenshot"
+                  />
+                  <p className={`text-[8.5px] leading-tight ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Also triggers rename on text messages.</p>
                 </div>
                 <div className="space-y-1">
                   <label className={`text-[9px] font-black uppercase tracking-wider block ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>

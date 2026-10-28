@@ -1,0 +1,8 @@
+{
+  "style": "professional_glassmorphism",
+  "border_radius": "1rem",
+  "shadow": "shadow-sm hover:shadow-xl",
+  "accent_bar": "gradient",
+  "badges": "rounded-full uppercase font-bold",
+  "updated_at": "2026-10-27"
+}

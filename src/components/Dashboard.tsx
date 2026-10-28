@@ -215,13 +215,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={{ scale: 0.98 }}
           transition={{ duration: 0.3 }}
           onClick={() => setActiveTab('keywords')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-xs hover:shadow-lg ${
             darkMode 
-              ? 'bg-gradient-to-br from-violet-600/15 via-purple-600/10 to-neutral-900/90 border-violet-500/30 hover:border-violet-400' 
-              : 'bg-gradient-to-br from-violet-50 via-purple-50/50 to-white border-violet-200 hover:border-violet-400'
+              ? 'bg-gradient-to-br from-violet-600/20 via-purple-600/10 to-neutral-900/95 border-violet-500/35 hover:border-violet-400' 
+              : 'bg-gradient-to-br from-violet-50 via-purple-50/60 to-white border-violet-200 hover:border-violet-400'
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className="absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 text-violet-500">
+            <Key size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               darkMode ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30' : 'bg-violet-500 text-white shadow-violet-200'
             }`}>
@@ -234,7 +239,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               darkMode ? 'text-violet-300/80' : 'text-violet-700'
             }`}>Active Keywords</p>
@@ -247,7 +252,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             )}
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             darkMode ? 'border-violet-500/20 text-violet-400' : 'border-violet-100 text-violet-600'
           }`}>
             <span>Manage Rules</span>
@@ -263,13 +268,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={{ scale: 0.98 }}
           transition={{ duration: 0.3, delay: 0.05 }}
           onClick={() => setActiveTab('keywords')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-xs hover:shadow-lg ${
             darkMode 
-              ? 'bg-gradient-to-br from-cyan-600/15 via-sky-600/10 to-neutral-900/90 border-cyan-500/30 hover:border-cyan-400' 
-              : 'bg-gradient-to-br from-cyan-50 via-sky-50/50 to-white border-cyan-200 hover:border-cyan-400'
+              ? 'bg-gradient-to-br from-cyan-600/20 via-sky-600/10 to-neutral-900/95 border-cyan-500/35 hover:border-cyan-400' 
+              : 'bg-gradient-to-br from-cyan-50 via-sky-50/60 to-white border-cyan-200 hover:border-cyan-400'
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className="absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 text-cyan-500">
+            <LayoutDashboard size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               darkMode ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'bg-cyan-500 text-white shadow-cyan-200'
             }`}>
@@ -282,7 +292,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               darkMode ? 'text-cyan-300/80' : 'text-cyan-700'
             }`}>Topics Monitored</p>
@@ -295,7 +305,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             )}
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             darkMode ? 'border-cyan-500/20 text-cyan-400' : 'border-cyan-100 text-cyan-600'
           }`}>
             <span>Target Groups</span>
@@ -311,13 +321,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={{ scale: 0.98 }}
           transition={{ duration: 0.3, delay: 0.1 }}
           onClick={() => setActiveTab('photo_stats')}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-xs hover:shadow-lg ${
             darkMode 
-              ? 'bg-gradient-to-br from-fuchsia-600/15 via-pink-600/10 to-neutral-900/90 border-fuchsia-500/30 hover:border-fuchsia-400' 
-              : 'bg-gradient-to-br from-fuchsia-50 via-pink-50/50 to-white border-fuchsia-200 hover:border-fuchsia-400'
+              ? 'bg-gradient-to-br from-fuchsia-600/20 via-pink-600/10 to-neutral-900/95 border-fuchsia-500/35 hover:border-fuchsia-400' 
+              : 'bg-gradient-to-br from-fuchsia-50 via-pink-50/60 to-white border-fuchsia-200 hover:border-fuchsia-400'
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className="absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 text-fuchsia-500">
+            <Image size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               darkMode ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30' : 'bg-fuchsia-500 text-white shadow-fuchsia-200'
             }`}>
@@ -330,7 +345,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               darkMode ? 'text-fuchsia-300/80' : 'text-fuchsia-700'
             }`}>Photos Sent</p>
@@ -339,7 +354,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </h3>
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             darkMode ? 'border-fuchsia-500/20 text-fuchsia-400' : 'border-fuchsia-100 text-fuchsia-600'
           }`}>
             <span>View Gallery</span>
@@ -355,13 +370,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={!isCatchingUp && !isPaused ? { scale: 0.98 } : {}}
           transition={{ duration: 0.3, delay: 0.15 }}
           onClick={!isCatchingUp && !isPaused ? () => setActiveTab('catchup') : undefined}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group flex flex-col justify-between shadow-xs hover:shadow-lg ${
             isPaused 
               ? `${darkMode ? 'bg-neutral-900/40 border-white/5 opacity-60' : 'bg-slate-100 border-slate-200 opacity-60'} cursor-not-allowed`
-              : `${darkMode ? 'bg-gradient-to-br from-amber-600/15 via-orange-600/10 to-neutral-900/90 border-amber-500/30 hover:border-amber-400' : 'bg-gradient-to-br from-amber-50 via-orange-50/50 to-white border-amber-200 hover:border-amber-400'} cursor-pointer`
+              : `${darkMode ? 'bg-gradient-to-br from-amber-600/20 via-orange-600/10 to-neutral-900/95 border-amber-500/35 hover:border-amber-400' : 'bg-gradient-to-br from-amber-50 via-orange-50/60 to-white border-amber-200 hover:border-amber-400'} cursor-pointer`
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className="absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 text-amber-500">
+            <RotateCcw size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               isPaused 
                 ? 'bg-slate-500/20 text-slate-400' 
@@ -378,7 +398,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               darkMode ? 'text-amber-300/80' : 'text-amber-700'
             }`}>Catch Up</p>
@@ -387,7 +407,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </h3>
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             darkMode ? 'border-amber-500/20 text-amber-400' : 'border-amber-100 text-amber-600'
           }`}>
             {isCatchingUp ? (
@@ -418,13 +438,18 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={{ scale: 0.98 }}
           transition={{ duration: 0.3, delay: 0.2 }}
           onClick={handleScanMissed}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-xs hover:shadow-lg ${
             darkMode 
-              ? 'bg-gradient-to-br from-blue-600/15 via-indigo-600/10 to-neutral-900/90 border-blue-500/30 hover:border-blue-400' 
-              : 'bg-gradient-to-br from-blue-50 via-indigo-50/50 to-white border-blue-200 hover:border-blue-400'
+              ? 'bg-gradient-to-br from-blue-600/20 via-indigo-600/10 to-neutral-900/95 border-blue-500/35 hover:border-blue-400' 
+              : 'bg-gradient-to-br from-blue-50 via-indigo-50/60 to-white border-blue-200 hover:border-blue-400'
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className="absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 text-blue-500">
+            <Search size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               darkMode ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'bg-blue-500 text-white shadow-blue-200'
             }`}>
@@ -437,7 +462,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               darkMode ? 'text-blue-300/80' : 'text-blue-700'
             }`}>Scan Missed</p>
@@ -446,7 +471,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </h3>
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             darkMode ? 'border-blue-500/20 text-blue-400' : 'border-blue-100 text-blue-600'
           }`}>
             <span>{isScanningMissed ? 'Please wait' : 'Start Radar'}</span>
@@ -462,17 +487,22 @@ const Dashboard: React.FC<DashboardProps> = ({
           whileTap={{ scale: 0.98 }}
           transition={{ duration: 0.3, delay: 0.25 }}
           onClick={handleTogglePause}
-          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-2xs hover:shadow-md ${
+          className={`p-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden group cursor-pointer flex flex-col justify-between shadow-xs hover:shadow-lg ${
             isPaused 
               ? (darkMode 
-                  ? 'bg-gradient-to-br from-rose-600/15 via-red-600/10 to-neutral-900/90 border-rose-500/30 hover:border-rose-400' 
-                  : 'bg-gradient-to-br from-rose-50 via-red-50/50 to-white border-rose-200 hover:border-rose-400')
+                  ? 'bg-gradient-to-br from-rose-600/20 via-red-600/10 to-neutral-900/95 border-rose-500/35 hover:border-rose-400' 
+                  : 'bg-gradient-to-br from-rose-50 via-red-50/60 to-white border-rose-200 hover:border-rose-400')
               : (darkMode 
-                  ? 'bg-gradient-to-br from-emerald-600/15 via-teal-600/10 to-neutral-900/90 border-emerald-500/30 hover:border-emerald-400' 
-                  : 'bg-gradient-to-br from-emerald-50 via-teal-50/50 to-white border-emerald-200 hover:border-emerald-400')
+                  ? 'bg-gradient-to-br from-emerald-600/20 via-teal-600/10 to-neutral-900/95 border-emerald-500/35 hover:border-emerald-400' 
+                  : 'bg-gradient-to-br from-emerald-50 via-teal-50/60 to-white border-emerald-200 hover:border-emerald-400')
           }`}
         >
-          <div className="flex items-center justify-between mb-2">
+          {/* Background Watermark Icon */}
+          <div className={`absolute -bottom-4 -right-4 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity duration-300 ${isPaused ? 'text-rose-500' : 'text-emerald-500'}`}>
+            <Bot size={96} strokeWidth={2.5} />
+          </div>
+
+          <div className="flex items-center justify-between mb-2 relative z-10">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xs ${
               isPaused 
                 ? (darkMode ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-rose-500 text-white shadow-rose-200')
@@ -489,7 +519,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div>
+          <div className="relative z-10">
             <p className={`text-[10px] font-extrabold uppercase tracking-wider mb-0.5 ${
               isPaused 
                 ? (darkMode ? 'text-rose-300/80' : 'text-rose-700') 
@@ -504,7 +534,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             </h3>
           </div>
 
-          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+          <div className={`mt-2 pt-2 border-t flex items-center justify-between text-[10px] font-bold relative z-10 ${
             isPaused 
               ? (darkMode ? 'border-rose-500/20 text-rose-400' : 'border-rose-100 text-rose-600')
               : (darkMode ? 'border-emerald-500/20 text-emerald-400' : 'border-emerald-100 text-emerald-600')

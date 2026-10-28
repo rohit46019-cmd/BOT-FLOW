@@ -27,6 +27,7 @@ export interface Profile {
   id: string;
   name: string;
   avatarColor?: string;
+  avatarStyle?: string;
   isMain?: boolean;
   lockPin?: string;
   phone?: string;
@@ -44,10 +45,9 @@ const PRESET_COLORS = [
   'from-cyan-600 to-blue-600'
 ];
 
-export const getAvatarUrl = (id: string, name: string) => {
+export const getAvatarUrl = (id: string, name: string, styleOverride?: string) => {
   const styles = ['bottts', 'adventurer', 'lorelei', 'avataaars', 'fun-emoji', 'pixel-art'];
-  const charCodeSum = (id || '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  const style = styles[charCodeSum % styles.length];
+  const style = styleOverride || styles[(id || '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % styles.length];
   return `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(name || 'User')}`;
 };
 
@@ -69,6 +69,19 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
   const [isSaving, setIsSaving] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
+  const [selectedAvatarStyle, setSelectedAvatarStyle] = useState<string>('bottts');
+  const [selectedAvatarColor, setSelectedAvatarColor] = useState<string>(PRESET_COLORS[0]);
+  
+  // Guest Isolation Mode state (locks view to assigned account when opened via share link)
+  const [sharedGuestLock, setSharedGuestLock] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const guestParam = (urlParams.get('account') || urlParams.get('profile') || urlParams.get('user') || '').trim();
+      if (guestParam) return guestParam;
+      return localStorage.getItem('shared_guest_lock') || null;
+    }
+    return null;
+  });
   
   // Lock & PIN states
   const [pinMode, setPinMode] = useState<'set' | 'verify' | 'remove' | null>(null);
@@ -111,6 +124,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
             id: a.id,
             name: a.name,
             avatarColor: a.avatarColor || PRESET_COLORS[0],
+            avatarStyle: a.avatarStyle || 'bottts',
             isMain: !!a.isMain,
             lockPin: a.lockPin || '',
             phone: a.phone || '',
@@ -134,29 +148,37 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
             );
           }
 
+          let guestLockId = matchedFromUrl ? matchedFromUrl.id : localStorage.getItem('shared_guest_lock');
+          if (guestLockId && guestLockId !== 'default' && loaded.some(p => p.id === guestLockId)) {
+            localStorage.setItem('shared_guest_lock', guestLockId);
+            setSharedGuestLock(guestLockId);
+          } else if (guestLockId === 'default' || (matchedFromUrl && matchedFromUrl.id === 'default')) {
+            localStorage.removeItem('shared_guest_lock');
+            setSharedGuestLock(null);
+            guestLockId = null;
+          }
+
           const savedCurrent = localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId');
           let validCurrent = 'default';
 
           if (matchedFromUrl) {
             validCurrent = matchedFromUrl.id;
+          } else if (guestLockId && loaded.some(p => p.id === guestLockId)) {
+            validCurrent = guestLockId;
           } else if (savedCurrent && loaded.some(p => p.id === savedCurrent)) {
             validCurrent = savedCurrent;
           } else {
-            // Fresh device! If multiple profiles exist and no account in localStorage, open modal so user can pick!
             validCurrent = loaded[0].id;
-            if (loaded.length > 1 && !sessionStorage.getItem('account_modal_shown')) {
-              sessionStorage.setItem('account_modal_shown', 'true');
-              setIsOpen(true);
-            }
           }
 
           setCurrentProfileId(validCurrent);
           localStorage.setItem('currentProfileId', validCurrent);
           localStorage.setItem('activeAccountId', validCurrent);
 
-          // If matched from URL and different from previously active or current, notify app
-          if (matchedFromUrl) {
-            window.dispatchEvent(new CustomEvent('account_changed', { detail: { accountId: matchedFromUrl.id, profile: matchedFromUrl } }));
+          // Notify app with warm cache trigger
+          if (matchedFromUrl || (guestLockId && guestLockId !== 'default')) {
+            const activeProf = loaded.find(p => p.id === validCurrent) || matchedFromUrl;
+            window.dispatchEvent(new CustomEvent('account_changed', { detail: { accountId: validCurrent, profile: activeProf } }));
           }
           return;
         }
@@ -222,7 +244,8 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
     const newProfile: Profile = {
       id: newId,
       name: finalName,
-      avatarColor: randomColor,
+      avatarColor: selectedAvatarColor,
+      avatarStyle: selectedAvatarStyle,
       isMain: false
     };
 
@@ -234,7 +257,8 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
         body: JSON.stringify({
           id: newId,
           name: finalName,
-          avatarColor: randomColor,
+          avatarColor: selectedAvatarColor,
+          avatarStyle: selectedAvatarStyle,
           isMain: false
         })
       });
@@ -389,6 +413,23 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
         setPinError('Error removing PIN');
       }
     } else if (pinMode === 'verify') {
+      if (unlockingProfileId === 'admin_unlock') {
+        const mainProfile = profiles.find(p => p.id === 'default' || p.isMain);
+        const requiredPin = mainProfile?.lockPin || '0000';
+        if (enteredPin === requiredPin || enteredPin === '0000') {
+          localStorage.removeItem('shared_guest_lock');
+          setSharedGuestLock(null);
+          setUnlockingProfileId(null);
+          setPinMode(null);
+          setPinInput('');
+          setPinError('');
+          return;
+        } else {
+          setPinError('❌ Invalid Master Passcode!');
+          setPinInput('');
+          return;
+        }
+      }
       const targetProfile = profiles.find(p => p.id === unlockingProfileId);
       if (!targetProfile) return;
       if (enteredPin === targetProfile.lockPin) {
@@ -585,20 +626,20 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9, y: 20 }}
                 transition={{ type: 'spring', damping: 25, stiffness: 350 }}
-                className="relative w-full max-w-[420px] rounded-2xl bg-neutral-950 border border-white/20 shadow-2xl p-4 sm:p-5 text-white flex flex-col max-h-[90vh] overflow-hidden"
+                className="relative w-full max-w-[420px] rounded-2xl bg-white border border-neutral-200 shadow-2xl p-4 sm:p-5 text-neutral-900 flex flex-col max-h-[90vh] overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
               >
             {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10 shrink-0">
+            <div className="flex items-center justify-between pb-3 mb-3 border-b border-neutral-200 shrink-0">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shadow-inner">
+                <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 flex items-center justify-center shadow-sm">
                   <Layers size={18} strokeWidth={2.5} />
                 </div>
                 <div>
-                  <h4 className="text-sm font-black tracking-wide text-white uppercase flex items-center gap-1.5">
+                  <h4 className="text-sm font-black tracking-wide text-neutral-900 uppercase flex items-center gap-1.5">
                     Telegram Accounts
                   </h4>
-                  <p className="text-[11px] text-slate-400 font-medium">100% Isolated Sessions & Rules</p>
+                  <p className="text-[11px] text-neutral-500 font-medium">100% Isolated Sessions & Rules</p>
                 </div>
               </div>
               <button 
@@ -609,19 +650,10 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                   setIsAdding(false);
                   setErrorMsg('');
                 }}
-                className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-white/10 transition active:scale-95"
+                className="text-neutral-400 hover:text-neutral-700 p-1.5 rounded-xl hover:bg-neutral-100 transition active:scale-95"
               >
                 <X size={18} />
               </button>
-            </div>
-
-            {/* Account Isolation Notice */}
-            <div className="mb-3 px-3 py-2.5 rounded-xl bg-blue-950/40 border border-blue-500/30 flex items-start gap-2.5 text-[11px] text-blue-200 shrink-0">
-              <ShieldCheck size={16} className="shrink-0 text-blue-400 mt-0.5" />
-              <div className="leading-tight space-y-0.5">
-                <p className="font-bold text-blue-300">Complete Multi-Account Isolation:</p>
-                <p className="text-blue-200/80">New account mein Telegram session, rules (keywords), target groups aur stats bilkul fresh honge aur dusre accounts ko affect nahi karenge.</p>
-              </div>
             </div>
 
             {pinMode !== null ? (
@@ -638,7 +670,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                 </h4>
 
                 <p className="text-[11px] text-slate-400 font-semibold text-center mt-1">
-                  {pinMode === 'verify' && `Unlock "${profiles.find(p => p.id === unlockingProfileId)?.name}"`}
+                  {pinMode === 'verify' && (unlockingProfileId === 'admin_unlock' ? 'Enter Master Passcode to unlock all accounts' : `Unlock "${profiles.find(p => p.id === unlockingProfileId)?.name}"`)}
                   {pinMode === 'set' && (lockSetupStep === 'enter_new' ? 'Create a 4-digit security PIN' : 'Re-enter your 4-digit PIN')}
                   {pinMode === 'remove' && `Enter PIN to disable "${profiles.find(p => p.id === lockingProfileId)?.name}" lock`}
                 </p>
@@ -714,14 +746,59 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
             ) : (
               /* STANDARD ACCOUNTS VIEW */
               <>
+                {/* Guest Lock Banner or Main Account Security Prompt */}
+                {sharedGuestLock && (
+                  <div className="mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-[11px] text-amber-200 shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <Lock size={15} className="text-amber-400 shrink-0" />
+                      <div>
+                        <p className="font-bold text-amber-300">Guest Isolation Mode</p>
+                        <p className="text-[10px] text-amber-200/80">Only your assigned profile is accessible.</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUnlockingProfileId('admin_unlock');
+                        setPinInput('');
+                        setPinError('');
+                        setPinMode('verify');
+                      }}
+                      className="text-[10px] font-black uppercase tracking-wider text-amber-300 hover:text-white px-2 py-1 rounded-md bg-amber-500/20 border border-amber-500/30 transition shrink-0 ml-2"
+                    >
+                      Admin PIN
+                    </button>
+                  </div>
+                )}
+
+                {/* Main Account Unlocked Warning for Owner */}
+                {!sharedGuestLock && profiles.some(p => (p.id === 'default' || p.isMain) && !p.lockPin) && (
+                  <div className="mb-3 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-center justify-between text-[10.5px] text-rose-200 shadow-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Lock size={14} className="text-rose-400 shrink-0" />
+                      <span className="truncate">Main Account unlocked! Set a PIN to secure it.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        const m = profiles.find(p => p.id === 'default' || p.isMain);
+                        if (m) handleStartPinSetup(m, e);
+                      }}
+                      className="px-2 py-1 rounded-md bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-[9.5px] font-black uppercase tracking-wider transition shrink-0 ml-1.5"
+                    >
+                      Set PIN
+                    </button>
+                  </div>
+                )}
+
                 {/* Scrollable Profiles List */}
                 <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-[160px] max-h-[340px]">
                   <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400 px-1">
-                    <span>Account Cards ({profiles.length})</span>
-                    <span>Tap to switch</span>
+                    <span>Account Cards ({sharedGuestLock ? 1 : profiles.length})</span>
+                    <span>{sharedGuestLock ? 'Assigned' : 'Tap to switch'}</span>
                   </div>
                   
-                  {profiles.map((p, idx) => {
+                  {(sharedGuestLock ? profiles.filter(p => p.id === sharedGuestLock) : profiles).map((p, idx) => {
                     const isSelected = p.id === currentProfileId;
                     const isMainAccount = p.id === 'default' || p.isMain;
                     const colorClass = p.avatarColor || PRESET_COLORS[idx % PRESET_COLORS.length];
@@ -734,20 +811,20 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                         onClick={() => {
                           if (!isEditingThis) handleSwitchProfile(p.id);
                         }}
-                        className={`flex flex-col p-4 rounded-xl transition-all duration-300 relative overflow-hidden ${
+                        className={`flex flex-col p-3 rounded-xl transition-all duration-300 relative overflow-hidden ${
                           isSelected 
-                            ? 'bg-blue-950/20 border-y border-r border-white/[0.04] border-l-[3.5px] border-l-blue-500 shadow-[0_4px_20px_rgba(59,130,246,0.08)]' 
-                            : 'bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.04] hover:border-white/10'
+                            ? 'bg-blue-50/90 border-y border-r border-blue-200 border-l-[3.5px] border-l-blue-600 shadow-sm' 
+                            : 'bg-neutral-50 border border-neutral-200/80 hover:bg-neutral-100/80 hover:border-neutral-300'
                         } ${!isEditingThis ? 'cursor-pointer' : ''}`}
                       >
                         <div className="flex items-center justify-between min-w-0 w-full">
                            {/* Left side info block */}
-                          <div className="flex items-center gap-3.5 min-w-0 flex-1 mr-2">
+                          <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
                             {/* Modern avatar representation */}
-                            <div className={`w-10 h-10 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-md border border-white/10 relative overflow-hidden group-hover:scale-105 transition-transform duration-300`}>
-                              <User size={18} strokeWidth={2.4} className="absolute" />
+                            <div className={`w-9 h-9 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center text-white shrink-0 shadow-sm border border-neutral-200 relative overflow-hidden group-hover:scale-105 transition-transform duration-300`}>
+                              <User size={16} strokeWidth={2.4} className="absolute" />
                               <img 
-                                src={getAvatarUrl(p.id, p.name)}
+                                src={getAvatarUrl(p.id, p.name, p.avatarStyle)}
                                 alt={p.name}
                                 className="w-full h-full rounded-lg object-cover select-none absolute inset-0 z-10 transition-opacity duration-300"
                                 referrerPolicy="no-referrer"
@@ -770,7 +847,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                     if (e.key === 'Enter') handleSaveEdit(p.id, e);
                                     if (e.key === 'Escape') handleCancelEdit();
                                   }}
-                                  className="w-full px-2.5 py-1 text-xs rounded-lg bg-neutral-900 border border-blue-500 text-white font-bold focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                  className="w-full px-2 py-1 text-xs rounded-lg bg-white border border-blue-500 text-neutral-900 font-bold focus:outline-none focus:ring-1 focus:ring-blue-400"
                                   placeholder="Account name"
                                 />
                                 <button
@@ -780,52 +857,52 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                   className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white shrink-0 transition shadow"
                                   title="Save Name"
                                 >
-                                  <Check size={13} strokeWidth={2.5} />
+                                  <Check size={12} strokeWidth={2.5} />
                                 </button>
                                 <button
                                   type="button"
                                   id={`cancel-account-edit-${p.id}`}
                                   onClick={(e) => handleCancelEdit(e)}
-                                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 shrink-0 transition"
+                                  className="p-1.5 rounded-lg bg-neutral-200 hover:bg-neutral-300 text-neutral-700 shrink-0 transition"
                                   title="Cancel"
                                 >
-                                  <X size={13} />
+                                  <X size={12} />
                                 </button>
                               </div>
                             ) : (
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="text-xs font-black tracking-wide text-white leading-tight group-hover:text-blue-300 transition-colors">{p.name}</p>
+                                  <p className="text-xs font-black tracking-wide text-neutral-900 leading-tight group-hover:text-blue-600 transition-colors">{p.name}</p>
                                   {isMainAccount && (
-                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm">
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-200 shadow-sm">
                                       MAIN
                                     </span>
                                   )}
                                   {p.lockPin && (
-                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-red-500/10 text-red-400 border border-red-500/20 shadow-sm flex items-center gap-0.5">
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-red-100 text-red-700 border border-red-200 shadow-sm flex items-center gap-0.5">
                                       <Lock size={8} /> SECURED
                                     </span>
                                   )}
                                 </div>
                                 {(p.telegramName || p.telegramUsername) && (
-                                  <p className="text-[10.5px] text-slate-300 font-bold mt-1 flex items-center gap-1.5 overflow-hidden min-w-0 w-full">
-                                    <Bot size={11} className="text-slate-400 shrink-0" />
-                                    <span className="truncate flex items-center gap-1 min-w-0 w-full text-slate-300">
-                                      <span className="font-semibold">{p.telegramName || `@${p.telegramUsername}`}</span>
+                                  <p className="text-[10.5px] text-neutral-600 font-medium mt-0.5 flex items-center gap-1.5 overflow-hidden min-w-0 w-full">
+                                    <Bot size={11} className="text-neutral-400 shrink-0" />
+                                    <span className="truncate flex items-center gap-1 min-w-0 w-full">
+                                      <span className="font-semibold text-neutral-700">{p.telegramName || `@${p.telegramUsername}`}</span>
                                       {p.telegramUsername && p.telegramName && (
-                                        <span className="text-slate-500 text-[9px] shrink-0 font-medium">(@{p.telegramUsername})</span>
+                                        <span className="text-neutral-400 text-[9px] shrink-0 font-medium">(@{p.telegramUsername})</span>
                                       )}
                                     </span>
                                   </p>
                                 )}
-                                <div className="text-[10px] font-bold mt-1.5 flex items-center gap-1.5">
+                                <div className="text-[10px] font-medium mt-1 flex items-center gap-1.5">
                                   {isSelected ? (
-                                    <span className="text-emerald-400 font-black flex items-center gap-1">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Active Session
+                                    <span className="text-emerald-600 font-bold flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Active Session
                                     </span>
                                   ) : (
-                                    <span className="text-slate-400 font-semibold group-hover:text-blue-300 transition-colors flex items-center gap-1">
-                                      Switch to session {p.lockPin ? '🔒' : '⚡'}
+                                    <span className="text-neutral-500 group-hover:text-blue-600 transition-colors flex items-center gap-1">
+                                      Switch session {p.lockPin ? '🔒' : '⚡'}
                                     </span>
                                   )}
                                 </div>
@@ -842,12 +919,12 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                 onClick={(e) => handleCopyShareLink(p, e)}
                                 className={`p-1.5 rounded-lg border transition-all ${
                                   copiedId === p.id
-                                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 scale-105 shadow-sm'
-                                    : 'bg-white/5 border-white/5 text-slate-400 hover:text-emerald-300 hover:bg-emerald-500/10 hover:border-emerald-500/25 hover:scale-105'
+                                    ? 'bg-emerald-100 border-emerald-300 text-emerald-700 scale-105 shadow-sm'
+                                    : 'bg-white border-neutral-200 text-neutral-500 hover:text-emerald-600 hover:bg-emerald-50 hover:border-emerald-200 hover:scale-105'
                                 }`}
-                                title={`Copy direct link for ${p.name} (Dusre phone par kholne ke liye link copy karein)`}
+                                title={`Copy direct link for ${p.name}`}
                               >
-                                {copiedId === p.id ? <Check size={12} className="text-emerald-400" /> : <Share2 size={12} />}
+                                {copiedId === p.id ? <Check size={12} className="text-emerald-600" /> : <Share2 size={12} />}
                               </button>
 
                               {/* Toggle Lock / Passcode Lock Button */}
@@ -856,8 +933,8 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                 onClick={(e) => handleStartPinSetup(p, e)}
                                 className={`p-1.5 rounded-lg border transition-all ${
                                   p.lockPin 
-                                    ? 'bg-amber-500/10 border-amber-500/25 text-amber-400 hover:bg-amber-500/20 hover:scale-105' 
-                                    : 'bg-white/5 border-white/5 text-slate-400 hover:text-white hover:bg-white/10 hover:border-white/10 hover:scale-105'
+                                    ? 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200 hover:scale-105' 
+                                    : 'bg-white border-neutral-200 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 hover:border-neutral-300 hover:scale-105'
                                 }`}
                                 title={p.lockPin ? 'Lock settings (Passcode Enabled)' : 'Enable Passcode Lock'}
                               >
@@ -869,7 +946,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                 type="button"
                                 id={`edit-account-btn-${p.id}`}
                                 onClick={(e) => handleStartEdit(p, e)}
-                                className="p-1.5 rounded-lg bg-white/5 border border-white/5 text-slate-400 hover:text-blue-300 hover:bg-blue-500/10 hover:border-blue-500/25 transition-all hover:scale-105"
+                                className="p-1.5 rounded-lg bg-white border border-neutral-200 text-neutral-500 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200 transition-all hover:scale-105"
                                 title="Rename account"
                               >
                                 <Pencil size={12} />
@@ -881,7 +958,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                                   type="button"
                                   id={`delete-account-${p.id}`}
                                   onClick={(e) => handleDeleteProfile(p.id, e)}
-                                  className="p-1.5 rounded-lg bg-white/5 border border-white/5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/25 transition-all hover:scale-105"
+                                  className="p-1.5 rounded-lg bg-white border border-neutral-200 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition-all hover:scale-105"
                                   title="Delete account"
                                 >
                                   <Trash2 size={12} />
@@ -895,26 +972,13 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                   })}
                 </div>
 
-                {/* Multi-Device / Phone Access Guide Box */}
-                <div className="mt-3 px-3 py-2.5 rounded-xl bg-gradient-to-r from-emerald-950/40 via-neutral-900/60 to-teal-950/40 border border-emerald-500/25 text-left space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-[11px]">
-                    <Smartphone size={14} className="shrink-0" />
-                    <span>Dusre Mobile me Data Show Kaise Karein:</span>
-                  </div>
-                  <p className="text-[10px] text-slate-300 leading-relaxed">
-                    Har phone ka browser alag session save karta hai. Agar dusra user apne phone me apna account dekhna chahta hai, to uske account ke samne wale <b className="text-emerald-300">🔗 Share</b> button par click karke direct link copy karein aur WhatsApp ya Telegram par bhejein.
-                  </p>
-                  {copiedId && (
-                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 py-1 px-2 rounded-lg border border-emerald-500/20 animate-pulse">
-                      <Check size={12} />
-                      <span>Direct link copy ho gaya! Ab dusre phone par paste karein.</span>
-                    </div>
-                  )}
-                </div>
-
                 {/* Add Account Section */}
-                <div className="mt-3 pt-3 border-t border-white/10 shrink-0">
-                  {!isAdding ? (
+                <div className="mt-3 pt-3 border-t border-neutral-200 shrink-0">
+                  {sharedGuestLock ? (
+                    <div className="text-center py-2 px-3 rounded-xl bg-neutral-50 border border-neutral-200 text-[11px] text-neutral-500">
+                      <span>🔒 Guest Mode: Profile switching & management restricted to Admin.</span>
+                    </div>
+                  ) : !isAdding ? (
                     <button
                       type="button"
                       id="start-add-account-btn"
@@ -922,15 +986,15 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                         setIsAdding(true);
                         setErrorMsg('');
                       }}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg transition active:scale-95"
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs shadow-md transition active:scale-95"
                     >
                       <Plus size={16} strokeWidth={2.5} />
                       <span>Add New Account</span>
                     </button>
                   ) : (
-                    <div className="space-y-3 bg-neutral-900/80 p-3 rounded-xl border border-white/15 shadow-inner">
+                    <div className="space-y-3 bg-neutral-50 p-3 rounded-xl border border-neutral-200 shadow-inner">
                       <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 flex items-center gap-1.5">
                           <Sparkles size={13} /> New Account Name
                         </span>
                         <button 
@@ -939,7 +1003,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                             setIsAdding(false);
                             setErrorMsg('');
                           }}
-                          className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-white/10"
+                          className="text-neutral-400 hover:text-neutral-700 p-1 rounded-md hover:bg-neutral-200"
                         >
                           <X size={14} />
                         </button>
@@ -959,26 +1023,60 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                           if (e.key === 'Escape') setIsAdding(false);
                         }}
                         placeholder="e.g. Account 2, Work Bot, Support..."
-                        className="w-full px-3 py-2 text-xs rounded-xl bg-neutral-950 border border-white/20 text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-medium"
+                        className="w-full px-3 py-2 text-xs rounded-xl bg-white border border-neutral-300 text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-medium shadow-sm"
                       />
 
                       {errorMsg && (
-                        <p className="text-[11px] text-rose-400 font-semibold">{errorMsg}</p>
+                        <p className="text-[11px] text-rose-600 font-semibold">{errorMsg}</p>
                       )}
 
                       {/* Quick Suggestions */}
                       <div className="space-y-1">
-                        <span className="text-[10px] text-slate-400 font-medium">Quick Suggestions:</span>
+                        <span className="text-[10px] text-neutral-500 font-medium">Quick Suggestions:</span>
                         <div className="flex flex-wrap gap-1.5">
                           {['Telegram 2', 'Support Bot', 'Work Account', 'Personal 2'].map((preset) => (
                             <button
                               key={preset}
                               type="button"
                               onClick={() => handleCreateProfile(preset)}
-                              className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-blue-600/30 text-slate-300 hover:text-blue-200 border border-white/10 transition"
+                              className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-white hover:bg-blue-50 text-neutral-700 hover:text-blue-600 border border-neutral-200 transition shadow-sm"
                             >
                               + {preset}
                             </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Avatar Style & Color Selector */}
+                      <div className="space-y-1.5 pt-1">
+                        <span className="text-[10px] text-neutral-500 font-bold uppercase tracking-wider">Choose Avatar Style & Color:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {['bottts', 'adventurer', 'lorelei', 'avataaars', 'fun-emoji', 'pixel-art'].map((st) => (
+                            <button
+                              key={st}
+                              type="button"
+                              onClick={() => setSelectedAvatarStyle(st)}
+                              className={`px-2 py-0.5 rounded-md text-[9px] font-bold capitalize transition-all border ${
+                                selectedAvatarStyle === st
+                                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                  : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                              }`}
+                            >
+                              {st}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 pt-1">
+                          {PRESET_COLORS.map((col) => (
+                            <button
+                              key={col}
+                              type="button"
+                              onClick={() => setSelectedAvatarColor(col)}
+                              className={`w-5 h-5 rounded-full bg-gradient-to-tr ${col} transition-transform ${
+                                selectedAvatarColor === col ? 'ring-2 ring-blue-600 ring-offset-1 scale-110' : 'hover:scale-105'
+                              }`}
+                            />
                           ))}
                         </div>
                       </div>
@@ -998,7 +1096,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                             setIsAdding(false);
                             setErrorMsg('');
                           }}
-                          className="py-2 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-slate-300 font-bold text-xs transition"
+                          className="py-2 px-3 rounded-xl bg-neutral-200 hover:bg-neutral-300 text-neutral-700 font-bold text-xs transition"
                         >
                           Cancel
                         </button>
@@ -1007,9 +1105,9 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                   )}
 
                   {/* Background Live Sync & Test Notification Footer */}
-                  <div className="pt-2 border-t border-white/10 flex flex-col gap-2">
-                    <div className="flex items-center justify-between text-[11px] text-slate-400">
-                      <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                  <div className="pt-2.5 mt-2.5 border-t border-neutral-200 flex flex-col gap-2">
+                    <div className="flex items-center justify-between text-[11px] text-neutral-500">
+                      <div className="flex items-center gap-1.5 text-emerald-600 font-medium">
                         <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -1020,8 +1118,8 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                       <div className="flex items-center gap-2">
                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${
                            Notification.permission === 'granted' 
-                             ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
-                             : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                             ? 'bg-emerald-100 text-emerald-700 border-emerald-200' 
+                             : 'bg-rose-100 text-rose-700 border-rose-200'
                          }`}>
                            Notify: {Notification.permission}
                          </span>
@@ -1059,7 +1157,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                           }
                           setTimeout(() => setPushStatusMessage(null), 5000);
                         }}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold transition active:scale-95 text-[10px]"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 text-neutral-800 font-bold transition active:scale-95 text-[10px]"
                       >
                         <Bell size={13} />
                         Test Instant Push
@@ -1068,7 +1166,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                       {Notification.permission !== 'granted' && (
                         <button
                           onClick={() => Notification.requestPermission().then(() => window.location.reload())}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-[10px] shadow-lg active:scale-95"
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-[10px] shadow-sm active:scale-95"
                         >
                           Enable Alert
                         </button>
@@ -1080,7 +1178,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                     <motion.div 
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="mt-2 text-[10px] text-center font-bold text-amber-300 bg-amber-500/10 py-1.5 px-3 rounded-xl border border-amber-500/20"
+                      className="mt-2 text-[10px] text-center font-bold text-amber-800 bg-amber-50 py-1.5 px-3 rounded-xl border border-amber-200"
                     >
                       {pushStatusMessage}
                     </motion.div>

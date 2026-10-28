@@ -49,9 +49,22 @@ export async function apiFetch(
   const method = (config.method || 'GET').toUpperCase();
   const maxRetries = config.retries !== undefined ? config.retries : 2;
 
-  // For GET requests, check in-flight deduplication
+  let activeAccountId =
+    (typeof window !== 'undefined'
+      ? localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId')
+      : null) || 'default';
+  if (!activeAccountId && typeof window !== 'undefined') {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlAcc = urlParams.get('account') || urlParams.get('profile') || urlParams.get('user');
+      if (urlAcc) activeAccountId = urlAcc.trim();
+    } catch (e) {}
+  }
+  const inFlightKey = `${activeAccountId || 'default'}_${urlString}`;
+
+  // For GET requests, check in-flight deduplication per account
   if (method === 'GET' && !config.bypassCache) {
-    const inFlight = inFlightRequests.get(urlString);
+    const inFlight = inFlightRequests.get(inFlightKey);
     if (inFlight) {
       // Clone response to avoid body already read errors
       const res = await inFlight;
@@ -115,9 +128,9 @@ export async function apiFetch(
 
   if (method === 'GET' && !config.bypassCache) {
     const requestPromise = execute().finally(() => {
-      inFlightRequests.delete(urlString);
+      inFlightRequests.delete(inFlightKey);
     });
-    inFlightRequests.set(urlString, requestPromise);
+    inFlightRequests.set(inFlightKey, requestPromise);
     const res = await requestPromise;
     return res.clone();
   }
@@ -199,10 +212,16 @@ export async function apiJson<T = any>(
 export function invalidateApiCache(urlPrefix?: string) {
   if (!urlPrefix) {
     responseCache.clear();
+    inFlightRequests.clear();
   } else {
     for (const key of responseCache.keys()) {
       if (key.includes(urlPrefix)) {
         responseCache.delete(key);
+      }
+    }
+    for (const key of inFlightRequests.keys()) {
+      if (key.includes(urlPrefix)) {
+        inFlightRequests.delete(key);
       }
     }
   }

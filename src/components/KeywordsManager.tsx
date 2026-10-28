@@ -109,16 +109,16 @@ const RuleCard = memo(function RuleCard({
 
   return (
     <div 
-      className={`p-2.5 rounded-xl border transition-all duration-150 relative overflow-hidden group shadow-xs hover:shadow-md will-change-transform transform-gpu ${
+      className={`p-3.5 rounded-2xl border transition-all duration-200 relative overflow-hidden group shadow-sm hover:shadow-lg will-change-transform transform-gpu ${
         darkMode 
-          ? `${isEnabled ? 'bg-neutral-900/95' : 'bg-neutral-900/40 opacity-65'} border-white/10 hover:border-blue-500/40 shadow-black/40` 
-          : `${isEnabled ? 'bg-white' : 'bg-slate-50 opacity-65'} border-slate-200/90 hover:border-blue-300 shadow-slate-200/60`
+          ? `${isEnabled ? 'bg-gradient-to-br from-neutral-900/95 via-neutral-900/90 to-neutral-950/95' : 'bg-neutral-900/40 opacity-60'} border-white/10 hover:border-blue-500/50 shadow-black/60` 
+          : `${isEnabled ? 'bg-gradient-to-br from-white via-slate-50/50 to-white' : 'bg-slate-100 opacity-60'} border-slate-200/90 hover:border-blue-400 shadow-slate-200/80`
       }`}
     >
-      {/* Top accent line */}
-      <div className={`absolute top-0 left-0 right-0 h-0.5 ${
+      {/* Top professional gradient accent bar */}
+      <div className={`absolute top-0 left-0 right-0 h-1 ${
         isEnabled 
-          ? (isNotify ? 'bg-emerald-500' : isApproval ? 'bg-amber-500' : 'bg-blue-500') 
+          ? (isNotify ? 'bg-gradient-to-r from-emerald-500 to-teal-400' : isApproval ? 'bg-gradient-to-r from-amber-500 to-orange-400' : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500') 
           : 'bg-slate-500'
       }`} />
 

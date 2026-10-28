@@ -331,14 +331,18 @@ export function useCachedState<T>(key: string, defaultValue: T): [T, React.Dispa
       } catch (e) {
         setState(defaultValue);
       }
-    } else {
+    }
+  }, [scopedKey, defaultValue]);
+
+  useEffect(() => {
+    if (state !== undefined && state !== null) {
       try {
         localStorage.setItem(scopedKey, JSON.stringify(state));
       } catch (e) {
         console.warn('Error writing to localStorage', e);
       }
     }
-  }, [scopedKey, state, defaultValue]);
+  }, [scopedKey, state]);
 
   return [state, setState];
 }
@@ -422,6 +426,10 @@ export default function App() {
           localStorage.setItem('currentProfileId', trimmed);
           localStorage.setItem('activeAccountId', trimmed);
           return trimmed;
+        }
+        const guestLock = localStorage.getItem('shared_guest_lock');
+        if (guestLock) {
+          return guestLock;
         }
       } catch (e) {}
       return localStorage.getItem('currentProfileId') || localStorage.getItem('activeAccountId') || 'default';
@@ -1517,7 +1525,7 @@ export default function App() {
   // Consolidated fetcher that retrieves all critical app state in a single, fast API call
   const fetchAppState = async (forceSyncForm = false) => {
     try {
-      const res = await apiJson("/api/app-state");
+      const res = await apiJson("/api/app-state", { bypassCache: forceSyncForm });
       if (res.ok && res.data && res.data.success) {
         const { stats: sData, keywords: kwData, blockedTopics: btData, missedCount: mcData, logs: lData, lastImportInfo: liData } = res.data;
         if (sData) {
@@ -3158,95 +3166,146 @@ export default function App() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0, scale: 1.05, filter: "blur(12px)" }}
-          className="fixed inset-0 z-[1000] bg-[#07090e] flex flex-col items-center justify-center overflow-hidden"
+          className="fixed inset-0 z-[1000] bg-[#090518] flex flex-col items-center justify-between p-6 overflow-hidden select-none"
         >
-          {/* Cyberpunk Grid / Ambient Light */}
+          {/* Cyberpunk Purple Ambient Light & Waves */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] rounded-full blur-[140px] opacity-15 bg-blue-600" />
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[50%] h-[50%] rounded-full blur-[120px] opacity-15 bg-emerald-600" />
-            <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:32px_32px] opacity-[0.03]" />
+            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[350px] h-[350px] rounded-full blur-[150px] opacity-25 bg-purple-600" />
+            <div className="absolute top-1/3 left-1/4 w-[250px] h-[250px] rounded-full blur-[130px] opacity-20 bg-blue-600" />
+            <div className="absolute inset-0 bg-[radial-gradient(#a855f7_1px,transparent_1px)] [background-size:40px_40px] opacity-[0.02]" />
+            <div className="absolute bottom-0 left-0 right-0 h-48 bg-gradient-to-t from-purple-900/40 via-blue-900/10 to-transparent blur-2xl" />
           </div>
 
-          <motion.div
-            initial={{ scale: 0.85, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: "spring", damping: 22, stiffness: 120 }}
-            className="relative z-10 flex flex-col items-center"
-          >
-            {/* Multi-Ring Orbital Loader */}
-            <div className="relative w-32 h-32 mb-10 flex items-center justify-center">
-              {/* Outer Rotating Dashed Ring */}
-              <motion.div 
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 12, ease: "linear" }}
-                className="absolute inset-0 rounded-full border border-dashed border-emerald-500/30"
-              />
-              {/* Middle Counter-Rotating Glowing Ring */}
-              <motion.div 
-                animate={{ rotate: -360 }}
-                transition={{ repeat: Infinity, duration: 8, ease: "linear" }}
-                className="absolute -inset-3 rounded-full border-2 border-transparent border-t-blue-500 border-b-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
-              />
-              {/* Inner Pulsing Ring */}
-              <motion.div 
-                animate={{ scale: [1, 1.08, 1], opacity: [0.3, 0.7, 0.3] }}
-                transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut" }}
-                className="absolute -inset-6 rounded-full bg-gradient-to-r from-blue-500/10 to-emerald-500/10 blur-md"
-              />
+          {/* Top Row: Tagline & Category */}
+          <div className="w-full flex items-start justify-between relative z-10 pt-2 px-1">
+            <div className="font-serif italic text-purple-300/90 text-sm sm:text-base tracking-wide drop-shadow-[0_0_10px_rgba(168,85,247,0.4)]">
+              Let Bots <br />Do the Work
+            </div>
+            <div className="text-right text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400/60 leading-tight">
+              Ideas <br />Automate <br />Grow
+            </div>
+          </div>
 
-              {/* Central Logo Container */}
-              <div className="relative w-20 h-20 rounded-2xl overflow-hidden flex items-center justify-center border border-white/20 bg-neutral-900/90 shadow-2xl backdrop-blur-xl">
-                <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/20 to-blue-500/20 animate-pulse" />
-                <img src={stats?.appLogo || "/logo.jpg"} alt="Logo" className="w-12 h-12 object-contain rounded-xl relative z-10" />
+          {/* Center Mascot & Floating Feature Badges */}
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: "spring", damping: 20, stiffness: 100 }}
+            className="relative z-10 flex flex-col items-center my-auto w-full max-w-sm py-4"
+          >
+            {/* Floating Badges Around Center */}
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div className="absolute -top-6 -left-2 sm:-left-6 px-3 py-1.5 rounded-xl bg-purple-950/80 border border-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)] backdrop-blur-md flex items-center gap-1.5 animate-bounce [animation-duration:3s]">
+                <span className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_8px_#c084fc]" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-purple-200">Automation</span>
+              </div>
+
+              <div className="absolute -top-4 -right-2 sm:-right-4 px-3 py-1.5 rounded-xl bg-indigo-950/80 border border-indigo-500/50 shadow-[0_0_15px_rgba(99,102,241,0.3)] backdrop-blur-md flex items-center gap-1.5 animate-bounce [animation-duration:3.5s]">
+                <span className="w-2 h-2 rounded-full bg-indigo-400 shadow-[0_0_8px_#818cf8]" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-indigo-200">Workflow</span>
+              </div>
+
+              <div className="absolute top-20 -left-6 sm:-left-12 px-3 py-1.5 rounded-xl bg-blue-950/80 border border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.3)] backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_#60a5fa]" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-blue-200">⚡ Fast</span>
+              </div>
+
+              <div className="absolute top-16 -right-6 sm:-right-10 px-3 py-1.5 rounded-xl bg-fuchsia-950/80 border border-fuchsia-500/50 shadow-[0_0_15px_rgba(217,70,239,0.3)] backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-fuchsia-400 shadow-[0_0_8px_#e879f9]" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-fuchsia-200">🧠 AI Powered</span>
+              </div>
+
+              <div className="absolute bottom-8 -left-2 sm:-left-4 px-3 py-1.5 rounded-xl bg-purple-950/80 border border-purple-500/40 shadow-[0_0_15px_rgba(168,85,247,0.3)] backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-purple-400" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-purple-200">🛡️ Secure</span>
+              </div>
+
+              <div className="absolute bottom-6 -right-2 sm:-right-6 px-3 py-1.5 rounded-xl bg-blue-950/80 border border-blue-500/40 shadow-[0_0_15px_rgba(59,130,246,0.3)] backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-400" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-blue-200">📊 Smart</span>
               </div>
             </div>
 
-            {/* Typography & Pulse Status */}
-            <div className="flex flex-col items-center space-y-3">
-              <div className="flex items-center space-x-2.5">
-                <h1 className="text-3xl font-black tracking-tight text-white bg-clip-text text-transparent bg-gradient-to-r from-white via-blue-100 to-emerald-200">
-                  BotFlow
-                </h1>
-                <div className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center space-x-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  <span className="text-[10px] font-black text-emerald-400 tracking-wider uppercase">v3.7</span>
-                </div>
-              </div>
+            {/* Central Glowing Robot Avatar & Neon Aura Ring */}
+            <div className="relative w-36 h-36 flex items-center justify-center mb-6">
+              <motion.div 
+                animate={{ rotate: 360, scale: [1, 1.03, 1] }}
+                transition={{ rotate: { repeat: Infinity, duration: 15, ease: "linear" }, scale: { repeat: Infinity, duration: 3, ease: "easeInOut" } }}
+                className="absolute inset-0 rounded-full border-2 border-purple-500/60 shadow-[0_0_35px_rgba(168,85,247,0.5)]"
+              />
+              <motion.div 
+                animate={{ rotate: -360 }}
+                transition={{ repeat: Infinity, duration: 10, ease: "linear" }}
+                className="absolute -inset-2 rounded-full border border-dashed border-blue-400/40"
+              />
 
-              <div className="flex items-center space-x-2 bg-white/[0.03] px-4 py-1.5 rounded-full border border-white/10 backdrop-blur-md">
-                <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                <span className="text-[11px] font-medium text-white/70 tracking-wide">Syncing Neural Workspace</span>
-                <div className="flex space-x-1 pl-1">
-                  <motion.div 
-                    animate={{ scale: [0.8, 1.4, 0.8], opacity: [0.4, 1, 0.4] }}
-                    transition={{ repeat: Infinity, duration: 1, delay: 0 }}
-                    className="w-1.5 h-1.5 rounded-full bg-emerald-400" 
-                  />
-                  <motion.div 
-                    animate={{ scale: [0.8, 1.4, 0.8], opacity: [0.4, 1, 0.4] }}
-                    transition={{ repeat: Infinity, duration: 1, delay: 0.2 }}
-                    className="w-1.5 h-1.5 rounded-full bg-blue-400" 
-                  />
-                  <motion.div 
-                    animate={{ scale: [0.8, 1.4, 0.8], opacity: [0.4, 1, 0.4] }}
-                    transition={{ repeat: Infinity, duration: 1, delay: 0.4 }}
-                    className="w-1.5 h-1.5 rounded-full bg-emerald-400" 
-                  />
-                </div>
+              <div className="relative w-28 h-28 rounded-full overflow-hidden flex items-center justify-center bg-gradient-to-tr from-purple-950 via-neutral-900 to-indigo-950 border-2 border-purple-400/80 shadow-[0_0_30px_rgba(168,85,247,0.6)] backdrop-blur-xl">
+                <div className="absolute inset-0 bg-radial from-purple-500/20 via-transparent to-transparent animate-pulse" />
+                <img 
+                  src={stats?.appLogo || "/logo.jpg"} 
+                  alt="BotFlow Logo" 
+                  className="w-16 h-16 object-contain rounded-2xl relative z-10 filter drop-shadow-[0_0_10px_rgba(192,132,252,0.8)]" 
+                />
               </div>
+            </div>
+
+            {/* BOTFLOW Brand Title & Tagline */}
+            <div className="flex flex-col items-center text-center space-y-1.5 z-10">
+              <h1 className="text-4xl sm:text-5xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-purple-200 to-fuchsia-400 drop-shadow-[0_0_20px_rgba(192,132,252,0.4)]">
+                BOTFLOW
+              </h1>
+              <p className="text-xs sm:text-sm font-medium text-purple-200/80 tracking-wide">
+                Smart Bots, Seamless Flow.
+              </p>
+            </div>
+
+            {/* Glowing Loading Dots & Loading Text */}
+            <div className="flex flex-col items-center space-y-2 mt-6 z-10">
+              <div className="flex items-center space-x-2">
+                <motion.div 
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.2, delay: 0 }}
+                  className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_10px_#c084fc]" 
+                />
+                <motion.div 
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.2 }}
+                  className="w-2.5 h-2.5 rounded-full bg-fuchsia-400 shadow-[0_0_10px_#e879f9]" 
+                />
+                <motion.div 
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.4 }}
+                  className="w-2.5 h-2.5 rounded-full bg-blue-400 shadow-[0_0_10px_#60a5fa]" 
+                />
+                <motion.div 
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.6 }}
+                  className="w-2.5 h-2.5 rounded-full bg-indigo-400 shadow-[0_0_10px_#818cf8]" 
+                />
+                <motion.div 
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.8 }}
+                  className="w-2.5 h-2.5 rounded-full bg-purple-300 shadow-[0_0_10px_#d8b4fe]" 
+                />
+              </div>
+              <p className="text-xs font-bold tracking-widest uppercase text-purple-300/70 animate-pulse pt-1">
+                Loading...
+              </p>
             </div>
           </motion.div>
 
-          {/* Bottom Progress Bar */}
-          <div className="absolute bottom-16 left-0 right-0 flex flex-col items-center space-y-2">
-            <p className="text-[10px] font-semibold text-white/40 tracking-[0.2em] uppercase">Secure Cloud Connection Active</p>
-            <div className="w-48 h-1 bg-white/5 rounded-full overflow-hidden border border-white/5">
-              <motion.div 
-                initial={{ x: "-100%" }}
-                animate={{ x: "100%" }}
-                transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
-                className="w-3/4 h-full bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_rgba(16,185,129,0.8)]"
-              />
+          {/* Footer Navigation & Version Info */}
+          <div className="w-full flex flex-col items-center space-y-2 relative z-10 pb-2">
+            <div className="flex items-center space-x-3 text-[11px] font-bold uppercase tracking-widest text-purple-300/60">
+              <span>Automate</span>
+              <span className="w-1 h-1 rounded-full bg-purple-400" />
+              <span>Manage</span>
+              <span className="w-1 h-1 rounded-full bg-purple-400" />
+              <span>Grow</span>
+            </div>
+            <div className="flex items-center justify-between w-full text-[10px] font-mono text-purple-400/40 px-2">
+              <span>A SMARTER TOMORROW</span>
+              <span>Powered by BotFlow v 1.0.0</span>
             </div>
           </div>
         </motion.div>
@@ -3713,6 +3772,8 @@ export default function App() {
               setTopicIcon={setTopicIcon}
               topicRenameEmoji={topicRenameEmoji}
               setTopicRenameEmoji={setTopicRenameEmoji}
+              topicRenameKeywords={topicRenameKeywords}
+              setTopicRenameKeywords={setTopicRenameKeywords}
               photoReplyMax={photoReplyMax}
               setPhotoReplyMax={setPhotoReplyMax}
               handleToggleNotificationSound={handleToggleNotificationSound}
