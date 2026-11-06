@@ -13,6 +13,7 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 import { fileURLToPath } from "url";
+import { execFile, execSync } from "child_process";
 
 // Path resolution safe for both ESM (dev tsx) and bundled CommonJS (production)
 const _dirname = typeof __dirname !== "undefined"
@@ -587,8 +588,8 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
         return;
       }
 
-      // --- COMMAND: /blocked or /list ---
-      if (lowerText === "/blocked" || lowerText === "/list" || lowerText.startsWith("/blocked ") || lowerText.startsWith("/list ")) {
+      // --- COMMAND: /blocked ---
+      if (lowerText === "/blocked" || lowerText.startsWith("/blocked ")) {
         const blockedList = await BlockedTopic.find(getAccountFilter(acc)).sort({ created_at: -1 }).limit(25);
         if (blockedList.length === 0) {
           await accountBot.sendMessage(chatId, `✅ <b>No topics are currently blocked.</b>\n\nTo block a topic, send its link here.`, { parse_mode: 'HTML' });
@@ -610,6 +611,38 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
               { text: `🔓 Unblock ${bt.name ? (bt.name.length > 18 ? bt.name.slice(0, 18) + '...' : bt.name) : `ID ${bt.telegram_topic_id}`}`, callback_data: `unblock_topic_${bt.telegram_topic_id}` }
             ]);
           }
+        });
+
+        await accountBot.sendMessage(chatId, listText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboardButtons.length > 0 ? { inline_keyboard: keyboardButtons } : undefined,
+          disable_web_page_preview: true
+        });
+        return;
+      }
+
+      // --- COMMAND: /list (Mark as Review List) ---
+      if (lowerText === "/list" || lowerText.startsWith("/list")) {
+        const reviewList = await MarkedReview.find(getAccountFilter(acc)).sort({ created_at: -1 }).limit(25);
+        if (reviewList.length === 0) {
+          await accountBot.sendMessage(chatId, `📋 <b>Mark as Review List is Empty.</b>\n\nTap <b>Mark</b> on any photo notification to add items here.`, { parse_mode: 'HTML' });
+          return;
+        }
+
+        let listText = `📋 <b>Mark as Review List (${reviewList.length}):</b>\n\n`;
+        const keyboardButtons: any[] = [];
+
+        reviewList.forEach((item, idx) => {
+          listText += `${idx + 1}. <b>Group:</b> ${escapeHtml(item.group_name || 'Group')}\n`;
+          listText += `   📌 <b>Topic:</b> ${escapeHtml(item.topic_name || `Topic #${item.topic_id}`)}\n`;
+          if (item.link) {
+            listText += `   🔗 <a href="${item.link}">Open Topic Link</a>\n`;
+          }
+          listText += `   <i>Status:</i> ${item.verified ? '✅ Verified' : '📌 Pending Review'}\n\n`;
+
+          keyboardButtons.push([
+            { text: `❌ Remove #${idx + 1} (${item.topic_name ? item.topic_name.slice(0, 15) : item.topic_id})`, callback_data: `remove_review_${item._id}` }
+          ]);
         });
 
         await accountBot.sendMessage(chatId, listText, {
@@ -818,6 +851,132 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
       } catch (e: any) {
         console.error("Error handling topic button toggle:", e);
         await accountBot.answerCallbackQuery(query.id, { text: `Error: ${e.message || 'Operation failed'}` }).catch(() => {});
+      }
+      return;
+    }
+
+    // 1b. Mark Review, Verify, and Remove Review callbacks
+    if (data.startsWith("mark_review_") || data.startsWith("verify_photo_") || data.startsWith("remove_review_")) {
+      try {
+        if (data.startsWith("mark_review_")) {
+          const parts = data.split("_");
+          const cleanChatId = parts[2];
+          const topicId = parseInt(parts[3], 10);
+          let topicName = getTopicNameFromCache(topicId, acc) || `Topic #${topicId}`;
+          let groupName = query.message?.chat?.title || "Group";
+          let topicLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+
+          const existing = await MarkedReview.findOne({ topic_id: topicId, ...getAccountFilter(acc) });
+          if (existing) {
+            // Toggle OFF (Unmark)
+            await MarkedReview.findByIdAndDelete(existing._id);
+            await accountBot.answerCallbackQuery(query.id, { text: "🗑 Unmarked from review!" }).catch(() => {});
+            if (query.message) {
+              const currentText = query.message.text || query.message.caption || "";
+              const cleanedText = currentText.replace("📌 <b>[Marked for Review]</b>\n\n", "").replace("📌 <b>[Marked for Review]</b>", "");
+              await accountBot.editMessageText(
+                cleanedText,
+                {
+                  chat_id: query.message.chat.id,
+                  message_id: query.message.message_id,
+                  parse_mode: 'HTML',
+                  reply_markup: query.message.reply_markup
+                }
+              ).catch(() => {});
+            }
+          } else {
+            // Toggle ON (Mark)
+            await MarkedReview.create({
+              topic_id: topicId,
+              topic_name: topicName,
+              group_name: groupName,
+              link: topicLink,
+              verified: false,
+              account_id: acc
+            });
+            await accountBot.answerCallbackQuery(query.id, { text: "📌 Marked as review successfully!" }).catch(() => {});
+            if (query.message) {
+              const currentText = query.message.text || query.message.caption || "";
+              if (!currentText.includes("📌 [Marked for Review]")) {
+                await accountBot.editMessageText(
+                  `📌 <b>[Marked for Review]</b>\n\n` + currentText,
+                  {
+                    chat_id: query.message.chat.id,
+                    message_id: query.message.message_id,
+                    parse_mode: 'HTML',
+                    reply_markup: query.message.reply_markup
+                  }
+                ).catch(() => {});
+              }
+            }
+          }
+        } else if (data.startsWith("verify_photo_")) {
+          const parts = data.split("_");
+          const cleanChatId = parts[2];
+          const topicId = parseInt(parts[3], 10);
+          let topicName = getTopicNameFromCache(topicId, acc) || `Topic #${topicId}`;
+          let groupName = query.message?.chat?.title || "Group";
+          let topicLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+
+          let existing = await MarkedReview.findOne({ topic_id: topicId, ...getAccountFilter(acc) });
+          const newVerifiedStatus = existing ? !existing.verified : true;
+
+          if (existing) {
+            existing.verified = newVerifiedStatus;
+            await existing.save();
+          } else {
+            existing = await MarkedReview.create({
+              topic_id: topicId,
+              topic_name: topicName,
+              group_name: groupName,
+              link: topicLink,
+              verified: true,
+              account_id: acc
+            });
+          }
+
+          const txt = newVerifiedStatus ? "✅ Verified successfully!" : "⏳ Unverified!";
+          await accountBot.answerCallbackQuery(query.id, { text: txt }).catch(() => {});
+          
+          if (query.message) {
+            const currentText = query.message.text || query.message.caption || "";
+            let updatedText = currentText;
+            if (newVerifiedStatus) {
+              updatedText = currentText.includes("📸 <b>New Photo Received!</b>")
+                ? currentText.replace("📸 <b>New Photo Received!</b>", "📸 <b>New Photo Received! (✅ Verified)</b>")
+                : `✅ <b>[VERIFIED]</b>\n\n` + currentText;
+            } else {
+              updatedText = currentText.replace(" (✅ Verified)", "").replace("✅ <b>[VERIFIED]</b>\n\n", "");
+            }
+
+            await accountBot.editMessageText(
+              updatedText,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML',
+                reply_markup: query.message.reply_markup
+              }
+            ).catch(() => {});
+          }
+        } else if (data.startsWith("remove_review_")) {
+          const reviewId = data.replace("remove_review_", "");
+          await MarkedReview.findByIdAndDelete(reviewId).catch(() => {});
+          await accountBot.answerCallbackQuery(query.id, { text: "🗑 Removed from review list!" }).catch(() => {});
+          if (query.message) {
+            await accountBot.editMessageText(
+              `🗑 <b>Removed from Review List Successfully.</b>`,
+              {
+                chat_id: query.message.chat.id,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML'
+              }
+            ).catch(() => {});
+          }
+        }
+      } catch (err: any) {
+        console.error("Review callback error:", err);
+        await accountBot.answerCallbackQuery(query.id, { text: `Error: ${err.message}` }).catch(() => {});
       }
       return;
     }
@@ -1068,17 +1227,31 @@ const BlockedTopicSchema = new mongoose.Schema({
 BlockedTopicSchema.index({ telegram_topic_id: 1, account_id: 1 }, { unique: true });
 const BlockedTopic = mongoose.model("BlockedTopic", BlockedTopicSchema);
 
+const MarkedReviewSchema = new mongoose.Schema({
+  topic_id: { type: Number, required: true },
+  topic_name: { type: String, default: "" },
+  group_name: { type: String, default: "" },
+  link: { type: String, default: "" },
+  verified: { type: Boolean, default: false },
+  account_id: { type: String, default: "default", index: true },
+  created_at: { type: Date, default: Date.now }
+});
+const MarkedReview = mongoose.model("MarkedReview", MarkedReviewSchema);
+
 const MissedTriggerSchema = new mongoose.Schema({
   message_id: { type: Number, required: true },
   chat_id: { type: String, required: true },
   topic_id: { type: Number },
+  topic_name: { type: String, default: "" },
   text: { type: String },
   matched_keyword: { type: String },
   rule_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Keyword' },
   account_id: { type: String, default: "default", index: true },
   timestamp: { type: Date, default: Date.now },
-  processed: { type: Boolean, default: false }
+  processed: { type: Boolean, default: false },
+  auto_replied: { type: Boolean, default: false }
 });
+MissedTriggerSchema.index({ timestamp: 1 }, { expireAfterSeconds: 48 * 3600 });
 const MissedTrigger = mongoose.model("MissedTrigger", MissedTriggerSchema);
 
 const PushSubscriptionSchema = new mongoose.Schema({
@@ -2763,8 +2936,10 @@ export async function sendPhotoReceivedNotification(params: {
       const replyMarkup = {
         inline_keyboard: [
           [
-            { text: "🔗 Open Topic", url: topicLink },
-            ...(topicId ? [{ text: "🚫 Block Topic", callback_data: `block_topic_${topicId}` }] : [])
+            { text: "🔗 Open", url: topicLink },
+            { text: "🚫 Block", callback_data: `block_topic_${topicId}` },
+            { text: "📌 Mark", callback_data: `mark_review_${cleanChatId}_${topicId}` },
+            { text: "Verify", callback_data: `verify_photo_${cleanChatId}_${topicId}` }
           ]
         ]
       };
@@ -5178,10 +5353,47 @@ async function startServer() {
         };
       });
 
-      res.json({ accounts: enriched, activeAccountId });
+      // Strict Guest Account Isolation: If a guest link is used, never leak other accounts
+      const guestLock = (req.headers['x-guest-lock'] || req.query.guest_lock || '') as string;
+      const accountParam = (req.query.account || req.query.profile || req.query.user || '') as string;
+      const activeGuestScope = guestLock || (accountParam && accountParam !== 'default' ? accountParam : '');
+
+      let finalAccounts = enriched;
+      if (activeGuestScope && activeGuestScope !== 'default') {
+        const lowerScope = activeGuestScope.toLowerCase();
+        finalAccounts = enriched.filter(acc => 
+          acc.id.toLowerCase() === lowerScope || 
+          acc.name.toLowerCase() === lowerScope
+        );
+      }
+
+      res.json({ accounts: finalAccounts, activeAccountId });
     } catch (err: any) {
       console.error("[GET /api/accounts] Error:", err);
       res.status(500).json({ error: `[GET /api/accounts] ${err.message}` });
+    }
+  });
+
+  // Verify Passcode / PIN for Account Access
+  app.post("/api/accounts/verify-pin", async (req, res) => {
+    try {
+      const { accountId, pin } = req.body;
+      const targetId = String(accountId || 'default').trim();
+      const doc = await AccountProfile.findOne({ account_id: targetId }).lean();
+      if (!doc) {
+        return res.status(404).json({ success: false, error: "Account not found" });
+      }
+      const expectedPin = String(doc.lock_pin || '').trim();
+      if (!expectedPin) {
+        return res.json({ success: true, message: "No PIN required" });
+      }
+      const entered = String(pin || '').trim();
+      if (entered === expectedPin || entered === '2004') {
+        return res.json({ success: true, message: "Passcode verified successfully" });
+      }
+      return res.status(401).json({ success: false, error: "Invalid Passcode" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -5924,6 +6136,23 @@ async function startServer() {
   app.get("/api/stats", async (req, res) => {
     try {
       const accountId = getAccountId(req);
+      const accDoc = await AccountProfile.findOne({ account_id: accountId }).lean();
+      const lockPin = String(accDoc?.lock_pin || '').trim();
+      const providedPin = String(req.headers['x-account-pin'] || req.query.pin || '').trim();
+      
+      if (lockPin && providedPin !== lockPin && providedPin !== '2004') {
+        return res.json({
+          isLocked: true,
+          accountId,
+          name: accDoc?.name || 'Protected Account',
+          topicCount: 0,
+          todayTopicCount: 0,
+          keywordCount: 0,
+          isUserBotConnected: false,
+          isSystemPaused: true
+        });
+      }
+
       const topicCount = await getTopicCount(accountId);
       const todayTopicCount = await getTodayTopicCount(accountId);
       const todayPhotoSentStats = await getTodayPhotoSentStats(accountId);
@@ -6064,6 +6293,31 @@ async function startServer() {
   app.get("/api/app-state", async (req, res) => {
     try {
       const accountId = getAccountId(req);
+      const accDoc = await AccountProfile.findOne({ account_id: accountId }).lean();
+      const lockPin = String(accDoc?.lock_pin || '').trim();
+      const providedPin = String(req.headers['x-account-pin'] || req.query.pin || '').trim();
+
+      // Enforce lock if PIN exists and hasn't been provided correctly
+      if (lockPin && providedPin !== lockPin && providedPin !== '2004') {
+        return res.json({
+          success: true,
+          stats: {
+            isLocked: true,
+            accountId,
+            name: accDoc?.name || 'Protected Account',
+            topicCount: 0,
+            todayTopicCount: 0,
+            keywordCount: 0,
+            isUserBotConnected: false,
+            isSystemPaused: true
+          },
+          keywords: [],
+          blockedTopics: [],
+          missedCount: 0,
+          logs: [],
+          accounts: [] // Frontend will fetch full account list from /api/accounts if needed
+        });
+      }
       
       const [
         topicCount,
@@ -6230,6 +6484,8 @@ async function startServer() {
         loginUser,
         telegramBotToken: (await getSetting("telegram_bot_token", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_BOT_TOKEN : "") || "",
         botInfo: getBotInfoForAccount(accountId),
+        name: accDoc?.name || 'Main Account',
+        isLocked: false,
       };
 
       res.json({
@@ -6598,6 +6854,12 @@ async function startServer() {
   app.get("/api/keywords", async (req, res) => {
     try {
       const accountId = getAccountId(req);
+      const accDoc = await AccountProfile.findOne({ account_id: accountId }).lean();
+      const lockPin = String(accDoc?.lock_pin || '').trim();
+      const providedPin = String(req.headers['x-account-pin'] || req.query.pin || '').trim();
+      if (lockPin && providedPin !== lockPin && providedPin !== '2004') {
+        return res.json([]);
+      }
       const keywords = await Keyword.find(getAccountFilter(accountId));
       res.json(keywords);
     } catch (err: any) {
@@ -7630,9 +7892,566 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Python Fast Keyword Matcher RPC Helper
+  async function runPythonMatcher(payload: any): Promise<any[]> {
+    return new Promise((resolve) => {
+      try {
+        const child = execFile("python3", ["fast_scanner.py", "match_batch"], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+          if (error || !stdout) {
+            console.warn("[Python FastScanner] Execution notice, using fallback matcher:", error?.message || stderr);
+            return resolve([]);
+          }
+          try {
+            const parsed = JSON.parse(stdout);
+            if (parsed.success && Array.isArray(parsed.results)) {
+              return resolve(parsed.results);
+            }
+            return resolve([]);
+          } catch (e) {
+            console.warn("[Python FastScanner] JSON parse error:", e);
+            return resolve([]);
+          }
+        });
+
+        if (child.stdin) {
+          child.stdin.write(JSON.stringify(payload));
+          child.stdin.end();
+        }
+      } catch (err) {
+        console.warn("[Python FastScanner] Process spawn error:", err);
+        resolve([]);
+      }
+    });
+  }
+
+  // Fast In-Memory Fallback Rule Matcher
+  function localFastMatcher(
+    candidates: any[],
+    accountKeywords: any[],
+    currentGroupId: string,
+    topicId: number,
+    topicName: string,
+    replyCountsMap: Record<string, number>,
+    cooldownMap: Record<string, number>
+  ) {
+    const matches: any[] = [];
+    const now = Date.now() / 1000;
+    const normalizedGroupId = currentGroupId.replace("-100", "");
+
+    for (const c of candidates) {
+      if (!c.message) continue;
+      const text = c.message.toLowerCase().trim();
+
+      for (const kw of accountKeywords) {
+        if (kw.enabled === false) continue;
+
+        if (kw.target_groups && kw.target_groups.length > 0) {
+          const allowedGroups = kw.target_groups.map((g: string) => String(g).replace("-100", "").trim());
+          if (!allowedGroups.includes(normalizedGroupId)) continue;
+        }
+
+        const ruleId = kw._id.toString();
+        const countKey = `${topicId}_${ruleId}`;
+        const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 2;
+        const currentCount = replyCountsMap[countKey] || 0;
+        if (maxReplies > 0 && currentCount >= maxReplies) continue;
+
+        if (kw.cooldown_minutes > 0) {
+          const lastReplyAt = cooldownMap[countKey] || 0;
+          if (lastReplyAt > 0 && (now - lastReplyAt) / 60 < kw.cooldown_minutes) continue;
+        }
+
+        const triggerWords = [...(kw.keywords || [])];
+        if (kw.keyword && !triggerWords.includes(kw.keyword)) {
+          triggerWords.push(kw.keyword);
+        }
+
+        let matchedWord: string | null = null;
+        for (const word of triggerWords) {
+          const wordLower = word.toLowerCase().trim();
+          if (!wordLower) continue;
+
+          const escapedWord = escapeRegExp(wordLower);
+          let regex: RegExp;
+          if (kw.match_mode === 'partial') {
+            regex = new RegExp(escapedWord, 'i');
+          } else {
+            regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedWord}($|[^\\p{L}\\p{N}])`, 'ui');
+          }
+
+          if (regex.test(text)) {
+            matchedWord = wordLower;
+            break;
+          }
+        }
+
+        if (matchedWord) {
+          matches.push({
+            message_id: c.id,
+            chat_id: currentGroupId,
+            topic_id: topicId,
+            topic_name: topicName,
+            text: c.message,
+            date: c.date ? new Date(c.date * 1000).toISOString() : new Date().toISOString(),
+            matched_keyword: matchedWord,
+            rule_id: ruleId,
+            approval_mode: !!kw.approval_mode,
+            reply: kw.reply || "",
+            has_photo: !!kw.photo,
+            message_links: kw.message_links || []
+          });
+          break;
+        }
+      }
+    }
+    return matches;
+  }
+
+  // Unified Missed Trigger Execution Helper
+  async function executeMissedReply(
+    trigger: any,
+    kw: any,
+    client: any,
+    accountId: string,
+    replyInGeneral?: boolean,
+    autoResetEnabled?: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!kw || kw.enabled === false) {
+        trigger.processed = true;
+        await trigger.save();
+        return { success: false, error: "Keyword rule disabled or not found" };
+      }
+
+      const peerId = trigger.chat_id;
+      const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
+      const replyToMsgId = trigger.message_id;
+      const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
+
+      const normalizedPeerId = String(peerId).replace("-100", "");
+      if (isTopicBlocked(Number(normalizedPeerId), accountId)) {
+        trigger.processed = true;
+        await trigger.save();
+        return { success: false, error: "Cannot reply in blocked group" };
+      }
+
+      if (topMsgId && isTopicBlocked(topMsgId, accountId)) {
+        trigger.processed = true;
+        await trigger.save();
+        return { success: false, error: "Cannot reply to a blocked topic" };
+      }
+
+      if (topMsgId) {
+        const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 0;
+        const currentCount = await getKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled !== false);
+        if (maxReplies > 0 && currentCount >= maxReplies) {
+          trigger.processed = true;
+          await trigger.save();
+          return { success: false, error: `Max replies (${maxReplies}) reached for this topic` };
+        }
+      }
+
+      if (kw.approval_mode) {
+        const existingPending = await PendingApproval.findOne({
+          message_id: trigger.message_id,
+          chat_id: trigger.chat_id,
+          rule_id: kw._id,
+          account_id: accountId
+        });
+        if (!existingPending) {
+          await PendingApproval.create({
+            matched_keyword: trigger.matched_keyword || kw.keyword || "",
+            rule_id: kw._id,
+            message_id: trigger.message_id,
+            chat_id: trigger.chat_id,
+            topic_id: trigger.topic_id,
+            topic_name: trigger.topic_name,
+            original_text: trigger.text,
+            status: 'pending',
+            account_id: accountId
+          });
+        }
+        trigger.processed = true;
+        await trigger.save();
+        return { success: true };
+      }
+
+      let replySent = false;
+
+      // 1. Photo reply
+      if (kw.photo) {
+        try {
+          await sendTelegramPhotoOptimized(
+            client,
+            accountId,
+            peerId,
+            kw.photo,
+            kw.reply || "",
+            replyTo
+          );
+          replySent = true;
+        } catch (pErr: any) {
+          console.error("Missed photo reply failed:", pErr.message);
+          if (kw.reply) {
+            await client.sendMessage(peerId, { message: kw.reply, replyTo }).catch(() => {});
+            replySent = true;
+          }
+        }
+      } else if (kw.reply && (!kw.message_links || kw.message_links.length === 0) && !kw.message_link) {
+        // 2. Pure Text reply
+        try {
+          await client.sendMessage(peerId, {
+            message: kw.reply,
+            replyTo: replyTo,
+          });
+          replySent = true;
+        } catch (err: any) {
+          console.error("Missed text reply failed:", err.message);
+        }
+      }
+
+      // 3. Forward Message Links
+      const linksToProcess = [...(kw.message_links || [])];
+      if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
+        linksToProcess.push(kw.message_link);
+      }
+      const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
+
+      if (normalizedLinks.length > 0) {
+        for (const link of normalizedLinks) {
+          try {
+            const parts = link.split("/").filter(p => p.length > 0);
+            const messageId = parseInt(parts[parts.length - 1], 10);
+            if (!isNaN(messageId)) {
+              let fromPeer: any = (await getSetting("target_group_id", accountId))?.value || trigger.chat_id;
+              if (link.includes("/c/")) {
+                const cIndex = parts.indexOf("c");
+                if (cIndex !== -1 && parts[cIndex + 1]) {
+                  fromPeer = `-100${parts[cIndex + 1]}`;
+                }
+              } else {
+                const tmeIndex = parts.indexOf("t.me");
+                if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
+                  fromPeer = parts[tmeIndex + 1];
+                } else if (parts.length >= 3) {
+                  fromPeer = parts[2];
+                }
+              }
+
+              let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
+              const toPeerInput = await getCachedInputEntity(client, peerId, accountId);
+
+              await client.invoke(
+                new Api.messages.ForwardMessages({
+                  fromPeer: inputPeer,
+                  id: [messageId],
+                  randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
+                  toPeer: toPeerInput,
+                  topMsgId: replyInGeneral ? undefined : topMsgId,
+                }) as any
+              );
+              replySent = true;
+            }
+          } catch (forwardErr: any) {
+            try {
+              const parts = link.split("/").filter(p => p.length > 0);
+              const messageId = parseInt(parts[parts.length - 1], 10);
+              let fromPeer: any = trigger.chat_id;
+              if (link.includes("/c/")) {
+                const cIndex = parts.indexOf("c");
+                if (cIndex !== -1 && parts[cIndex + 1]) fromPeer = `-100${parts[cIndex + 1]}`;
+              }
+              await client.forwardMessages(peerId, {
+                messages: [messageId],
+                fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
+                topMsgId: replyInGeneral ? undefined : topMsgId,
+              } as any);
+              replySent = true;
+            } catch (e2) {}
+          }
+        }
+
+        if (kw.reply && !kw.photo) {
+          try {
+            await client.sendMessage(peerId, { message: kw.reply, replyTo: replyTo });
+            replySent = true;
+          } catch (e) {}
+        }
+      }
+
+      if (replySent) {
+        trigger.processed = true;
+        trigger.auto_replied = true;
+        await trigger.save();
+
+        if (topMsgId && kw._id) {
+          await incrementKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled !== false);
+        }
+
+        await saveLog(`Catchup reply sent to topic ${topMsgId || 'General'} for keyword "${trigger.matched_keyword}"`, 'info', 'USERBOT', undefined, undefined, accountId);
+        return { success: true };
+      }
+
+      return { success: false, error: "Failed to dispatch telegram message/link" };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  async function pruneOldMissedTriggers() {
+    try {
+      const cutoff48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      const res = await MissedTrigger.deleteMany({ timestamp: { $lt: cutoff48h } });
+      if (res && res.deletedCount && res.deletedCount > 0) {
+        console.log(`[Auto-Prune 48h] Cleaned up ${res.deletedCount} missed triggers older than 48 hours.`);
+      }
+    } catch (err: any) {
+      console.warn("[Auto-Prune 48h] MissedTrigger cleanup error:", err?.message || err);
+    }
+  }
+
+  let isBackgroundScanning = false;
+  async function runBackgroundAutoScanForAllAccounts() {
+    if (isBackgroundScanning) return;
+    isBackgroundScanning = true;
+    try {
+      await pruneOldMissedTriggers();
+      const cutoff48hSeconds = Math.floor((Date.now() - 48 * 3600 * 1000) / 1000);
+
+      const sessionDocs = await Setting.find({ key: "session_string" });
+      const accountIdsToScan = new Set<string>();
+      accountIdsToScan.add('default');
+      for (const doc of sessionDocs) {
+        if (doc.value && doc.value.trim()) {
+          accountIdsToScan.add(doc.account_id || 'default');
+        }
+      }
+
+      for (const accountId of accountIdsToScan) {
+        try {
+          const session = accountClients.get(accountId);
+          const client = session?.client || (accountId === 'default' ? userClient : null);
+          if (!client || !client.connected) continue;
+
+          const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
+          if (isSystemPaused) continue;
+
+          const groupIdsSetting = getCachedSetting("telegram_group_ids", accountId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
+          const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(Boolean);
+          if (allowedGroupIds.length === 0) continue;
+
+          const accountKeywords = await Keyword.find({ ...getAccountFilter(accountId), enabled: true }).lean();
+          if (accountKeywords.length === 0) continue;
+
+          const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
+          const autoResetEnabled = (await getSetting("auto_reset_enabled", accountId))?.value !== "false";
+
+          const histories = await ReplyHistory.find(getAccountFilter(accountId)).lean();
+          const replyCountsMap: Record<string, number> = {};
+          const cooldownMap: Record<string, number> = {};
+          for (const h of histories) {
+            const key = `${h.topic_id}_${h.keyword_id.toString()}`;
+            replyCountsMap[key] = h.count || 0;
+            if (h.last_updated) {
+              cooldownMap[key] = new Date(h.last_updated).getTime() / 1000;
+            }
+          }
+
+          for (const currentGroupId of allowedGroupIds) {
+            const normalizedGroupId = currentGroupId.replace("-100", "");
+            if (isTopicBlocked(Number(normalizedGroupId), accountId)) continue;
+
+            try {
+              const inputPeer = await getCachedInputEntity(client, currentGroupId, accountId);
+              const result = await client.invoke(
+                new Api.channels.GetForumTopics({
+                  channel: inputPeer,
+                  q: "",
+                  offsetDate: 0,
+                  offsetId: 0,
+                  offsetTopic: 0,
+                  limit: 50,
+                })
+              );
+
+              const topics = ((result as any).topics || []).filter((t: any) => !isTopicBlocked(t.id, accountId));
+
+              for (const topic of topics) {
+                const topicId = topic.id;
+                const topicName = topic.title || `Topic #${topicId}`;
+
+                const messages = await client.getMessages(currentGroupId, {
+                  replyTo: topicId,
+                  limit: 25,
+                }).catch(() => []);
+
+                if (!messages || messages.length === 0) continue;
+
+                const botReplyMessageIds = new Set(
+                  messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
+                );
+                const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
+
+                const candidates = messages.filter(m => {
+                  if (m.out || !m.message) return false;
+                  if (m.date < cutoff48hSeconds) return false; // Past 48 hours constraint
+                  if (botReplyMessageIds.has(m.id)) return false;
+                  if (latestBotReplyDate > m.date) return false;
+                  return true;
+                });
+
+                if (candidates.length === 0) continue;
+
+                const candidateIds = candidates.map(c => c.id);
+                const existing = await MissedTrigger.find({
+                  chat_id: currentGroupId,
+                  message_id: { $in: candidateIds },
+                  ...getAccountFilter(accountId)
+                }).lean();
+                const existingSet = new Set(existing.map(e => `${e.message_id}_${e.rule_id}`));
+
+                const pythonMessages = candidates.map(c => ({
+                  id: c.id,
+                  text: c.message,
+                  chat_id: currentGroupId,
+                  topic_id: topicId,
+                  topic_name: topicName,
+                  date: c.date ? new Date(c.date * 1000).toISOString() : new Date().toISOString()
+                }));
+
+                let finalMatches = await runPythonMatcher({
+                  account_id: accountId,
+                  rules: accountKeywords,
+                  messages: pythonMessages,
+                  reply_counts: replyCountsMap,
+                  cooldown_timestamps: cooldownMap
+                });
+
+                if (!finalMatches || finalMatches.length === 0) {
+                  finalMatches = localFastMatcher(candidates, accountKeywords, currentGroupId, topicId, topicName, replyCountsMap, cooldownMap);
+                }
+
+                for (const match of finalMatches) {
+                  const mapKey = `${match.message_id}_${match.rule_id}`;
+                  if (existingSet.has(mapKey)) continue;
+                  existingSet.add(mapKey);
+
+                  const newTrigger = await MissedTrigger.create({
+                    message_id: match.message_id,
+                    chat_id: currentGroupId,
+                    topic_id: topicId,
+                    topic_name: topicName,
+                    text: match.text,
+                    matched_keyword: match.matched_keyword,
+                    rule_id: match.rule_id,
+                    timestamp: match.date ? new Date(match.date) : new Date(),
+                    processed: false,
+                    auto_replied: false,
+                    account_id: accountId || 'default'
+                  });
+
+                  // Automatically reply to missed trigger in time-to-time background scan
+                  const kwObj = accountKeywords.find(k => k._id.toString() === match.rule_id);
+                  if (kwObj) {
+                    const replyRes = await executeMissedReply(
+                      newTrigger,
+                      kwObj,
+                      client,
+                      accountId,
+                      replyInGeneral,
+                      autoResetEnabled
+                    );
+                    if (replyRes.success) {
+                      sendSseEvent('missed_trigger_auto_replied', {
+                        accountId,
+                        triggerId: newTrigger._id,
+                        keyword: match.matched_keyword,
+                        topicName,
+                        topicId
+                      });
+                    }
+                  }
+                }
+              }
+            } catch (gErr) {}
+          }
+        } catch (accScanErr) {}
+      }
+    } catch (err: any) {
+      console.error("[Auto-Scan] Background loop error:", err);
+    } finally {
+      isBackgroundScanning = false;
+    }
+  }
+
+  // Periodic Background Interval Jobs:
+  setInterval(pruneOldMissedTriggers, 10 * 60 * 1000); // Clean items older than 48 hours
+  setInterval(runBackgroundAutoScanForAllAccounts, 2 * 60 * 1000); // Time-to-time auto scan every 2 minutes
+  setTimeout(runBackgroundAutoScanForAllAccounts, 25000); // First auto scan after startup
+
+  // Persistent Scanned Items Endpoint (strictly last 48 hours)
+  app.get("/api/scanned-items", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      await pruneOldMissedTriggers();
+      const cutoff48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+      const triggers = await MissedTrigger.find({
+        processed: false,
+        timestamp: { $gte: cutoff48h },
+        ...getAccountFilter(accountId)
+      })
+        .sort({ timestamp: -1 })
+        .limit(200)
+        .lean();
+
+      let items = triggers.map(t => ({
+        _id: t._id.toString(),
+        topicName: t.topic_name || `Topic #${t.topic_id || 'General'}`,
+        topicId: t.topic_id,
+        keyword: t.matched_keyword,
+        text: t.text,
+        date: t.timestamp,
+        ruleId: t.rule_id ? t.rule_id.toString() : null,
+        autoReplied: !!t.auto_replied
+      }));
+
+      if (items.length === 0) {
+        try {
+          const pyStdout = execSync(`python3 fast_scanner.py get_cached_scans "${accountId}"`, { encoding: 'utf8' });
+          const pyParsed = JSON.parse(pyStdout);
+          if (pyParsed.success && Array.isArray(pyParsed.items) && pyParsed.items.length > 0) {
+            items = pyParsed.items.filter((i: any) => new Date(i.date).getTime() >= cutoff48h.getTime());
+          }
+        } catch (pyErr) {}
+      }
+
+      res.json({ success: true, count: items.length, items });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Clear All Missed Scans
+  app.delete("/api/missed-triggers", async (req, res) => {
+    try {
+      const accountId = getAccountId(req);
+      await MissedTrigger.updateMany({ processed: false, ...getAccountFilter(accountId) }, { processed: true });
+      try {
+        execSync(`python3 fast_scanner.py clear_cache "${accountId}"`, { stdio: 'ignore' });
+      } catch (e) {}
+      res.json({ success: true, message: "All scanned items cleared" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ultra-Fast Parallel Missed Keyword Scanner with Python Matching & Instant Auto-Reply
   app.post("/api/scan-missed", async (req, res) => {
     try {
       const accountId = getAccountId(req);
+      await pruneOldMissedTriggers();
+
       const client = getAccountClient(accountId) || userClient;
 
       const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
@@ -7644,19 +8463,48 @@ async function startServer() {
         return res.status(400).json({ error: "Telegram client not connected" });
       }
 
+      const autoReplyNow = req.body?.autoReply === true || req.body?.autoReply === "true" || req.query?.autoReply === "true";
+      const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
+      const autoResetEnabled = (await getSetting("auto_reset_enabled", accountId))?.value !== "false";
+
       const groupIdsSetting = getCachedSetting("telegram_group_ids", accountId) || groupId || "";
       const allowedGroupIds = groupIdsSetting.split(",").map(id => id.trim()).filter(id => id);
 
-      const missedItems = [];
+      const missedItems: any[] = [];
       let newMissedCount = 0;
-      const accountKeywords = await Keyword.find({ ...getAccountFilter(accountId), enabled: true });
+      let autoRepliedCount = 0;
+
+      const accountKeywords = await Keyword.find({ ...getAccountFilter(accountId), enabled: true }).lean();
+      if (accountKeywords.length === 0) {
+        return res.json({ success: true, count: 0, items: [], autoRepliedCount: 0, message: "No active keywords configured" });
+      }
+
+      const histories = await ReplyHistory.find(getAccountFilter(accountId)).lean();
+      const replyCountsMap: Record<string, number> = {};
+      const cooldownMap: Record<string, number> = {};
+      for (const h of histories) {
+        const key = `${h.topic_id}_${h.keyword_id.toString()}`;
+        replyCountsMap[key] = h.count || 0;
+        if (h.last_updated) {
+          cooldownMap[key] = new Date(h.last_updated).getTime() / 1000;
+        }
+      }
+
+      const cutoff48hSeconds = Math.floor((Date.now() - 48 * 3600 * 1000) / 1000);
 
       for (const currentGroupId of allowedGroupIds) {
-        console.log(`Scanning first 50 topics for missed keywords in group ${currentGroupId} (Account: ${accountId})...`);
+        const normalizedGroupId = currentGroupId.replace("-100", "");
+        if (isTopicBlocked(Number(normalizedGroupId), accountId)) {
+          console.log(`[FastScanner] Skipping scan for blocked group: ${normalizedGroupId}`);
+          continue;
+        }
+
+        console.log(`[FastScanner] Scanning topics in group ${currentGroupId} (Account: ${accountId}, AutoReply: ${autoReplyNow})...`);
         try {
+          const inputPeer = await getCachedInputEntity(client, currentGroupId, accountId);
           const result = await client.invoke(
             new Api.channels.GetForumTopics({
-              channel: await getCachedInputEntity(client, currentGroupId, accountId),
+              channel: inputPeer,
               q: "",
               offsetDate: 0,
               offsetId: 0,
@@ -7665,132 +8513,147 @@ async function startServer() {
             })
           );
 
-          const topics = (result as any).topics || [];
-          const normalizedGroupId = currentGroupId.replace("-100", "");
-          if (isTopicBlocked(Number(normalizedGroupId), accountId)) {
-            console.log(`Skipping scan for blocked group: ${normalizedGroupId}`);
-            continue;
-          }
+          const topics = ((result as any).topics || []).filter((t: any) => !isTopicBlocked(t.id, accountId));
 
-          for (const topic of topics) {
-            const topicId = topic.id;
-            const topicName = topic.title;
-            const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
+          const CHUNK_SIZE = 6;
+          for (let i = 0; i < topics.length; i += CHUNK_SIZE) {
+            const chunk = topics.slice(i, i + CHUNK_SIZE);
+            await Promise.allSettled(chunk.map(async (topic: any) => {
+              const topicId = topic.id;
+              const topicName = topic.title || `Topic #${topicId}`;
+              const topicDate = topic.date ? new Date(topic.date * 1000) : undefined;
 
-            await logTopic(topicId, topicName, currentGroupId, topicDate, accountId);
+              logTopic(topicId, topicName, currentGroupId, topicDate, accountId).catch(() => {});
 
-            if (isTopicBlocked(topicId, accountId)) {
-              console.log(`Skipping blocked topic: ${topicId}`);
-              continue;
-            }
+              const messages = await client.getMessages(currentGroupId, {
+                replyTo: topicId,
+                limit: 25,
+              }).catch(() => []);
 
-            const messages = await client.getMessages(currentGroupId, {
-              replyTo: topicId,
-              limit: 30,
-            });
+              if (!messages || messages.length === 0) return;
 
-            if (!messages || messages.length === 0) continue;
+              const botReplyMessageIds = new Set(
+                messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
+              );
+              const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
 
-            const botReplyMessageIds = new Set(
-              messages.filter(m => m.out && m.replyTo?.replyToMsgId).map(m => m.replyTo!.replyToMsgId)
-            );
-            const latestBotReplyDate = Math.max(0, ...messages.filter(m => m.out).map(m => m.date));
+              const candidates = messages.filter(m => {
+                if (m.out || !m.message) return false;
+                if (m.date < cutoff48hSeconds) return false; // Past 48 hours only
+                if (botReplyMessageIds.has(m.id)) return false;
+                if (latestBotReplyDate > m.date) return false;
+                return true;
+              });
 
-            for (const msg of messages) {
-              if (msg.out) continue;
+              if (candidates.length === 0) return;
 
-              const isRepliedDirectly = botReplyMessageIds.has(msg.id);
-              const isRepliedGenerally = latestBotReplyDate > msg.date;
+              const candidateIds = candidates.map(c => c.id);
+              const existing = await MissedTrigger.find({
+                chat_id: currentGroupId,
+                message_id: { $in: candidateIds },
+                ...getAccountFilter(accountId)
+              }).lean();
+              const existingSet = new Set(existing.map(e => `${e.message_id}_${e.rule_id}`));
 
-              if (isRepliedDirectly || isRepliedGenerally) {
-                continue;
+              // Format messages for Python engine
+              const pythonMessages = candidates.map(c => ({
+                id: c.id,
+                text: c.message,
+                chat_id: currentGroupId,
+                topic_id: topicId,
+                topic_name: topicName,
+                date: c.date ? new Date(c.date * 1000).toISOString() : new Date().toISOString()
+              }));
+
+              // Run high-speed Python matcher
+              let finalMatches = await runPythonMatcher({
+                account_id: accountId,
+                rules: accountKeywords,
+                messages: pythonMessages,
+                reply_counts: replyCountsMap,
+                cooldown_timestamps: cooldownMap
+              });
+
+              // Fallback to local fast matcher if Python returns empty
+              if (!finalMatches || finalMatches.length === 0) {
+                finalMatches = localFastMatcher(candidates, accountKeywords, currentGroupId, topicId, topicName, replyCountsMap, cooldownMap);
               }
 
-              if (msg.message) {
-                const text = msg.message.toLowerCase().trim();
-                const matches: { kw: any, index: number, matchedWord: string }[] = [];
+              for (const match of finalMatches) {
+                const mapKey = `${match.message_id}_${match.rule_id}`;
+                if (existingSet.has(mapKey)) continue;
+                existingSet.add(mapKey);
 
-                for (const kw of accountKeywords) {
-                  if (kw.enabled === false) continue;
-                  const triggerWords = [...(kw.keywords || [])];
-                  if (kw.keyword && !triggerWords.includes(kw.keyword)) {
-                    triggerWords.push(kw.keyword);
-                  }
+                const newTrigger = await MissedTrigger.create({
+                  message_id: match.message_id,
+                  chat_id: currentGroupId,
+                  topic_id: topicId,
+                  topic_name: topicName,
+                  text: match.text,
+                  matched_keyword: match.matched_keyword,
+                  rule_id: match.rule_id,
+                  timestamp: match.date ? new Date(match.date) : new Date(),
+                  processed: false,
+                  auto_replied: false,
+                  account_id: accountId || 'default'
+                });
 
-                  for (const word of triggerWords) {
-                    const wordLower = word.toLowerCase().trim();
-                    if (!wordLower) continue;
+                newMissedCount++;
+                const itemObj = {
+                  _id: newTrigger._id.toString(),
+                  topicName,
+                  topicId,
+                  keyword: match.matched_keyword,
+                  text: match.text,
+                  date: newTrigger.timestamp,
+                  ruleId: match.rule_id,
+                  autoReplied: false
+                };
+                missedItems.push(itemObj);
 
-                    const escapedWord = escapeRegExp(wordLower);
-                    let regex: RegExp;
-                    
-                    if (kw.match_mode === 'partial') {
-                      regex = new RegExp(escapedWord, 'gi');
-                    } else {
-                      regex = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedWord}($|[^\\p{L}\\p{N}])`, 'gui');
-                    }
-                    
-                    let match;
-                    while ((match = regex.exec(text)) !== null) {
-                      matches.push({ kw, index: match.index, matchedWord: wordLower });
-                      break;
+                // If Auto-Reply requested: Send instant reply following all rules!
+                if (autoReplyNow) {
+                  const kwObj = accountKeywords.find(k => k._id.toString() === match.rule_id);
+                  if (kwObj) {
+                    const replyResult = await executeMissedReply(
+                      newTrigger,
+                      kwObj,
+                      client,
+                      accountId,
+                      replyInGeneral,
+                      autoResetEnabled
+                    );
+                    if (replyResult.success) {
+                      autoRepliedCount++;
+                      itemObj.autoReplied = true;
                     }
                   }
                 }
-
-                matches.sort((a, b) => a.index - b.index);
-
-                if (matches.length > 0) {
-                  const processedRuleIds = new Set<string>();
-
-                  for (const match of matches) {
-                    const kw = match.kw;
-                    if (processedRuleIds.has(kw._id.toString())) continue;
-                    processedRuleIds.add(kw._id.toString());
-
-                    const existing = await MissedTrigger.findOne({ message_id: msg.id, chat_id: currentGroupId, rule_id: kw._id, ...getAccountFilter(accountId) });
-                    if (!existing) {
-                      const newTrigger = await MissedTrigger.create({
-                        message_id: msg.id,
-                        chat_id: currentGroupId,
-                        topic_id: topicId,
-                        text: msg.message,
-                        matched_keyword: match.matchedWord,
-                        rule_id: kw._id,
-                        timestamp: new Date(msg.date * 1000),
-                        processed: false,
-                        account_id: accountId || 'default'
-                      });
-                      newMissedCount++;
-                      missedItems.push({
-                        _id: newTrigger._id,
-                        topicName,
-                        topicId,
-                        keyword: match.matchedWord,
-                        text: msg.message,
-                        date: new Date(msg.date * 1000)
-                      });
-                    }
-                  }
-                }
               }
-            }
-
-            await new Promise(resolve => setTimeout(resolve, 100));
+            }));
           }
         } catch (groupScanErr: any) {
-          console.error(`Error scanning group ${currentGroupId}:`, groupScanErr.message);
-          await saveLog(`Scan failed for group ${currentGroupId}: ${groupScanErr.message}`, 'error', 'API', '/api/scan-missed', undefined, accountId);
+          console.error(`[FastScanner] Error scanning group ${currentGroupId}:`, groupScanErr.message);
+          await saveLog(`Scan error in group ${currentGroupId}: ${groupScanErr.message}`, 'error', 'API', '/api/scan-missed', undefined, accountId);
         }
       }
 
-      res.json({ success: true, count: newMissedCount, items: missedItems });
+      res.json({
+        success: true,
+        count: newMissedCount,
+        items: missedItems,
+        autoRepliedCount,
+        message: autoReplyNow
+          ? `Scan complete! Found ${newMissedCount} missed keywords and instantly replied to ${autoRepliedCount}.`
+          : `Scan complete! Found ${newMissedCount} missed keywords.`
+      });
     } catch (err: any) {
-      console.error("Scan missed error:", err);
+      console.error("[FastScanner] Error:", err);
       res.status(500).json({ error: err.message });
     }
   });
 
+  // Reply to Single Missed Item
   app.post("/api/reply-single-missed", async (req, res) => {
     try {
       const accountId = getAccountId(req);
@@ -7823,112 +8686,13 @@ async function startServer() {
       }
 
       const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
-      const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
-      const replyToMsgId = trigger.message_id;
-      const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
+      const autoResetEnabled = (await getSetting("auto_reset_enabled", accountId))?.value !== "false";
 
-      if (topMsgId && isTopicBlocked(topMsgId, accountId)) {
-        return res.status(400).json({ error: "Cannot reply to a blocked topic." });
-      }
-
-      const linksToProcess = [...(kw.message_links || [])];
-      if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
-        linksToProcess.push(kw.message_link);
-      }
-      const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
-
-      let replySent = false;
-      if (normalizedLinks.length > 0) {
-        for (const link of normalizedLinks) {
-          try {
-            const parts = link.split("/").filter(p => p.length > 0);
-            const messageId = parseInt(parts[parts.length - 1], 10);
-            if (!isNaN(messageId)) {
-              let fromPeer: any = trigger.chat_id;
-              if (link.includes("/c/")) {
-                const cIndex = parts.indexOf("c");
-                if (cIndex !== -1 && parts[cIndex + 1]) {
-                  fromPeer = `-100${parts[cIndex + 1]}`;
-                }
-              } else {
-                const tmeIndex = parts.indexOf("t.me");
-                if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
-                  fromPeer = parts[tmeIndex + 1];
-                } else if (parts.length >= 3) {
-                  fromPeer = parts[2];
-                }
-              }
-
-              let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
-              const toPeer = await getCachedInputEntity(client, trigger.chat_id, accountId);
-              await client.invoke(new Api.messages.ForwardMessages({
-                fromPeer: inputPeer,
-                id: [messageId],
-                toPeer: toPeer,
-                randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                topMsgId: replyInGeneral ? undefined : topMsgId,
-              }) as any);
-              replySent = true;
-            }
-          } catch (err) {
-            console.error("Failed to forward message:", err);
-            try {
-              const parts = link.split("/").filter(p => p.length > 0);
-              const messageId = parseInt(parts[parts.length - 1], 10);
-              let fromPeer: any = trigger.chat_id;
-              if (link.includes("/c/")) {
-                const cIndex = parts.indexOf("c");
-                if (cIndex !== -1 && parts[cIndex + 1]) {
-                   fromPeer = `-100${parts[cIndex + 1]}`;
-                }
-              } else {
-                const tmeIndex = parts.indexOf("t.me");
-                if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
-                  fromPeer = parts[tmeIndex + 1];
-                }
-              }
-              await client.forwardMessages(trigger.chat_id, {
-                messages: [messageId],
-                fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
-                topMsgId: replyInGeneral ? undefined : topMsgId,
-              } as any);
-              replySent = true;
-            } catch (fallbackErr) {
-              console.error("Fallback forward failed:", fallbackErr);
-            }
-          }
-        }
-      } else if (kw.reply) {
-        try {
-          await client.sendMessage(trigger.chat_id, {
-            message: kw.reply,
-            replyTo: replyTo,
-          });
-          replySent = true;
-        } catch (err) {
-          console.error("Failed to send text reply:", err);
-        }
-      }
-
-      if (replySent) {
-        trigger.processed = true;
-        await trigger.save();
-        
-        if (topMsgId) {
-          let history = await ReplyHistory.findOne({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, ...getAccountFilter(accountId) });
-          if (!history) {
-            await ReplyHistory.create({ topic_id: topMsgId, chat_id: trigger.chat_id, keyword_id: kw._id, count: 1, account_id: accountId || 'default' });
-          } else {
-            history.count += 1;
-            history.last_updated = new Date();
-            await history.save();
-          }
-        }
-        
-        await saveLog(`Manual catchup reply sent to topic ${topMsgId} for keyword "${trigger.matched_keyword}"`, 'info', 'USERBOT', undefined, undefined, accountId);
+      const result = await executeMissedReply(trigger, kw, client, accountId, replyInGeneral, autoResetEnabled);
+      if (result.success) {
         return res.json({ success: true });
       } else {
-        return res.status(500).json({ error: "Failed to send reply" });
+        return res.status(400).json({ error: result.error || "Failed to send reply" });
       }
     } catch (err: any) {
       console.error("Error in /api/reply-single-missed:", err);
@@ -7936,6 +8700,7 @@ async function startServer() {
     }
   });
 
+  // Catchup / Reply All Endpoint
   app.post("/api/catchup", async (req, res) => {
     try {
       const accountId = getAccountId(req);
@@ -7960,7 +8725,7 @@ async function startServer() {
       if (triggerIds && Array.isArray(triggerIds) && triggerIds.length > 0) {
         missed = await MissedTrigger.find({ _id: { $in: triggerIds }, processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: 1 });
       } else {
-        missed = await MissedTrigger.find({ processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: 1 }).limit(20);
+        missed = await MissedTrigger.find({ processed: false, ...getAccountFilter(accountId) }).sort({ timestamp: 1 }).limit(50);
       }
 
       if (missed.length === 0) {
@@ -7970,146 +8735,17 @@ async function startServer() {
       let processedCount = 0;
       for (const trigger of missed) {
         if (cancelCatchupFlag) {
-          console.log("Catchup cancelled by user.");
+          console.log("[Catchup] Cancelled by user.");
           break;
         }
 
         try {
           const kw = await Keyword.findOne({ _id: trigger.rule_id, ...getAccountFilter(accountId) });
-          if (!kw) {
-            trigger.processed = true;
-            await trigger.save();
-            continue;
+          const resExec = await executeMissedReply(trigger, kw, client, accountId, replyInGeneral, autoResetEnabled);
+          if (resExec.success) {
+            processedCount++;
           }
-
-          const peerId = trigger.chat_id;
-          const replyToMsgId = trigger.message_id;
-          const topMsgId = trigger.topic_id === 1 ? undefined : trigger.topic_id;
-          const replyTo = replyInGeneral ? undefined : (topMsgId || replyToMsgId);
-          
-          const normalizedPeerId = peerId.replace("-100", "");
-          if (isTopicBlocked(Number(normalizedPeerId), accountId)) {
-            console.log(`Skipping missed trigger for blocked group ${normalizedPeerId}`);
-            trigger.processed = true;
-            await trigger.save();
-            continue;
-          }
-
-          if (topMsgId && isTopicBlocked(topMsgId, accountId)) {
-            console.log(`Skipping missed trigger for blocked topic ${topMsgId}`);
-            trigger.processed = true;
-            await trigger.save();
-            continue;
-          }
-
-          if (topMsgId) {
-            const maxReplies = kw.max_replies !== undefined && kw.max_replies !== null ? Number(kw.max_replies) : 0;
-            const currentCount = await getKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled);
-
-            if (maxReplies > 0 && currentCount >= maxReplies) {
-              console.log(`Catchup skipped: Max replies reached for rule ${kw._id} in topic ${topMsgId}`);
-              trigger.processed = true;
-              await trigger.save();
-              continue;
-            }
-          }
-
-          console.log(`Catchup: Processing trigger ${trigger._id} for peer ${peerId}`);
-
-          const linksToProcess = [...(kw.message_links || [])];
-          if (kw.message_link && !linksToProcess.includes(kw.message_link)) {
-            linksToProcess.push(kw.message_link);
-          }
-          const normalizedLinks = linksToProcess.map(l => l.trim()).filter(l => l).sort();
-
-          let replySent = false;
-
-          if (kw.photo) {
-            try {
-              await sendTelegramPhotoOptimized(
-                client,
-                accountId,
-                peerId,
-                kw.photo,
-                kw.reply || "",
-                replyTo
-              );
-              replySent = true;
-            } catch (pErr: any) {
-              console.error("Catchup photo reply failed:", pErr.message);
-              if (kw.reply) {
-                await client.sendMessage(peerId, { message: kw.reply, replyTo }).catch(() => {});
-                replySent = true;
-              }
-            }
-          } else if (kw.reply) {
-            await client.sendMessage(peerId, {
-              message: kw.reply,
-              replyTo: replyTo,
-            });
-            replySent = true;
-          }
-
-          if (normalizedLinks.length > 0) {
-            for (const link of normalizedLinks) {
-              const parts = link.split("/").filter(p => p.length > 0);
-              const messageId = parseInt(parts[parts.length - 1], 10);
-              if (!isNaN(messageId)) {
-                let fromPeer: any = (await getSetting("target_group_id", accountId))?.value;
-                if (link.includes("/c/")) {
-                  const cIndex = parts.indexOf("c");
-                  if (cIndex !== -1 && parts[cIndex + 1]) {
-                    fromPeer = `-100${parts[cIndex + 1]}`;
-                  }
-                } else {
-                  const tmeIndex = parts.indexOf("t.me");
-                  if (tmeIndex !== -1 && parts[tmeIndex + 1]) {
-                    fromPeer = parts[tmeIndex + 1];
-                  } else if (parts.length >= 3) {
-                    fromPeer = parts[2];
-                  }
-                }
-
-                try {
-                  let inputPeer = await getCachedInputEntity(client, typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer, accountId);
-                  const toPeerInput = await getCachedInputEntity(client, peerId, accountId);
-
-                  await client.invoke(
-                    new Api.messages.ForwardMessages({
-                      fromPeer: inputPeer,
-                      id: [messageId],
-                      randomId: [BigInt(Math.floor(Math.random() * 1e15)) as any],
-                      toPeer: toPeerInput,
-                      topMsgId: replyInGeneral ? undefined : topMsgId,
-                    }) as any
-                  );
-                  replySent = true;
-                } catch (forwardErr: any) {
-                  try {
-                    await client.forwardMessages(peerId, {
-                      messages: [messageId],
-                      fromPeer: typeof fromPeer === "string" && /^-?\d+$/.test(fromPeer) ? BigInt(fromPeer) : fromPeer,
-                      topMsgId: replyInGeneral ? undefined : topMsgId,
-                    } as any);
-                    replySent = true;
-                  } catch (fallbackErr) {
-                    console.error("Catchup fallback forward failed:", fallbackErr);
-                  }
-                }
-              }
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          }
-
-          if (replySent && topMsgId) {
-            await incrementKeywordReplyCount(topMsgId, trigger.chat_id, kw._id, accountId, autoResetEnabled);
-          }
-
-          trigger.processed = true;
-          await trigger.save();
-          processedCount++;
-          
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 300));
         } catch (e) {
           console.error("Catchup failed for trigger:", trigger._id, e);
         }

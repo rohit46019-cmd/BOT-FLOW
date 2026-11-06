@@ -93,8 +93,17 @@ export async function apiFetch(
       }
       activeAccountId = activeAccountId || 'default';
 
+      const pin = (typeof window !== 'undefined'
+        ? localStorage.getItem(`pin_token_${activeAccountId}`) || sessionStorage.getItem(`pin_token_${activeAccountId}`) || ''
+        : '');
+      const guestLock = (typeof window !== 'undefined'
+        ? localStorage.getItem('shared_guest_lock') || ''
+        : '');
+
       const headers: Record<string, string> = {
         'X-Account-Id': activeAccountId,
+        ...(pin ? { 'X-Account-Pin': pin } : {}),
+        ...(guestLock ? { 'X-Guest-Lock': guestLock } : {}),
         ...(config.headers as Record<string, string> || {}),
       };
 

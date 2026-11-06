@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "exported_at": "2026-10-28T00:46:08.484812",
+  "accounts": [
+    {
+      "id": "acc_main_01",
+      "name": "Main Telegram Account",
+      "phone": "+919876543210",
+      "avatar_style": "bottts",
+      "avatar_color": "indigo",
+      "is_main": 1,
+      "session_string": "sample_session_string_123",
+      "created_at": "2026-10-27T17:19:35.141962"
+    }
+  ],
+  "rules": []
+}

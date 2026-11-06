@@ -1,0 +1,7 @@
+{
+  "sticky_footer": true,
+  "z_index": 50,
+  "padding": "p-4",
+  "shadow": "shadow-2xl",
+  "status": "optimized_for_mobile"
+}

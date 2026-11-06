@@ -631,14 +631,16 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
               </div>
             </div>
 
-            {/* Action Buttons */}
-            <div className="mt-6 pt-4 border-t border-white/10 flex gap-3">
+            {/* Action Buttons - Sticky Footer for Mobile Visibility */}
+            <div className={`sticky bottom-0 z-30 mt-6 pt-4 pb-2 border-t flex gap-3 ${
+              darkMode ? 'bg-neutral-900/95 border-white/10 backdrop-blur-md' : 'bg-white/95 border-slate-200 backdrop-blur-md'
+            }`}>
               <motion.button 
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.95 }}
                 type="button"
                 onClick={handleSave}
-                className="flex-2 bg-blue-600 hover:bg-blue-500 text-white py-3 px-6 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg shadow-blue-500/30 transition flex items-center justify-center gap-2"
+                className="flex-2 bg-blue-600 hover:bg-blue-500 text-white py-3.5 px-6 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg shadow-blue-500/30 transition flex items-center justify-center gap-2"
               >
                 <Zap size={14} />
                 <span>{editingKeyword ? "Update Rule" : "Save Rule"}</span>
@@ -648,8 +650,8 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                 whileTap={{ scale: 0.95 }}
                 type="button"
                 onClick={onCancel}
-                className={`flex-1 px-4 py-3 rounded-xl font-black uppercase tracking-widest text-xs transition border ${
-                  darkMode ? 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/10' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                className={`flex-1 px-4 py-3.5 rounded-xl font-black uppercase tracking-widest text-xs transition border ${
+                  darkMode ? 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10' : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
                 }`}
               >
                 Cancel

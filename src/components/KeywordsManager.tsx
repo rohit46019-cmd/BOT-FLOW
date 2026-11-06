@@ -109,17 +109,20 @@ const RuleCard = memo(function RuleCard({
 
   return (
     <div 
-      className={`p-3.5 rounded-2xl border transition-all duration-200 relative overflow-hidden group shadow-sm hover:shadow-lg will-change-transform transform-gpu ${
+      className={`p-4 rounded-[1.25rem] border transition-all duration-300 relative overflow-hidden group shadow-sm hover:shadow-xl will-change-transform transform-gpu ${
         darkMode 
-          ? `${isEnabled ? 'bg-gradient-to-br from-neutral-900/95 via-neutral-900/90 to-neutral-950/95' : 'bg-neutral-900/40 opacity-60'} border-white/10 hover:border-blue-500/50 shadow-black/60` 
-          : `${isEnabled ? 'bg-gradient-to-br from-white via-slate-50/50 to-white' : 'bg-slate-100 opacity-60'} border-slate-200/90 hover:border-blue-400 shadow-slate-200/80`
+          ? `${isEnabled ? 'bg-gradient-to-br from-neutral-900 via-neutral-900 to-[#0c0c0c]' : 'bg-neutral-950/40 opacity-60'} border-white/5 hover:border-blue-500/40 shadow-black/80` 
+          : `${isEnabled ? 'bg-white via-slate-50/30 to-white' : 'bg-slate-100 opacity-60'} border-slate-200 hover:border-blue-400/60 shadow-slate-200/50`
       }`}
     >
-      {/* Top professional gradient accent bar */}
-      <div className={`absolute top-0 left-0 right-0 h-1 ${
+      {/* Background Decorative Mesh / Grain */}
+      <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
+      
+      {/* Left side accent stripe */}
+      <div className={`absolute top-0 left-0 bottom-0 w-1 ${
         isEnabled 
-          ? (isNotify ? 'bg-gradient-to-r from-emerald-500 to-teal-400' : isApproval ? 'bg-gradient-to-r from-amber-500 to-orange-400' : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500') 
-          : 'bg-slate-500'
+          ? (isNotify ? 'bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.5)]' : isApproval ? 'bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)]' : 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.5)]') 
+          : 'bg-slate-400'
       }`} />
 
       <div className="flex flex-col gap-1.5">
@@ -190,12 +193,12 @@ const RuleCard = memo(function RuleCard({
         </div>
 
         {/* Compact Keywords Box: ONLY 2 lines max of keywords */}
-        <div className={`p-1.5 rounded-lg border transition-all relative ${
+        <div className={`p-2.5 rounded-xl border transition-all relative ${
           darkMode 
-            ? 'bg-black/30 border-white/5' 
-            : 'bg-slate-50 border-slate-200/70'
+            ? 'bg-black/40 border-white/5 group-hover:bg-black/60' 
+            : 'bg-slate-50/50 border-slate-200/60 group-hover:bg-slate-100/50'
         }`}>
-          <div className="flex flex-wrap items-center gap-1 transition-all duration-200 max-h-[38px] overflow-hidden">
+          <div className="flex flex-wrap items-center gap-1.5 transition-all duration-200 max-h-[44px] overflow-hidden">
             {keywordsList.map((k: string, i: number) => {
               const copyKey = `${kw._id}-${i}`;
               return (
@@ -205,16 +208,16 @@ const RuleCard = memo(function RuleCard({
                     e.stopPropagation();
                     onCopyKeyword(kw._id, i, k);
                   }}
-                  className={`inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border cursor-pointer hover:scale-105 active:scale-95 transition ${
+                  className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-tighter px-2 py-0.5 rounded-lg border cursor-pointer hover:scale-105 active:scale-95 transition shadow-xs ${
                     darkMode 
-                      ? `bg-${colorName}-500/15 text-${colorName}-300 border-${colorName}-500/30 hover:border-${colorName}-500/60` 
-                      : `bg-${colorName}-50 text-${colorName}-700 border-${colorName}-200 hover:border-${colorName}-300`
+                      ? `bg-${colorName}-500/10 text-${colorName}-400 border-${colorName}-500/20 hover:border-${colorName}-500/50` 
+                      : `bg-${colorName}-50 text-${colorName}-800 border-${colorName}-200 hover:border-${colorName}-400`
                   }`}
                   title="Click to copy keyword"
                 >
-                  <Hash size={8} className="opacity-70 shrink-0" />
-                  <span className="truncate max-w-[110px]">{k}</span>
-                  {copiedKeywordsId === copyKey ? <Check size={8} className="text-emerald-400 shrink-0" /> : null}
+                  <Hash size={9} className="opacity-50 shrink-0" />
+                  <span className="truncate max-w-[120px]">{k}</span>
+                  {copiedKeywordsId === copyKey ? <Check size={9} className="text-emerald-400 shrink-0" /> : null}
                 </span>
               );
             })}

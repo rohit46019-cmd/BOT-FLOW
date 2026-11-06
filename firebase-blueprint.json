@@ -7,115 +7,173 @@
       "properties": {
         "uid": {
           "type": "string",
-          "description": "Unique user identifier matching auth UID",
-          "maxLength": 128
+          "description": "Unique user identifier matching auth UID"
         },
         "email": {
           "type": "string",
-          "description": "User email address",
-          "maxLength": 256
+          "description": "User email address"
         },
         "displayName": {
           "type": "string",
-          "description": "User display name",
-          "maxLength": 128
+          "description": "User display name"
         },
         "photoURL": {
           "type": "string",
-          "description": "User photo URL",
-          "maxLength": 1024
+          "description": "User photo URL"
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Account registration timestamp"
+          "format": "date-time"
         },
         "lastLoginAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Latest sign-in timestamp"
+          "format": "date-time"
         }
       },
       "required": ["uid", "email"]
     },
-    "userSettings": {
-      "title": "UserSettings",
-      "description": "User personal preferences and synchronization state",
+    "bots": {
+      "title": "Bot",
+      "description": "Bot configuration",
       "type": "object",
       "properties": {
-        "userId": {
-          "type": "string",
-          "description": "Owning user UID",
-          "maxLength": 128
-        },
-        "theme": {
-          "type": "string",
-          "description": "Visual theme selection",
-          "maxLength": 32
-        },
-        "notificationsEnabled": {
-          "type": "boolean",
-          "description": "User notification toggle state"
-        },
-        "activeProfile": {
-          "type": "string",
-          "description": "Current active Telegram profile alias",
-          "maxLength": 128
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Timestamp when settings were last saved"
-        }
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId"]
+      "required": ["name", "ownerId"]
+    },
+    "keywords": {
+      "title": "Keyword",
+      "description": "Keyword rules for scanning",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "category": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["text", "ownerId"]
+    },
+    "scannedItems": {
+      "title": "ScannedItem",
+      "description": "Items found during scanning",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "keywordMatch": { "type": "string" },
+        "source": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["content", "ownerId"]
     },
     "activityLogs": {
       "title": "ActivityLog",
-      "description": "User audit activity log entry",
+      "description": "Bot activity logs",
       "type": "object",
       "properties": {
-        "userId": {
-          "type": "string",
-          "description": "User ID of the actor",
-          "maxLength": 128
-        },
-        "action": {
-          "type": "string",
-          "description": "Action performed (e.g. LOGIN, UPDATE_SETTINGS, SYNC)",
-          "maxLength": 128
-        },
-        "category": {
-          "type": "string",
-          "description": "Action category",
-          "maxLength": 64
-        },
-        "details": {
-          "type": "string",
-          "description": "Contextual description or summary",
-          "maxLength": 2048
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Timestamp when log was recorded"
-        }
+        "userId": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "action"]
+    },
+    "settings": {
+      "title": "Setting",
+      "description": "Application settings",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "accountId": { "type": "string" }
+      },
+      "required": ["key", "value", "accountId"]
+    },
+    "topics": {
+      "title": "Topic",
+      "description": "Telegram topics",
+      "type": "object",
+      "properties": {
+        "telegramTopicId": { "type": "number" },
+        "chatId": { "type": "string" },
+        "name": { "type": "string" },
+        "accountId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["telegramTopicId", "chatId", "accountId"]
+    },
+    "blockedTopics": {
+      "title": "BlockedTopic",
+      "description": "Blocked Telegram topics",
+      "type": "object",
+      "properties": {
+        "telegramTopicId": { "type": "number" },
+        "name": { "type": "string" },
+        "link": { "type": "string" },
+        "accountId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["telegramTopicId", "accountId"]
+    },
+    "pendingApprovals": {
+      "title": "PendingApproval",
+      "description": "Messages pending approval",
+      "type": "object",
+      "properties": {
+        "matchedKeyword": { "type": "string" },
+        "ruleId": { "type": "string" },
+        "messageId": { "type": "number" },
+        "chatId": { "type": "string" },
+        "topicId": { "type": "number" },
+        "topicName": { "type": "string" },
+        "status": { "type": "string" },
+        "accountId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ruleId", "messageId", "chatId", "status", "accountId"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "users",
-      "description": "Private user account records"
+      "description": "User profiles"
     },
-    "/users/{userId}/settings/{settingId}": {
-      "schema": "userSettings",
-      "description": "Per-user application preferences and state"
+    "/bots/{botId}": {
+      "schema": "bots",
+      "description": "Global bot list (filterable by owner)"
     },
-    "/users/{userId}/activityLogs/{logId}": {
+    "/keywords/{keywordId}": {
+      "schema": "keywords",
+      "description": "Scanning keywords"
+    },
+    "/scannedItems/{itemId}": {
+      "schema": "scannedItems",
+      "description": "Results of scans"
+    },
+    "/activityLogs/{logId}": {
       "schema": "activityLogs",
-      "description": "User activity audit stream"
+      "description": "Audit logs"
+    },
+    "/settings/{settingId}": {
+      "schema": "settings",
+      "description": "App settings"
+    },
+    "/topics/{topicId}": {
+      "schema": "topics",
+      "description": "Telegram topics"
+    },
+    "/blockedTopics/{blockedId}": {
+      "schema": "blockedTopics",
+      "description": "Blocked topics"
+    },
+    "/pendingApprovals/{approvalId}": {
+      "schema": "pendingApprovals",
+      "description": "Pending approvals"
     }
   }
 }
+

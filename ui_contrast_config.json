@@ -1,0 +1,7 @@
+{
+  "modal_background": "bg-neutral-950",
+  "modal_text": "text-white",
+  "keypad_buttons": "bg-white/10 text-white hover:bg-white/20",
+  "contrast_level": "high_accessibility",
+  "updated_at": "2026-10-27"
+}

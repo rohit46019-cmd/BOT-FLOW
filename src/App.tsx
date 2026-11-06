@@ -20,6 +20,7 @@ import UserManager from './components/UserManager';
 import AddKeywordSection from './components/AddKeywordSection';
 import ApprovalDashboard from './components/ApprovalDashboard';
 import ProfileSelector from './components/ProfileSelector';
+import { SplashScreen } from './components/SplashScreen';
 import { LogoSelectorModal } from './components/LogoSelectorModal';
 import { InstallAppModal } from './components/InstallAppModal';
 import { FirebaseCloudModal } from './components/FirebaseCloudModal';
@@ -91,7 +92,8 @@ import {
   Terminal,
   Radio,
   Activity,
-  Cloud
+  Cloud,
+  ZapOff
 } from "lucide-react";
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from 'recharts';
 
@@ -134,6 +136,9 @@ interface Stats {
   telegram_bot_token?: string;
   sessionStartTime: number | null;
   lastLoginTime: string;
+  isLocked?: boolean;
+  name?: string;
+  accountId?: string;
   loginUser?: {
     id: string;
     firstName?: string;
@@ -363,37 +368,45 @@ if (typeof window !== "undefined") {
       let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
       if (url.startsWith('/api') || url.includes('/api/')) {
         init = init || {};
+        const accountPin = localStorage.getItem('pin_token_' + activeAccId) || sessionStorage.getItem('pin_token_' + activeAccId) || '';
+        const guestLock = localStorage.getItem('shared_guest_lock') || '';
+
         if (input instanceof Request) {
           try {
             if (!input.headers.has('x-account-id')) {
               input.headers.set('x-account-id', activeAccId);
             }
+            if (accountPin && !input.headers.has('x-account-pin')) {
+              input.headers.set('x-account-pin', accountPin);
+            }
+            if (guestLock && !input.headers.has('x-guest-lock')) {
+              input.headers.set('x-guest-lock', guestLock);
+            }
           } catch (e) {
-            // If Request headers are read-only or immutable, clone the Request with the header
             try {
               const newHeaders = new Headers(input.headers);
               newHeaders.set('x-account-id', activeAccId);
+              if (accountPin) newHeaders.set('x-account-pin', accountPin);
+              if (guestLock) newHeaders.set('x-guest-lock', guestLock);
               input = new Request(input, { headers: newHeaders });
             } catch (err) {}
           }
         } else {
           const headers = init.headers || {};
           if (headers instanceof Headers) {
-            if (!headers.has('x-account-id')) {
-              headers.set('x-account-id', activeAccId);
-            }
+            if (!headers.has('x-account-id')) headers.set('x-account-id', activeAccId);
+            if (accountPin && !headers.has('x-account-pin')) headers.set('x-account-pin', accountPin);
+            if (guestLock && !headers.has('x-guest-lock')) headers.set('x-guest-lock', guestLock);
             init.headers = headers;
           } else if (Array.isArray(headers)) {
-            const hasHeader = headers.some(([k]) => k.toLowerCase() === 'x-account-id');
-            if (!hasHeader) {
-              headers.push(['x-account-id', activeAccId]);
-            }
+            if (!headers.some(([k]) => k.toLowerCase() === 'x-account-id')) headers.push(['x-account-id', activeAccId]);
+            if (accountPin && !headers.some(([k]) => k.toLowerCase() === 'x-account-pin')) headers.push(['x-account-pin', accountPin]);
+            if (guestLock && !headers.some(([k]) => k.toLowerCase() === 'x-guest-lock')) headers.push(['x-guest-lock', guestLock]);
             init.headers = headers;
           } else if (typeof headers === 'object') {
-            const hasHeader = Object.keys(headers).some(k => k.toLowerCase() === 'x-account-id');
-            if (!hasHeader) {
-              (headers as any)['x-account-id'] = activeAccId;
-            }
+            if (!Object.keys(headers).some(k => k.toLowerCase() === 'x-account-id')) (headers as any)['x-account-id'] = activeAccId;
+            if (accountPin && !Object.keys(headers).some(k => k.toLowerCase() === 'x-account-pin')) (headers as any)['x-account-pin'] = accountPin;
+            if (guestLock && !Object.keys(headers).some(k => k.toLowerCase() === 'x-guest-lock')) (headers as any)['x-guest-lock'] = guestLock;
             init.headers = headers;
           }
         }
@@ -526,12 +539,48 @@ export default function App() {
   const [isFetchingMissed, setIsFetchingMissed] = useState(false);
   const [isCatchingUp, setIsCatchingUp] = useState(false);
   const [isScanningMissed, setIsScanningMissed] = useState(false);
-  const [scannedItems, setScannedItems] = useState<any[]>([]);
+  const [scannedItems, setScannedItems] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem(`botflow_scanned_items_${localStorage.getItem('currentProfileId') || 'default'}`);
+        if (stored) return JSON.parse(stored);
+      } catch (e) {}
+    }
+    return [];
+  });
+  const [autoReplyOnScan, setAutoReplyOnScan] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('botflow_auto_reply_on_scan') === 'true';
+    }
+    return false;
+  });
   const [selectedScannedItems, setSelectedScannedItems] = useState<Set<string>>(new Set());
   const [showScanModal, setShowScanModal] = useState(false);
   const [replyingIds, setReplyingIds] = useState<Set<string>>(new Set());
+
+  const updateScannedItems = useCallback((updater: any[] | ((prev: any[]) => any[])) => {
+    setScannedItems(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (typeof window !== 'undefined') {
+        try {
+          const accId = localStorage.getItem('currentProfileId') || 'default';
+          localStorage.setItem(`botflow_scanned_items_${accId}`, JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleAutoReplyOnScan = (enabled: boolean) => {
+    setAutoReplyOnScan(enabled);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('botflow_auto_reply_on_scan', enabled ? 'true' : 'false');
+    }
+    showNotification('success', enabled ? '⚡ Instant Auto-Reply enabled for scans' : 'Instant Auto-Reply disabled');
+  };
   
   const [loading, setLoading] = useState(false);
+  const [isSplashVisible, setIsSplashVisible] = useState(true);
   const [saving, setSaving] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -542,6 +591,77 @@ export default function App() {
   const [editingKeywordId, setEditingKeywordId] = useState<string | null>(null);
   const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
   const [showPauseConfirmation, setShowPauseConfirmation] = useState(false);
+
+  // Passcode Security Gate state for account isolation
+  const [unlockedAccounts, setUnlockedAccounts] = useState<Set<string>>(() => {
+    const set = new Set<string>();
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = sessionStorage.getItem('unlocked_accounts_list');
+        if (stored) {
+          JSON.parse(stored).forEach((id: string) => set.add(id));
+        }
+      } catch (e) {}
+    }
+    return set;
+  });
+  const [passcodePinInput, setPasscodePinInput] = useState<string>('');
+  const [passcodeError, setPasscodeError] = useState<string>('');
+  const [isVerifyingPasscode, setIsVerifyingPasscode] = useState<boolean>(false);
+
+  const isCurrentAccountLocked = useMemo(() => {
+    if (!stats?.isLocked) return false;
+    return !unlockedAccounts.has(currentProfileId);
+  }, [stats?.isLocked, unlockedAccounts, currentProfileId]);
+
+  const handleVerifyPasscode = async (enteredPin: string) => {
+    setIsVerifyingPasscode(true);
+    setPasscodeError('');
+    try {
+      const res = await fetch('/api/accounts/verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: currentProfileId, pin: enteredPin })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const nextSet = new Set(unlockedAccounts);
+        nextSet.add(currentProfileId);
+        setUnlockedAccounts(nextSet);
+        sessionStorage.setItem('unlocked_accounts_list', JSON.stringify(Array.from(nextSet)));
+        sessionStorage.setItem(`unlocked_${currentProfileId}`, 'true');
+        localStorage.setItem(`pin_token_${currentProfileId}`, enteredPin);
+        setPasscodePinInput('');
+        setPasscodeError('');
+        toast.success(`Welcome! Account unlocked.`);
+        fetchStats(true);
+        fetchKeywords();
+      } else {
+        setPasscodeError('❌ Incorrect Passcode! Access Denied.');
+        setPasscodePinInput('');
+      }
+    } catch (err) {
+      setPasscodeError('❌ Verification failed. Check network.');
+      setPasscodePinInput('');
+    } finally {
+      setIsVerifyingPasscode(false);
+    }
+  };
+
+  const handlePasscodeKeypad = (val: string) => {
+    setPasscodeError('');
+    if (val === 'back') {
+      setPasscodePinInput(prev => prev.slice(0, -1));
+    } else {
+      if (passcodePinInput.length < 4) {
+        const next = passcodePinInput + val;
+        setPasscodePinInput(next);
+        if (next.length === 4) {
+          setTimeout(() => handleVerifyPasscode(next), 120);
+        }
+      }
+    }
+  };
   const [showClearDataConfirm, setShowClearDataConfirm] = useState(false);
   const [showDeleteLastKeywordConfirm, setShowDeleteLastKeywordConfirm] = useState(false);
   const [showDeleteLastRuleConfirm, setShowDeleteLastRuleConfirm] = useState(false);
@@ -634,9 +754,28 @@ export default function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsInitialLoading(false);
-    }, 2000);
+      setIsSplashVisible(false);
+    }, 500);
     return () => clearTimeout(timer);
   }, []);
+
+  const fetchScannedItems = useCallback(async () => {
+    try {
+      const res = await apiJson('/api/scanned-items');
+      if (res.ok && res.data.items) {
+        updateScannedItems(res.data.items);
+      }
+    } catch (err) {
+      console.error("Failed to fetch scanned items:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchScannedItems();
+    // Refresh every 30 seconds for real-time-like sync
+    const interval = setInterval(fetchScannedItems, 30000);
+    return () => clearInterval(interval);
+  }, [fetchScannedItems, currentProfileId]);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: any) => {
@@ -1989,6 +2128,33 @@ export default function App() {
     }
   };
 
+  const fetchPersistedScannedItems = useCallback(async () => {
+    try {
+      const res = await fetch("/api/scanned-items");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.items)) {
+        // Update scanned items even if empty to ensure sync across devices
+        updateScannedItems(data.items);
+        if (data.items.length > 0) {
+          // Keep selection only for items that still exist
+          setSelectedScannedItems(prev => {
+            const next = new Set<string>();
+            const validIds = new Set(data.items.map((i: any) => i._id));
+            prev.forEach(id => {
+              if (validIds.has(id)) next.add(id);
+            });
+            return next;
+          });
+        } else {
+          setSelectedScannedItems(new Set());
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch persisted scanned items:", e);
+    }
+  }, [updateScannedItems]);
+
   const handleCatchUp = async (triggerIds?: string[] | any) => {
     if (isCatchingUp) return;
     setIsCatchingUp(true);
@@ -2016,8 +2182,22 @@ export default function App() {
         if (data.cancelled) {
           showNotification('warn', `Catch up cancelled. Processed ${data.count} keywords.`);
         } else {
-          showNotification('success', `Caught up with ${data.count} missed keywords`);
+          showNotification('success', `⚡ Caught up with ${data.count} missed keywords`);
         }
+        
+        // Remove replied items from persistent scannedItems state
+        if (ids.length > 0) {
+          updateScannedItems(prev => prev.filter(item => !ids.includes(item._id)));
+          setSelectedScannedItems(prev => {
+            const next = new Set(prev);
+            ids.forEach(id => next.delete(id));
+            return next;
+          });
+        } else {
+          updateScannedItems([]);
+          setSelectedScannedItems(new Set());
+        }
+
         setShowScanModal(false);
         fetchMissedCount();
         fetchStats();
@@ -2044,7 +2224,8 @@ export default function App() {
     try {
       const res = await fetch("/api/missed-triggers", { method: "DELETE" });
       if (res.ok) {
-        setScannedItems([]);
+        updateScannedItems([]);
+        setSelectedScannedItems(new Set());
         setMissedCount(0);
         showNotification('success', 'All missed triggers cleared');
       } else {
@@ -2079,8 +2260,13 @@ export default function App() {
       }
       
       if (data.success) {
-        showNotification('success', 'Reply sent successfully');
-        setScannedItems(prev => prev.filter(item => item._id !== triggerId));
+        showNotification('success', '⚡ Reply sent successfully');
+        updateScannedItems(prev => prev.filter(item => item._id !== triggerId));
+        setSelectedScannedItems(prev => {
+          const next = new Set(prev);
+          next.delete(triggerId);
+          return next;
+        });
         setMissedCount(prev => Math.max(0, prev - 1));
         fetchStats();
       } else {
@@ -2097,15 +2283,20 @@ export default function App() {
     }
   };
 
-  const handleScanMissed = async () => {
+  const handleScanMissed = async (autoReplyParam?: boolean) => {
     if (isScanningMissed) return;
     if (stats?.isSystemPaused) {
       showNotification('error', 'System is paused. Cannot scan for missed items.');
       return;
     }
+    const shouldAutoReply = typeof autoReplyParam === 'boolean' ? autoReplyParam : autoReplyOnScan;
     setIsScanningMissed(true);
     try {
-      const res = await fetch("/api/scan-missed", { method: "POST" });
+      const res = await fetch("/api/scan-missed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoReply: shouldAutoReply })
+      });
       const text = await res.text();
       if (text.includes("Rate exceeded")) {
         showNotification('error', 'Rate limit exceeded. Please try again later.');
@@ -2114,18 +2305,21 @@ export default function App() {
       
       const data = text ? JSON.parse(text) : null;
       if (data && data.success) {
-        setScannedItems(data.items || []);
-        setSelectedScannedItems(new Set((data.items || []).map((i: any) => i._id)));
+        const newItems = data.items || [];
+        updateScannedItems(newItems);
+        setSelectedScannedItems(new Set(newItems.map((i: any) => i._id)));
         setShowScanModal(true);
         fetchMissedCount();
         fetchStats();
         if (activeTab === 'catchup') {
           fetchMissedList();
         }
-        if (data.count > 0) {
-          showNotification('success', `Found ${data.count} new missed keywords`);
+        if (shouldAutoReply && data.autoRepliedCount > 0) {
+          showNotification('success', `⚡ Fast Scan: Found ${data.count} missed items & sent ${data.autoRepliedCount} replies instantly!`);
+        } else if (data.count > 0) {
+          showNotification('success', `⚡ Fast Scan: Found ${data.count} new missed keywords`);
         } else {
-          showNotification('success', 'No new missed keywords found');
+          showNotification('success', '⚡ Fast Scan complete: All caught up! No new missed keywords');
         }
       } else {
         showNotification('error', data?.error || 'Scan failed');
@@ -2141,6 +2335,7 @@ export default function App() {
     fetchAppState();
     fetchAnalytics();
     fetchImportBatches();
+    fetchPersistedScannedItems();
     pingDeviceSession(currentProfileId);
 
     const handleAccountChangeEvent = (e: any) => {
@@ -2148,6 +2343,22 @@ export default function App() {
       console.log("Smooth Account Change Event received for account:", newAccId);
       setCurrentProfileId(newAccId);
       invalidateApiCache();
+      
+      // Load saved scanned items for this profile from localStorage
+      if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem(`botflow_scanned_items_${newAccId}`);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            setScannedItems(parsed);
+            setSelectedScannedItems(new Set(parsed.map((i: any) => i._id)));
+          } catch (e) {
+            setScannedItems([]);
+          }
+        } else {
+          setScannedItems([]);
+        }
+      }
       
       // Reset local state fields before fetching the new account profile
       setPhone("");
@@ -2159,6 +2370,7 @@ export default function App() {
       fetchKeywords(true);
       fetchAnalytics();
       fetchImportBatches();
+      fetchPersistedScannedItems();
       pingDeviceSession(newAccId);
       
       window.dispatchEvent(new CustomEvent('groups_updated', { detail: { accountId: newAccId } }));
@@ -2169,6 +2381,9 @@ export default function App() {
     // Consolidated background & foreground sync every 15 seconds, running continuously
     const globalInterval = setInterval(() => {
       fetchAppState();
+      fetchKeywords(); // Sync rules for other users/devices
+      fetchAnalytics(); // Sync analytics for other users/devices
+      fetchPersistedScannedItems(); // Sync scanned items for other users/devices
       pingDeviceSession(currentProfileId);
     }, 15000);
 
@@ -2177,6 +2392,7 @@ export default function App() {
         console.log("App returned to foreground — performing instant refresh");
         fetchAppState();
         fetchAnalytics();
+        fetchPersistedScannedItems(); // Instant sync on return
         pingDeviceSession(currentProfileId);
       }
     };
@@ -3161,151 +3377,130 @@ export default function App() {
   return (
     <AnimatePresence mode="wait">
       {isInitialLoading ? (
+        <SplashScreen key="splash" appName={stats?.name || "UserBot Pro"} appLogo={appLogoInput || stats?.appLogo} onFinish={() => setIsInitialLoading(false)} />
+      ) : isCurrentAccountLocked ? (
         <motion.div
-          key="loading"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0, scale: 1.05, filter: "blur(12px)" }}
-          className="fixed inset-0 z-[1000] bg-[#090518] flex flex-col items-center justify-between p-6 overflow-hidden select-none"
+          key="lockscreen"
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 1.05 }}
+          className="fixed inset-0 z-[1000] bg-[#080514] flex flex-col items-center justify-center p-6 overflow-hidden select-none"
         >
-          {/* Cyberpunk Purple Ambient Light & Waves */}
-          <div className="absolute inset-0 overflow-hidden pointer-events-none">
-            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[350px] h-[350px] rounded-full blur-[150px] opacity-25 bg-purple-600" />
-            <div className="absolute top-1/3 left-1/4 w-[250px] h-[250px] rounded-full blur-[130px] opacity-20 bg-blue-600" />
-            <div className="absolute inset-0 bg-[radial-gradient(#a855f7_1px,transparent_1px)] [background-size:40px_40px] opacity-[0.02]" />
-            <div className="absolute bottom-0 left-0 right-0 h-48 bg-gradient-to-t from-purple-900/40 via-blue-900/10 to-transparent blur-2xl" />
+          {/* Ambient Cyberpunk Glow */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[340px] h-[340px] rounded-full blur-[140px] opacity-25 bg-amber-600" />
+            <div className="absolute top-1/2 left-1/3 w-[260px] h-[260px] rounded-full blur-[120px] opacity-20 bg-purple-600" />
+            <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:36px_36px] opacity-[0.03]" />
           </div>
 
-          {/* Top Row: Tagline & Category */}
-          <div className="w-full flex items-start justify-between relative z-10 pt-2 px-1">
-            <div className="font-serif italic text-purple-300/90 text-sm sm:text-base tracking-wide drop-shadow-[0_0_10px_rgba(168,85,247,0.4)]">
-              Let Bots <br />Do the Work
-            </div>
-            <div className="text-right text-[10px] font-mono uppercase tracking-[0.25em] text-purple-400/60 leading-tight">
-              Ideas <br />Automate <br />Grow
-            </div>
-          </div>
-
-          {/* Center Mascot & Floating Feature Badges */}
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: "spring", damping: 20, stiffness: 100 }}
-            className="relative z-10 flex flex-col items-center my-auto w-full max-w-sm py-4"
-          >
-            {/* Floating Badges Around Center */}
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              <div className="absolute -top-6 -left-2 sm:-left-6 px-3 py-1.5 rounded-xl bg-purple-950/80 border border-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)] backdrop-blur-md flex items-center gap-1.5 animate-bounce [animation-duration:3s]">
-                <span className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_8px_#c084fc]" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-purple-200">Automation</span>
-              </div>
-
-              <div className="absolute -top-4 -right-2 sm:-right-4 px-3 py-1.5 rounded-xl bg-indigo-950/80 border border-indigo-500/50 shadow-[0_0_15px_rgba(99,102,241,0.3)] backdrop-blur-md flex items-center gap-1.5 animate-bounce [animation-duration:3.5s]">
-                <span className="w-2 h-2 rounded-full bg-indigo-400 shadow-[0_0_8px_#818cf8]" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-indigo-200">Workflow</span>
-              </div>
-
-              <div className="absolute top-20 -left-6 sm:-left-12 px-3 py-1.5 rounded-xl bg-blue-950/80 border border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.3)] backdrop-blur-md flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_#60a5fa]" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-blue-200">⚡ Fast</span>
-              </div>
-
-              <div className="absolute top-16 -right-6 sm:-right-10 px-3 py-1.5 rounded-xl bg-fuchsia-950/80 border border-fuchsia-500/50 shadow-[0_0_15px_rgba(217,70,239,0.3)] backdrop-blur-md flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-fuchsia-400 shadow-[0_0_8px_#e879f9]" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-fuchsia-200">🧠 AI Powered</span>
-              </div>
-
-              <div className="absolute bottom-8 -left-2 sm:-left-4 px-3 py-1.5 rounded-xl bg-purple-950/80 border border-purple-500/40 shadow-[0_0_15px_rgba(168,85,247,0.3)] backdrop-blur-md flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-purple-400" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-purple-200">🛡️ Secure</span>
-              </div>
-
-              <div className="absolute bottom-6 -right-2 sm:-right-6 px-3 py-1.5 rounded-xl bg-blue-950/80 border border-blue-500/40 shadow-[0_0_15px_rgba(59,130,246,0.3)] backdrop-blur-md flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-blue-400" />
-                <span className="text-[10px] font-black tracking-wider uppercase text-blue-200">📊 Smart</span>
-              </div>
+          <div className="relative z-10 w-full max-w-sm flex flex-col items-center text-center">
+            {/* Glowing Lock Badge */}
+            <div className="relative w-20 h-20 rounded-3xl bg-gradient-to-tr from-amber-500/20 via-neutral-900 to-amber-600/20 border-2 border-amber-500/40 flex items-center justify-center mb-5 shadow-[0_0_35px_rgba(245,158,11,0.35)]">
+              <ShieldCheck size={36} className="text-amber-400" />
+              <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-4 w-4 bg-amber-500 items-center justify-center text-[9px] text-black font-black">🔒</span>
+              </span>
             </div>
 
-            {/* Central Glowing Robot Avatar & Neon Aura Ring */}
-            <div className="relative w-36 h-36 flex items-center justify-center mb-6">
-              <motion.div 
-                animate={{ rotate: 360, scale: [1, 1.03, 1] }}
-                transition={{ rotate: { repeat: Infinity, duration: 15, ease: "linear" }, scale: { repeat: Infinity, duration: 3, ease: "easeInOut" } }}
-                className="absolute inset-0 rounded-full border-2 border-purple-500/60 shadow-[0_0_35px_rgba(168,85,247,0.5)]"
-              />
-              <motion.div 
-                animate={{ rotate: -360 }}
-                transition={{ repeat: Infinity, duration: 10, ease: "linear" }}
-                className="absolute -inset-2 rounded-full border border-dashed border-blue-400/40"
-              />
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide uppercase">
+              Account Protected
+            </h2>
+            <p className="text-xs font-semibold text-amber-300/80 mt-1">
+              "{stats?.name || 'Rohit Pandit'}"
+            </p>
+            <p className="text-[11px] text-slate-400 mt-2 max-w-xs leading-relaxed">
+              This account has privacy lock enabled. Please enter the 4-digit security PIN to access rules, sessions & data.
+            </p>
 
-              <div className="relative w-28 h-28 rounded-full overflow-hidden flex items-center justify-center bg-gradient-to-tr from-purple-950 via-neutral-900 to-indigo-950 border-2 border-purple-400/80 shadow-[0_0_30px_rgba(168,85,247,0.6)] backdrop-blur-xl">
-                <div className="absolute inset-0 bg-radial from-purple-500/20 via-transparent to-transparent animate-pulse" />
-                <img 
-                  src={stats?.appLogo || "/logo.jpg"} 
-                  alt="BotFlow Logo" 
-                  className="w-16 h-16 object-contain rounded-2xl relative z-10 filter drop-shadow-[0_0_10px_rgba(192,132,252,0.8)]" 
+            {/* PIN Dots Indicator */}
+            <div className="flex items-center justify-center gap-4 my-7">
+              {[0, 1, 2, 3].map((idx) => (
+                <div
+                  key={idx}
+                  className={`w-4 h-4 rounded-full border-2 transition-all duration-300 ${
+                    passcodePinInput.length > idx
+                      ? 'bg-gradient-to-r from-amber-400 to-orange-500 border-amber-400 scale-125 shadow-[0_0_15px_rgba(245,158,11,0.9)]'
+                      : 'border-slate-700 bg-neutral-900'
+                  }`}
                 />
-              </div>
+              ))}
             </div>
 
-            {/* BOTFLOW Brand Title & Tagline */}
-            <div className="flex flex-col items-center text-center space-y-1.5 z-10">
-              <h1 className="text-4xl sm:text-5xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-purple-200 to-fuchsia-400 drop-shadow-[0_0_20px_rgba(192,132,252,0.4)]">
-                BOTFLOW
-              </h1>
-              <p className="text-xs sm:text-sm font-medium text-purple-200/80 tracking-wide">
-                Smart Bots, Seamless Flow.
+            {/* Error Message */}
+            {passcodeError && (
+              <motion.div
+                initial={{ opacity: 0, y: -5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-xs font-bold text-rose-400 mb-4 animate-bounce"
+              >
+                {passcodeError}
+              </motion.div>
+            )}
+
+            {/* Numeric Keypad */}
+            <div className="grid grid-cols-3 gap-4 w-full max-w-[280px]">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  disabled={isVerifyingPasscode}
+                  onClick={() => handlePasscodeKeypad(num)}
+                  className="w-16 h-16 rounded-2xl bg-white/5 hover:bg-white/10 active:bg-amber-500/20 active:scale-90 border border-white/10 text-xl font-bold text-white transition-all flex items-center justify-center shadow-sm"
+                >
+                  {num}
+                </button>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => setPasscodePinInput('')}
+                className="w-16 h-16 rounded-2xl text-[10px] font-black uppercase tracking-wider text-slate-400 hover:text-white transition flex items-center justify-center active:scale-90"
+              >
+                Clear
+              </button>
+
+              <button
+                key="0"
+                type="button"
+                disabled={isVerifyingPasscode}
+                onClick={() => handlePasscodeKeypad('0')}
+                className="w-16 h-16 rounded-2xl bg-white/5 hover:bg-white/10 active:bg-amber-500/20 active:scale-90 border border-white/10 text-xl font-bold text-white transition-all flex items-center justify-center shadow-sm"
+              >
+                0
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePasscodeKeypad('back')}
+                className="w-16 h-16 rounded-2xl text-slate-300 hover:text-rose-400 hover:bg-rose-500/10 transition flex items-center justify-center active:scale-90"
+                title="Backspace"
+              >
+                <RefreshCw size={22} className="-scale-x-100 rotate-180" />
+              </button>
+            </div>
+
+            {/* Direct Guest Link Info */}
+            <div className="mt-8 pt-4 border-t border-white/10 w-full flex flex-col items-center gap-1.5">
+              <p className="text-[10px] text-slate-500 font-medium">
+                Guest user or using another account?
               </p>
-            </div>
-
-            {/* Glowing Loading Dots & Loading Text */}
-            <div className="flex flex-col items-center space-y-2 mt-6 z-10">
-              <div className="flex items-center space-x-2">
-                <motion.div 
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ repeat: Infinity, duration: 1.2, delay: 0 }}
-                  className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_10px_#c084fc]" 
-                />
-                <motion.div 
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.2 }}
-                  className="w-2.5 h-2.5 rounded-full bg-fuchsia-400 shadow-[0_0_10px_#e879f9]" 
-                />
-                <motion.div 
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.4 }}
-                  className="w-2.5 h-2.5 rounded-full bg-blue-400 shadow-[0_0_10px_#60a5fa]" 
-                />
-                <motion.div 
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.6 }}
-                  className="w-2.5 h-2.5 rounded-full bg-indigo-400 shadow-[0_0_10px_#818cf8]" 
-                />
-                <motion.div 
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ repeat: Infinity, duration: 1.2, delay: 0.8 }}
-                  className="w-2.5 h-2.5 rounded-full bg-purple-300 shadow-[0_0_10px_#d8b4fe]" 
-                />
-              </div>
-              <p className="text-xs font-bold tracking-widest uppercase text-purple-300/70 animate-pulse pt-1">
-                Loading...
-              </p>
-            </div>
-          </motion.div>
-
-          {/* Footer Navigation & Version Info */}
-          <div className="w-full flex flex-col items-center space-y-2 relative z-10 pb-2">
-            <div className="flex items-center space-x-3 text-[11px] font-bold uppercase tracking-widest text-purple-300/60">
-              <span>Automate</span>
-              <span className="w-1 h-1 rounded-full bg-purple-400" />
-              <span>Manage</span>
-              <span className="w-1 h-1 rounded-full bg-purple-400" />
-              <span>Grow</span>
-            </div>
-            <div className="flex items-center justify-between w-full text-[10px] font-mono text-purple-400/40 px-2">
-              <span>A SMARTER TOMORROW</span>
-              <span>Powered by BotFlow v 1.0.0</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const guestId = prompt("Enter your direct Account ID or Name (e.g. Prakash):");
+                  if (guestId) {
+                    const clean = guestId.trim();
+                    localStorage.setItem('currentProfileId', clean);
+                    localStorage.setItem('activeAccountId', clean);
+                    localStorage.setItem('shared_guest_lock', clean);
+                    window.location.href = `/?account=${encodeURIComponent(clean)}`;
+                  }
+                }}
+                className="text-[11px] font-bold text-blue-400 hover:text-blue-300 underline tracking-wide"
+              >
+                Open My Guest Account
+              </button>
             </div>
           </div>
         </motion.div>
@@ -3324,69 +3519,71 @@ export default function App() {
         <div className={`absolute -bottom-[10%] left-[20%] w-[30%] h-[30%] rounded-full blur-[120px] opacity-20 ${darkMode ? 'bg-amber-500' : 'bg-amber-300'}`} />
       </div>
 
-      {/* Header */}
-      <header className={`px-4 sm:px-6 py-3.5 flex items-center justify-between fixed top-0 left-0 right-0 z-50 transition-all duration-500 rounded-b-[24px] backdrop-blur-xl border-b ${
-        darkMode 
-          ? 'bg-[#1c3443]/80 text-white border-white/10 shadow-[0_10px_30px_rgba(0,0,0,0.35)]' 
-          : 'bg-[#1c3443]/70 text-white border-[#1c3443]/15 shadow-[0_10px_30px_rgba(28,52,67,0.15)]'
-      } ${activeTab === 'logs' || isAddingNewRule || editingKeywordId ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
-        
-        {/* Oval glow effect */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-b-[24px]">
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80%] h-[200%] rounded-[100%] blur-3xl opacity-15 bg-white" />
-        </div>
-        
-        {/* Left Side: Personalized Greeting and Avatar Account Switcher */}
-        <div className="relative z-10 shrink-0">
-          <ProfileSelector isConnected={stats?.isUserBotConnected} onSwitchAccount={handleAccountSwitch} />
-        </div>
-        
-        {/* Right Side: Colorful Controls & Menu Trigger */}
-        <div className="flex items-center space-x-2 relative z-10 shrink-0">
+      {/* Header (Visible only on Home/Dashboard tab) */}
+      {activeTab === 'dashboard' && (
+        <header className={`px-4 sm:px-6 py-3.5 flex items-center justify-between fixed top-0 left-0 right-0 z-50 transition-all duration-300 rounded-b-[24px] backdrop-blur-xl ${
+          darkMode 
+            ? 'bg-gradient-to-r from-[#2c0816] via-[#3a0c1e] to-[#1c0309] text-white border-none shadow-[0_10px_30px_rgba(42,8,22,0.5)]' 
+            : 'bg-gradient-to-r from-[#2c0816] via-[#3a0c1e] to-[#1c0309] text-white border-none shadow-[0_10px_30px_rgba(42,8,22,0.35)]'
+        } ${isAddingNewRule || editingKeywordId ? 'opacity-0 pointer-events-none -translate-y-full' : 'opacity-100 translate-y-0'}`}>
           
-          {/* Notification Button */}
-          <button 
-            onClick={() => setIsNotificationOpen(true)}
-            className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
-            aria-label="Notifications"
-          >
-            <motion.div
-              animate={unreadCount > 0 ? {
-                rotate: [0, -15, 15, -15, 15, 0],
-                scale: [1, 1.2, 1],
-                y: [0, -2, 0]
-              } : {}}
-              transition={{ 
-                repeat: Infinity, 
-                duration: 1.5, 
-                repeatDelay: 2,
-                ease: "easeInOut"
-              }}
+          {/* Oval glow effect */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-b-[24px]">
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80%] h-[200%] rounded-[100%] blur-3xl opacity-15 bg-white" />
+          </div>
+          
+          {/* Left Side: Personalized Greeting and Avatar Account Switcher */}
+          <div className="relative z-10 shrink-0">
+            <ProfileSelector isConnected={stats?.isUserBotConnected} onSwitchAccount={handleAccountSwitch} />
+          </div>
+          
+          {/* Right Side: Colorful Controls & Menu Trigger */}
+          <div className="flex items-center space-x-2 relative z-10 shrink-0">
+            
+            {/* Notification Button */}
+            <button 
+              onClick={() => setIsNotificationOpen(true)}
+              className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
+              aria-label="Notifications"
             >
-              <Bell size={18} className={`sm:w-[20px] sm:h-[20px] ${unreadCount > 0 ? 'text-rose-400' : ''}`} />
-            </motion.div>
-            {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] sm:min-w-[16px] sm:h-[16px] bg-rose-500 text-white text-[8px] font-black flex items-center justify-center rounded-full border-2 border-white dark:border-black shadow-lg">
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
-          </button>
- 
-          {/* Sidebar Menu Toggle Button */}
-          <button 
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
-            title="Open Navigation Menu"
-          >
-            <div className="flex flex-col items-center justify-center space-y-1 w-[18px] h-[18px]">
-              <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? 'rotate-45 translate-y-1.5' : ''} bg-white`}></span>
-              <span className={`h-0.5 w-4.5 rounded-full transition-opacity ${isMenuOpen ? 'opacity-0' : 'opacity-100'} bg-white`}></span>
-              <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? '-rotate-45 -translate-y-1.5' : ''} bg-white`}></span>
-            </div>
-          </button>
+              <motion.div
+                animate={unreadCount > 0 ? {
+                  rotate: [0, -15, 15, -15, 15, 0],
+                  scale: [1, 1.2, 1],
+                  y: [0, -2, 0]
+                } : {}}
+                transition={{ 
+                  repeat: Infinity, 
+                  duration: 1.5, 
+                  repeatDelay: 2,
+                  ease: "easeInOut"
+                }}
+              >
+                <Bell size={18} className={`sm:w-[20px] sm:h-[20px] ${unreadCount > 0 ? 'text-rose-400' : ''}`} />
+              </motion.div>
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] sm:min-w-[16px] sm:h-[16px] bg-rose-500 text-white text-[8px] font-black flex items-center justify-center rounded-full border-2 border-white dark:border-black shadow-lg">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </button>
+   
+            {/* Sidebar Menu Toggle Button */}
+            <button 
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className="p-2.5 rounded-full transition relative group shrink-0 shadow-md bg-white/10 hover:bg-white/20 text-white border border-white/15"
+              title="Open Navigation Menu"
+            >
+              <div className="flex flex-col items-center justify-center space-y-1 w-[18px] h-[18px]">
+                <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? 'rotate-45 translate-y-1.5' : ''} bg-white`}></span>
+                <span className={`h-0.5 w-4.5 rounded-full transition-opacity ${isMenuOpen ? 'opacity-0' : 'opacity-100'} bg-white`}></span>
+                <span className={`h-0.5 w-4.5 rounded-full transition-transform ${isMenuOpen ? '-rotate-45 -translate-y-1.5' : ''} bg-white`}></span>
+              </div>
+            </button>
 
-        </div>
-      </header>
+          </div>
+        </header>
+      )}
 
       <AnimatePresence>
         {isMenuOpen && (
@@ -3664,10 +3861,12 @@ export default function App() {
       </motion.button>
 
       <main 
-        className={`mx-auto relative overflow-x-hidden will-change-transform ${
+        className={`mx-auto relative overflow-x-hidden will-change-transform transform-gpu ${
           activeTab === 'logs' || isAddingNewRule || editingKeywordId
             ? 'max-w-none w-full p-0 pt-0 pb-0' 
-            : 'max-w-md p-4 pt-24 pb-28'
+            : activeTab === 'dashboard'
+              ? 'max-w-md p-4 pt-24 pb-28'
+              : 'max-w-md p-4 pt-4 pb-28'
         }`}
       >
         <AnimatePresence mode="popLayout" custom={direction} initial={false}>
@@ -3718,6 +3917,8 @@ export default function App() {
                 replyingIds={replyingIds}
                 handleScanMissed={handleScanMissed}
                 isScanningMissed={isScanningMissed}
+                handleCatchUp={handleCatchUp}
+                isCatchingUp={isCatchingUp}
               />
             </motion.div>
           )}
@@ -4869,6 +5070,50 @@ export default function App() {
       </div>
 
       {/* Notifications */}
+      <AnimatePresence mode="wait">
+        {isSplashVisible && (
+          <motion.div 
+            key="splash"
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#001b69] text-white"
+          >
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+              className="flex flex-col items-center"
+            >
+              <div className="w-24 h-24 mb-6 bg-white rounded-3xl p-4 shadow-2xl flex items-center justify-center relative">
+                <Bot className="w-16 h-16 text-[#001b69]" />
+                <motion.div 
+                  animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.6, 0.3] }}
+                  transition={{ repeat: Infinity, duration: 2 }}
+                  className="absolute inset-0 bg-blue-400 rounded-3xl blur-xl -z-10"
+                />
+              </div>
+              <h1 className="text-3xl font-black tracking-tighter mb-2">BOTFLOW PREMIUM</h1>
+              <p className="text-blue-200 text-sm font-medium tracking-widest uppercase">High Speed Scanner</p>
+              
+              <div className="mt-12 flex flex-col items-center gap-4">
+                <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: "100%" }}
+                    transition={{ duration: 2 }}
+                    className="h-full bg-blue-400"
+                  />
+                </div>
+                <p className="text-white/40 text-[10px] font-mono uppercase tracking-widest animate-pulse">
+                  Synchronizing Cloud Engine...
+                </p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <Toaster position="top-right" />
 
       {/* Delete Confirmation Modal */}
@@ -4993,18 +5238,38 @@ export default function App() {
                     <Search size={20} />
                   </div>
                   <div>
-                    <h3 className="text-lg font-black tracking-tight">Scan Results</h3>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="text-lg font-black tracking-tight">Scan Results</h3>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
+                        darkMode ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        💾 Saved Permanently
+                      </span>
+                    </div>
                     <p className={`text-xs font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                      {scannedItems.length} new missed keywords found
+                      {scannedItems.length} missed keywords • Fast Python Rule Engine
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => setShowScanModal(false)}
-                  className={`p-2 rounded-xl transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
-                >
-                  <X size={20} />
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => handleToggleAutoReplyOnScan(!autoReplyOnScan)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center space-x-1.5 transition border ${
+                      autoReplyOnScan
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
+                        : (darkMode ? 'bg-neutral-800 border-white/10 text-slate-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600')
+                    }`}
+                    title="Toggle instant reply during scan"
+                  >
+                    <span>⚡ Turant Reply: {autoReplyOnScan ? 'ON' : 'OFF'}</span>
+                  </button>
+                  <button
+                    onClick={() => setShowScanModal(false)}
+                    className={`p-2 rounded-xl transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
               </div>
               
               <div className="p-6 overflow-y-auto flex-1 space-y-4">
@@ -5097,27 +5362,22 @@ export default function App() {
                   <>
                     <button
                       onClick={() => setShowScanModal(false)}
-                      className={`px-6 py-3 rounded-xl text-sm font-bold transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`}
+                      className={`px-4 py-3 rounded-xl text-xs font-bold transition-colors ${darkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`}
                     >
-                      Close
+                      Close (Items Stay Saved)
                     </button>
                     {scannedItems.length > 0 && (
                       <button
                         onClick={() => {
-                          if (selectedScannedItems.size === 0) {
-                            showNotification('error', 'Please select at least one item');
-                            return;
-                          }
-                          handleCatchUp(Array.from(selectedScannedItems));
+                          const targetIds = selectedScannedItems.size > 0 
+                            ? Array.from(selectedScannedItems) 
+                            : scannedItems.map(i => i._id);
+                          handleCatchUp(targetIds);
                         }}
-                        disabled={selectedScannedItems.size === 0}
-                        className={`px-6 py-3 rounded-xl text-sm font-bold text-white transition-colors shadow-lg ${
-                          selectedScannedItems.size === 0
-                            ? 'bg-slate-400 cursor-not-allowed shadow-none'
-                            : 'bg-indigo-500 hover:bg-indigo-600 shadow-indigo-500/20'
-                        }`}
+                        className="px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider text-white transition-all shadow-lg active:scale-95 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-600/25 flex items-center space-x-1.5"
                       >
-                        Catch Up Selected ({selectedScannedItems.size})
+                        <Zap size={13} fill="currentColor" />
+                        <span>⚡ Turant Reply All ({selectedScannedItems.size > 0 ? selectedScannedItems.size : scannedItems.length})</span>
                       </button>
                     )}
                   </>

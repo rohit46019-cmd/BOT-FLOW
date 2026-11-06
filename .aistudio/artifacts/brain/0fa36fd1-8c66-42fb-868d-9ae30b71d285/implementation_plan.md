@@ -1,23 +1,33 @@
-# Implementation Plan - Uptime Monitor
+# Implementation Plan - BotFlow Premium (Python Transition)
 
 ## Goal
-Build a cloud-based uptime monitor that checks URLs every 5-6 minutes.
-It will provide:
-1. **Server-side monitoring**: Independent of the user's browser state.
-2. **Management Dashboard**: Secure interface to add/edit/delete monitored URLs.
-3. **Multi-channel Notifications**: Alerts via In-app, Email, and Browser notifications.
-4. **Firebase Integration**: For user auth and persistent data storage.
+Transform BotFlow into a high-performance Telegram manager with a Python-based backend, ensuring multi-user data synchronization via Firebase Firestore and resolving scanning latency/data loss issues.
 
 ## Architecture
+- **Backend**: FastAPI (Python) running on port 3000.
+  - **Reasoning**: FastAPI is highly performant and allows direct integration of the `fast_scanner.py` logic without the overhead of inter-process communication.
 - **Frontend**: React (Vite) + Tailwind CSS.
-- **Authentication**: Firebase Authentication (Google Login).
-- **Backend/Monitoring**: Node.js/Express server (running in the cloud) to perform periodic checks.
-- **Database**: Firebase Firestore to store user settings, monitored URL lists, and status history.
+  - **Interaction**: The frontend will communicate with the Python API for all operations.
+- **Database**: Firebase Firestore.
+  - **Sync**: Replaces SQLite/MongoDB to allow "Other users" to see Rules, Logs, and Scanned Items in real-time.
+- **Authentication**: Firebase Auth (for multi-user support).
 
-## Steps
-1. **Provision Firebase**: Set up Firestore and Auth.
-2. **Data Modeling**: Define Firestore schema for `users`, `monitored_urls`, and `logs`.
-3. **Frontend Implementation**: Build the dashboard to manage URLs and view status.
-4. **Backend Implementation**: Implement the server-side cron job to ping URLs every 5-6 minutes.
-5. **Notification System**: Set up in-app, email (using Firebase Extensions or a third-party service), and browser notification logic.
-6. **Security**: Implement Firestore rules to ensure data isolation.
+## Key Features & Fixes
+1. **Multi-User Sync**: All data (Rules, Scanned Items, Logs) will be stored in Firestore.
+2. **Persistent Scanning**: Scanned Items will be saved to Firestore immediately. The "delete on back" issue will be fixed by fetching from Firestore on navigation.
+3. **High-Speed Scanning**: The `FastKeywordMatcher` will be held in memory within the FastAPI process for sub-millisecond matching.
+4. **Splash Screen**: A dedicated component in React that triggers on every app mount.
+5. **UI Visibility**: Audit and fix React component logic to ensure all buttons (e.g., Scan, Rule Management) are correctly rendered.
+
+## Proposed Steps
+1. **Provision Firebase**: Initialize Firestore and Auth via AI Studio tools.
+2. **Python Backend Setup**:
+   - Install `fastapi`, `uvicorn`, `google-cloud-firestore`.
+   - Implement routes for `Rules`, `Scanned Items`, and `Logs`.
+   - Integrate `FastKeywordMatcher` into the request lifecycle.
+3. **Frontend Refactor**:
+   - Replace existing Node-based API calls with Python-based API calls.
+   - Add the `SplashScreen` component.
+   - Implement real-time sync listeners for Firestore.
+4. **Data Migration**: Move any existing local rules/logs to Firestore.
+5. **Verification**: Ensure the server runs on port 3000 and passes all functional tests.
