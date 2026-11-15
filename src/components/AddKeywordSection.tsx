@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import toast from 'react-hot-toast';
-import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check, Bell, ShieldCheck, ChevronDown, ChevronUp, Copy } from 'lucide-react';
+import { Plus, X, Hash, Link, Trash2, Sparkles, Zap, MessageSquare, Users, Check, Bell, ShieldCheck, ShieldAlert, UserX, ChevronDown, ChevronUp, Copy } from 'lucide-react';
 
 export const KeywordInput = memo(({ value, onChange, onRemove, showRemove, darkMode, index }: any) => {
   const colors = ['emerald', 'blue', 'rose', 'amber', 'purple', 'indigo'];
@@ -81,6 +81,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
   const [newApprovalMode, setNewApprovalMode] = useState(false);
   const [newNotifyOnHit, setNewNotifyOnHit] = useState(false);
   const [newTargetGroups, setNewTargetGroups] = useState<string[]>([]);
+  const [newBlockedUsers, setNewBlockedUsers] = useState<string[]>([]);
+  const [newBlockedUserKeywords, setNewBlockedUserKeywords] = useState<string[]>([]);
+  const [blockedUserInput, setBlockedUserInput] = useState("");
   const [customGroupInput, setCustomGroupInput] = useState("");
   const [availableGroups, setAvailableGroups] = useState<{ id: string; title: string }[]>([]);
   const [showGroupDropdown, setShowGroupDropdown] = useState(false);
@@ -155,6 +158,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewApprovalMode(!!editingKeyword.approval_mode);
       setNewNotifyOnHit(!!editingKeyword.notify_on_hit);
       setNewTargetGroups(editingKeyword.target_groups || []);
+      setNewBlockedUsers(Array.isArray(editingKeyword.blocked_users) ? editingKeyword.blocked_users : []);
+      setNewBlockedUserKeywords(Array.isArray(editingKeyword.blocked_user_keywords) ? editingKeyword.blocked_user_keywords : []);
+      setBlockedUserInput("");
     } else {
       setNewKeywords([""]);
       setNewReply("");
@@ -166,6 +172,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       setNewApprovalMode(false);
       setNewNotifyOnHit(false);
       setNewTargetGroups([]);
+      setNewBlockedUsers([]);
+      setNewBlockedUserKeywords([]);
+      setBlockedUserInput("");
     }
   }, [editingKeyword]);
 
@@ -232,7 +241,35 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
     }
   };
 
+  const addBlockedUser = (rawVal: string) => {
+    const entries = rawVal.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    if (entries.length === 0) return;
+    setNewBlockedUsers(prev => Array.from(new Set([...prev, ...entries])));
+    setBlockedUserInput("");
+  };
+
+  const removeBlockedUser = (userEntry: string) => {
+    setNewBlockedUsers(prev => prev.filter(u => u !== userEntry));
+  };
+
+  const toggleBlockedUserKeyword = (word: string) => {
+    const trimmed = word.trim();
+    if (!trimmed) return;
+    setNewBlockedUserKeywords(prev =>
+      prev.includes(trimmed) ? prev.filter(w => w !== trimmed) : [...prev, trimmed]
+    );
+  };
+
   const handleSave = () => {
+    const pendingEntries = blockedUserInput
+      .split(/[\n,]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const finalBlockedUsers = Array.from(new Set([...newBlockedUsers, ...pendingEntries]));
+    const activeWordsSet = new Set(newKeywords.map(k => k.trim().toLowerCase()).filter(Boolean));
+    const finalBlockedUserKeywords = newBlockedUserKeywords
+      .map(w => w.trim())
+      .filter(w => w && activeWordsSet.has(w.toLowerCase()));
     onSave({
       keywords: newKeywords,
       reply: newReply,
@@ -243,7 +280,9 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
       ai_reply_enabled: newAiReplyEnabled,
       approval_mode: newApprovalMode,
       notify_on_hit: newNotifyOnHit,
-      target_groups: newTargetGroups
+      target_groups: newTargetGroups,
+      blocked_users: finalBlockedUsers,
+      blocked_user_keywords: finalBlockedUserKeywords
     });
   };
 
@@ -564,6 +603,123 @@ const AddKeywordSection: React.FC<AddKeywordSectionProps> = ({
                       )}
                     </div>
                   </div>
+                </div>
+
+                {/* Specific Keyword Blocked Users / Bots (Approval Mode) */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between">
+                    <label className={`flex items-center gap-1 text-[10px] font-black uppercase tracking-wider ${darkMode ? 'text-rose-300' : 'text-rose-700'}`}>
+                      <ShieldAlert size={11} className="text-rose-500" />
+                      <span>Blocked Users / Bots (Requires Approval)</span>
+                    </label>
+                    <span className={`text-[9px] font-mono font-bold ${newBlockedUsers.length > 0 ? 'text-rose-500' : 'text-slate-400'}`}>
+                      {newBlockedUsers.length === 0 ? "None" : `${newBlockedUsers.length} Blocked`}
+                    </span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <div className="relative flex-1">
+                      <UserX size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-rose-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={blockedUserInput}
+                        onChange={(e) => setBlockedUserInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addBlockedUser(blockedUserInput);
+                          }
+                        }}
+                        placeholder="e.g. @FB537bot or User ID"
+                        className={`w-full pl-7 pr-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-rose-500 outline-none text-xs font-mono transition ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white placeholder-white/20' : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                        }`}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addBlockedUser(blockedUserInput)}
+                      className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg transition flex items-center gap-1 flex-shrink-0"
+                    >
+                      <Plus size={11} /> Block
+                    </button>
+                  </div>
+                  {newBlockedUsers.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-1 p-1.5 rounded-lg border bg-rose-500/5 border-rose-500/20">
+                        {newBlockedUsers.map((usr, idx) => (
+                          <span
+                            key={`${usr}-${idx}`}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold ${
+                              darkMode ? 'bg-rose-600/25 text-rose-200 border border-rose-500/30' : 'bg-rose-100 text-rose-900 border border-rose-300'
+                            }`}
+                          >
+                            <span>🛑 {usr}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeBlockedUser(usr)}
+                              className="hover:text-rose-400 transition ml-0.5"
+                              title="Unblock"
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* Specific Word Selector inside this Rule */}
+                      {newKeywords.some(k => k.trim()) && (
+                        <div className={`p-2 rounded-lg border space-y-1.5 ${
+                          darkMode ? 'bg-amber-500/5 border-amber-500/20' : 'bg-amber-50/70 border-amber-200'
+                        }`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[9.5px] font-black uppercase tracking-wider ${darkMode ? 'text-amber-300' : 'text-amber-800'}`}>
+                              Apply Block On Specific Word:
+                            </span>
+                            <span className={`text-[9px] font-bold ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                              {newBlockedUserKeywords.length === 0 ? 'All words in this rule' : `${newBlockedUserKeywords.length} specific word(s)`}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setNewBlockedUserKeywords([])}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition ${
+                                newBlockedUserKeywords.length === 0
+                                  ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-xs'
+                                  : (darkMode ? 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100')
+                              }`}
+                            >
+                              All Words in Rule
+                            </button>
+                            {Array.from(new Set<string>(newKeywords.map((k: string) => k.trim()).filter(Boolean))).map((word: string, wIdx: number) => {
+                              const isWordSelected = newBlockedUserKeywords.some(
+                                w => w.trim().toLowerCase() === word.toLowerCase()
+                              );
+                              return (
+                                <button
+                                  key={`${word}-${wIdx}`}
+                                  type="button"
+                                  onClick={() => toggleBlockedUserKeyword(word)}
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition flex items-center gap-1 ${
+                                    isWordSelected
+                                      ? 'bg-rose-600 text-white border-rose-500 shadow-xs'
+                                      : (darkMode ? 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100')
+                                  }`}
+                                >
+                                  <Hash size={9} />
+                                  <span>{word}</span>
+                                  {isWordSelected && <Check size={9} />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <p className={`text-[8.5px] leading-tight ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Sirf is specific keyword/word ke liye block karein — jab ye user/bot message bhejega toh auto-reply ruk kar approval mangega (baaki keywords normal chalenge).
+                  </p>
                 </div>
 
                 {/* 3 Compact Feature Toggles */}

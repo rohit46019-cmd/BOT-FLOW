@@ -1,6 +1,0 @@
-{
-  "summary":  "Revised implementation plan for BotFlow Premium, transitioning to a full Python backend with Firebase Firestore integration for multi-user sync, high-speed scanning, and a persistent scanned items list. Includes a mandatory splash screen and UI visibility fixes.",
-  "updatedAt":  "2026-10-30T11:52:17.493519042Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

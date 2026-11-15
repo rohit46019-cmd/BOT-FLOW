@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, X, Clock, MessageSquare, Tag, Globe, Loader2 } from 'lucide-react';
+import { apiFetch } from '../lib/api';
 
 interface ApprovalDashboardProps {
   darkMode: boolean;
@@ -16,7 +17,7 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
 
   const fetchApprovals = async () => {
     try {
-      const res = await fetch('/api/approvals');
+      const res = await apiFetch('/api/approvals', { bypassCache: true });
       if (!res.ok) return;
       const data = await res.json().catch(() => []);
       const now = Date.now();
@@ -63,7 +64,7 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
     // Optimistic instant update
     setApprovals(prev => prev.filter(a => a._id !== id));
     try {
-      const res = await fetch(`/api/approvals/${id}/decide`, {
+      const res = await apiFetch(`/api/approvals/${id}/decide`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action })
@@ -144,6 +145,11 @@ const ApprovalDashboard: React.FC<ApprovalDashboardProps> = ({ darkMode, directi
                         </div>
                       </div>
                     </div>
+                    {approval.sender_username && (
+                      <div className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${darkMode ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                        @{approval.sender_username} 🛑
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-2 mb-4">

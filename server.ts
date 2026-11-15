@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import { createServer as createViteServer } from "vite";
 import mongoose from "mongoose";
 import crypto from "crypto";
@@ -128,12 +129,12 @@ export let currentBotInfo: { id: number; firstName: string; username: string } |
 
 export function getBotForAccount(accountId: string = "default"): TelegramBot | null {
   const acc = accountId || "default";
-  return accountBots.get(acc) || (acc === "default" ? bot : null);
+  return accountBots.get(acc) || bot;
 }
 
 export function getBotInfoForAccount(accountId: string = "default"): { id: number; firstName: string; username: string } | null {
   const acc = accountId || "default";
-  return accountBotInfo.get(acc) || (acc === "default" ? currentBotInfo : null);
+  return accountBotInfo.get(acc) || currentBotInfo;
 }
 
 const escapeHtml = (text: string) => {
@@ -249,7 +250,7 @@ function extractTopicInfo(input: string): { topicId: number; normalizedLink: str
 
 async function executeApprovedReply(approvalDoc: any) {
   const accountId = approvalDoc.account_id || "default";
-  const client = getAccountClient(accountId);
+  const client = await getOrConnectAccountClient(accountId);
   
   if (!client || !client.connected) {
     throw new Error(`Telegram Client for account "${accountId}" is not connected or logged in.`);
@@ -492,6 +493,19 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
   }
   console.log(`[Telegram Bot] Bot @${me.username} (${me.first_name}) loaded for account "${acc}". Starting polling...`);
 
+  // Register command menu in Telegram UI
+  accountBot.setMyCommands([
+    { command: 'start', description: 'Start bot & view account status' },
+    { command: 'status', description: 'View system status & statistics' },
+    { command: 'blocked', description: 'View list of blocked topics' },
+    { command: 'list', description: 'View items marked for review' },
+    { command: 'pause', description: 'Pause auto-reply system' },
+    { command: 'resume', description: 'Resume auto-reply system' },
+    { command: 'scan', description: 'Run instant missed keyword scan' },
+    { command: 'ping', description: 'Check bot connection status' },
+    { command: 'help', description: 'View available commands' }
+  ]).catch(e => console.warn(`[Telegram Bot] Failed to setMyCommands for account ${acc}:`, e.message));
+
   accountBot.on("polling_error", (error: any) => {
     const errStr = String(error?.message || error || "");
     if (errStr.includes("401") || errStr.includes("Unauthorized") || errStr.includes("ETELEGRAM: 401")) {
@@ -501,6 +515,10 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
       return;
     }
     if (errStr.includes("409 Conflict") || errStr.includes("ETELEGRAM: 409")) {
+      return;
+    }
+    if (errStr.includes("ETIMEDOUT") || errStr.includes("EFATAL") || errStr.includes("ECONNRESET") || errStr.includes("ENOTFOUND") || errStr.includes("EAI_AGAIN")) {
+      console.warn(`[Telegram Bot Network Warning (${acc})]: ${errStr} (Retrying automatically...)`);
       return;
     }
     console.error(`[Telegram Bot] Polling Error (${acc}):`, errStr);
@@ -550,6 +568,39 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
         ).catch(() => {});
       }
 
+      // --- COMMAND: /ping ---
+      if (lowerText === "/ping") {
+        await accountBot.sendMessage(chatId, `🏓 <b>Pong!</b> Bot is active and connected to account <code>${acc}</code>.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // --- COMMAND: /pause ---
+      if (lowerText === "/pause") {
+        await setSetting("system_paused", "true", acc);
+        await saveLog(`Auto-reply paused via Telegram Bot`, 'warn', 'BOT', undefined, undefined, acc);
+        await accountBot.sendMessage(chatId, `⏸ <b>Auto-Reply System PAUSED</b> for account <code>${acc}</code>.\n\nSend <code>/resume</code> to activate.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // --- COMMAND: /resume ---
+      if (lowerText === "/resume") {
+        await setSetting("system_paused", "false", acc);
+        await saveLog(`Auto-reply resumed via Telegram Bot`, 'info', 'BOT', undefined, undefined, acc);
+        await accountBot.sendMessage(chatId, `▶️ <b>Auto-Reply System RESUMED</b> for account <code>${acc}</code>.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // --- COMMAND: /scan ---
+      if (lowerText === "/scan") {
+        await accountBot.sendMessage(chatId, `🔍 <b>Initiating missed keyword scan...</b>`, { parse_mode: 'HTML' });
+        if (triggerGlobalAutoScanFn) triggerGlobalAutoScanFn().catch(() => {});
+        setTimeout(async () => {
+          const count = await MissedTrigger.countDocuments({ processed: false, ...getAccountFilter(acc) });
+          await accountBot.sendMessage(chatId, `✅ <b>Scan Cycle Completed!</b>\n\n📌 <b>Unprocessed Missed Keywords:</b> <code>${count}</code>`, { parse_mode: 'HTML' });
+        }, 3000);
+        return;
+      }
+
       // --- COMMAND: /start or /help ---
       if (lowerText === "/start" || lowerText.startsWith("/start ") || lowerText === "/help" || lowerText.startsWith("/help ")) {
         const accProfile = await AccountProfile.findOne({ account_id: acc });
@@ -561,6 +612,10 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
           `• <b>Block topic:</b> Send topic link or <code>/block &lt;link&gt;</code>\n` +
           `• <b>Unblock topic:</b> Send <code>/unblock &lt;link or ID&gt;</code>\n` +
           `• <b>View blocked topics:</b> <code>/blocked</code>\n` +
+          `• <b>Review list:</b> <code>/list</code>\n` +
+          `• <b>Pause bot:</b> <code>/pause</code>\n` +
+          `• <b>Resume bot:</b> <code>/resume</code>\n` +
+          `• <b>Run scan:</b> <code>/scan</code>\n` +
           `• <b>System status:</b> <code>/status</code>`;
         await accountBot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
         return;
@@ -621,15 +676,21 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
         return;
       }
 
-      // --- COMMAND: /list (Mark as Review List) ---
+      // --- COMMAND: /list (Mark as Review List - ONLY Marked for Review items) ---
       if (lowerText === "/list" || lowerText.startsWith("/list")) {
-        const reviewList = await MarkedReview.find(getAccountFilter(acc)).sort({ created_at: -1 }).limit(25);
+        const reviewList = await MarkedReview.find({
+          ...getAccountFilter(acc),
+          $or: [
+            { marked: true },
+            { marked: { $exists: false }, verified: false }
+          ]
+        }).sort({ created_at: -1 }).limit(25);
         if (reviewList.length === 0) {
-          await accountBot.sendMessage(chatId, `📋 <b>Mark as Review List is Empty.</b>\n\nTap <b>Mark</b> on any photo notification to add items here.`, { parse_mode: 'HTML' });
+          await accountBot.sendMessage(chatId, `📋 <b>Mark for Review List is Empty.</b>\n\nTap <b>📌 Mark</b> on any photo notification to add items here.`, { parse_mode: 'HTML' });
           return;
         }
 
-        let listText = `📋 <b>Mark as Review List (${reviewList.length}):</b>\n\n`;
+        let listText = `📋 <b>Mark for Review List (${reviewList.length}):</b>\n\n`;
         const keyboardButtons: any[] = [];
 
         reviewList.forEach((item, idx) => {
@@ -638,7 +699,7 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
           if (item.link) {
             listText += `   🔗 <a href="${item.link}">Open Topic Link</a>\n`;
           }
-          listText += `   <i>Status:</i> ${item.verified ? '✅ Verified' : '📌 Pending Review'}\n\n`;
+          listText += `   <i>Status:</i> 📌 Marked for Review${item.verified ? ' • ✅ Verified' : ''}\n\n`;
 
           keyboardButtons.push([
             { text: `❌ Remove #${idx + 1} (${item.topic_name ? item.topic_name.slice(0, 15) : item.topic_id})`, callback_data: `remove_review_${item._id}` }
@@ -857,79 +918,146 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
 
     // 1b. Mark Review, Verify, and Remove Review callbacks
     if (data.startsWith("mark_review_") || data.startsWith("verify_photo_") || data.startsWith("remove_review_")) {
+      const extractPhotoAlertDetails = (rawMsgText: string, fallbackTopicId: number, fallbackLink: string) => {
+        const groupMatch = rawMsgText.match(/•\s*Group:\s*(.+)/i) || rawMsgText.match(/^Group:\s*(.+)/im);
+        const topicLineMatch = rawMsgText.match(/•\s*Topic:\s*(.+)/i) || rawMsgText.match(/^Topic:\s*(.+)/im);
+        const rawTopic = topicLineMatch?.[1]?.trim() || "";
+        const cleanTopic = rawTopic.replace(/\s*\(ID:\s*[^)]+\)\s*$/i, "").trim();
+        const parsedGroup = groupMatch?.[1]?.trim() || query.message?.chat?.title || "Group";
+        const parsedTopic = cleanTopic || getTopicNameFromCache(fallbackTopicId, acc) || `Topic #${fallbackTopicId}`;
+        const existingOpenUrl = query.message?.reply_markup?.inline_keyboard?.[0]?.[0]?.url || fallbackLink;
+        return { parsedGroup, parsedTopic, existingOpenUrl };
+      };
+
+      const renderUpdatedPhotoAlert = async (
+        cleanChatId: string,
+        topicId: number,
+        groupName: string,
+        topicName: string,
+        openUrl: string,
+        isMarked: boolean,
+        isVerified: boolean
+      ) => {
+        if (!query.message) return;
+        const banner = isMarked ? `📌 <b>[Marked for Review]</b>\n\n` : "";
+        const verifiedSuffix = isVerified ? ` <b>(✅ Verified)</b>` : "";
+        const updatedText =
+          `${banner}📸 <b>New Photo Received!</b>${verifiedSuffix}\n\n` +
+          `• <b>Group:</b> ${escapeHtml(groupName)}\n` +
+          `• <b>Topic:</b> ${escapeHtml(topicName)} (ID: <code>${topicId || 'General'}</code>)`;
+
+        const updatedMarkup = {
+          inline_keyboard: [[
+            { text: "🔗 Open", url: openUrl },
+            { text: "🚫 Block", callback_data: `block_topic_${topicId}` },
+            { text: isMarked ? "📌 Marked ✓" : "📌 Mark", callback_data: `mark_review_${cleanChatId}_${topicId}` },
+            { text: isVerified ? "✅ Verified" : "Verify", callback_data: `verify_photo_${cleanChatId}_${topicId}` }
+          ]]
+        };
+
+        await accountBot.editMessageText(updatedText, {
+          chat_id: query.message.chat.id,
+          message_id: query.message.message_id,
+          parse_mode: 'HTML',
+          reply_markup: updatedMarkup
+        }).catch(() => {});
+      };
+
       try {
         if (data.startsWith("mark_review_")) {
           const parts = data.split("_");
           const cleanChatId = parts[2];
           const topicId = parseInt(parts[3], 10);
-          let topicName = getTopicNameFromCache(topicId, acc) || `Topic #${topicId}`;
-          let groupName = query.message?.chat?.title || "Group";
-          let topicLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+          const fallbackLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+          const { parsedGroup, parsedTopic, existingOpenUrl } = extractPhotoAlertDetails(
+            query.message?.text || query.message?.caption || "",
+            topicId,
+            fallbackLink
+          );
 
           const existing = await MarkedReview.findOne({ topic_id: topicId, ...getAccountFilter(acc) });
-          if (existing) {
-            // Toggle OFF (Unmark)
-            await MarkedReview.findByIdAndDelete(existing._id);
-            await accountBot.answerCallbackQuery(query.id, { text: "🗑 Unmarked from review!" }).catch(() => {});
-            if (query.message) {
-              const currentText = query.message.text || query.message.caption || "";
-              const cleanedText = currentText.replace("📌 <b>[Marked for Review]</b>\n\n", "").replace("📌 <b>[Marked for Review]</b>", "");
-              await accountBot.editMessageText(
-                cleanedText,
-                {
-                  chat_id: query.message.chat.id,
-                  message_id: query.message.message_id,
-                  parse_mode: 'HTML',
-                  reply_markup: query.message.reply_markup
-                }
-              ).catch(() => {});
+          const isCurrentlyMarked = existing
+            ? (typeof existing.marked === 'boolean' ? existing.marked : !existing.verified)
+            : false;
+          const newMarkedStatus = !isCurrentlyMarked;
+          const currentVerifiedStatus = existing ? !!existing.verified : false;
+
+          if (newMarkedStatus) {
+            if (existing) {
+              existing.marked = true;
+              existing.topic_name = parsedTopic || existing.topic_name;
+              existing.group_name = parsedGroup || existing.group_name;
+              existing.link = existingOpenUrl || existing.link;
+              await existing.save();
+            } else {
+              await MarkedReview.create({
+                topic_id: topicId,
+                topic_name: parsedTopic,
+                group_name: parsedGroup,
+                link: existingOpenUrl,
+                marked: true,
+                verified: false,
+                account_id: acc
+              });
             }
+            await accountBot.answerCallbackQuery(query.id, { text: "📌 Marked for review!" }).catch(() => {});
           } else {
-            // Toggle ON (Mark)
-            await MarkedReview.create({
-              topic_id: topicId,
-              topic_name: topicName,
-              group_name: groupName,
-              link: topicLink,
-              verified: false,
-              account_id: acc
-            });
-            await accountBot.answerCallbackQuery(query.id, { text: "📌 Marked as review successfully!" }).catch(() => {});
-            if (query.message) {
-              const currentText = query.message.text || query.message.caption || "";
-              if (!currentText.includes("📌 [Marked for Review]")) {
-                await accountBot.editMessageText(
-                  `📌 <b>[Marked for Review]</b>\n\n` + currentText,
-                  {
-                    chat_id: query.message.chat.id,
-                    message_id: query.message.message_id,
-                    parse_mode: 'HTML',
-                    reply_markup: query.message.reply_markup
-                  }
-                ).catch(() => {});
+            if (existing) {
+              if (existing.verified) {
+                existing.marked = false;
+                await existing.save();
+              } else {
+                await MarkedReview.findByIdAndDelete(existing._id);
               }
             }
+            await accountBot.answerCallbackQuery(query.id, { text: "🗑 Removed from review list!" }).catch(() => {});
           }
+
+          await renderUpdatedPhotoAlert(
+            cleanChatId,
+            topicId,
+            parsedGroup,
+            parsedTopic,
+            existingOpenUrl,
+            newMarkedStatus,
+            currentVerifiedStatus
+          );
         } else if (data.startsWith("verify_photo_")) {
           const parts = data.split("_");
           const cleanChatId = parts[2];
           const topicId = parseInt(parts[3], 10);
-          let topicName = getTopicNameFromCache(topicId, acc) || `Topic #${topicId}`;
-          let groupName = query.message?.chat?.title || "Group";
-          let topicLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+          const fallbackLink = `https://t.me/c/${cleanChatId}/${topicId}`;
+          const { parsedGroup, parsedTopic, existingOpenUrl } = extractPhotoAlertDetails(
+            query.message?.text || query.message?.caption || "",
+            topicId,
+            fallbackLink
+          );
 
-          let existing = await MarkedReview.findOne({ topic_id: topicId, ...getAccountFilter(acc) });
+          const existing = await MarkedReview.findOne({ topic_id: topicId, ...getAccountFilter(acc) });
           const newVerifiedStatus = existing ? !existing.verified : true;
+          // Preserve marked state cleanly (do NOT turn a Verify-only item into Marked for Review)
+          const currentMarkedStatus = existing
+            ? (typeof existing.marked === 'boolean' ? existing.marked : !existing.verified)
+            : false;
 
           if (existing) {
-            existing.verified = newVerifiedStatus;
-            await existing.save();
-          } else {
-            existing = await MarkedReview.create({
+            if (!newVerifiedStatus && !currentMarkedStatus) {
+              await MarkedReview.findByIdAndDelete(existing._id);
+            } else {
+              existing.verified = newVerifiedStatus;
+              existing.marked = currentMarkedStatus;
+              existing.topic_name = parsedTopic || existing.topic_name;
+              existing.group_name = parsedGroup || existing.group_name;
+              existing.link = existingOpenUrl || existing.link;
+              await existing.save();
+            }
+          } else if (newVerifiedStatus) {
+            await MarkedReview.create({
               topic_id: topicId,
-              topic_name: topicName,
-              group_name: groupName,
-              link: topicLink,
+              topic_name: parsedTopic,
+              group_name: parsedGroup,
+              link: existingOpenUrl,
+              marked: false,
               verified: true,
               account_id: acc
             });
@@ -937,41 +1065,68 @@ async function initBotForAccount(token: string, accountId: string = "default"): 
 
           const txt = newVerifiedStatus ? "✅ Verified successfully!" : "⏳ Unverified!";
           await accountBot.answerCallbackQuery(query.id, { text: txt }).catch(() => {});
-          
-          if (query.message) {
-            const currentText = query.message.text || query.message.caption || "";
-            let updatedText = currentText;
-            if (newVerifiedStatus) {
-              updatedText = currentText.includes("📸 <b>New Photo Received!</b>")
-                ? currentText.replace("📸 <b>New Photo Received!</b>", "📸 <b>New Photo Received! (✅ Verified)</b>")
-                : `✅ <b>[VERIFIED]</b>\n\n` + currentText;
-            } else {
-              updatedText = currentText.replace(" (✅ Verified)", "").replace("✅ <b>[VERIFIED]</b>\n\n", "");
-            }
 
-            await accountBot.editMessageText(
-              updatedText,
-              {
+          await renderUpdatedPhotoAlert(
+            cleanChatId,
+            topicId,
+            parsedGroup,
+            parsedTopic,
+            existingOpenUrl,
+            currentMarkedStatus,
+            newVerifiedStatus
+          );
+        } else if (data.startsWith("remove_review_")) {
+          const reviewId = data.replace("remove_review_", "");
+          const item = await MarkedReview.findById(reviewId).catch(() => null);
+          if (item) {
+            if (item.verified) {
+              item.marked = false;
+              await item.save().catch(() => {});
+            } else {
+              await MarkedReview.findByIdAndDelete(reviewId).catch(() => {});
+            }
+          }
+          await accountBot.answerCallbackQuery(query.id, { text: "🗑 Removed from review list!" }).catch(() => {});
+          if (query.message) {
+            const remainingList = await MarkedReview.find({
+              ...getAccountFilter(acc),
+              $or: [
+                { marked: true },
+                { marked: { $exists: false }, verified: false }
+              ]
+            }).sort({ created_at: -1 }).limit(25);
+
+            if (remainingList.length === 0) {
+              await accountBot.editMessageText(
+                `📋 <b>Mark for Review List is Empty.</b>\n\nTap <b>📌 Mark</b> on any photo notification to add items here.`,
+                {
+                  chat_id: query.message.chat.id,
+                  message_id: query.message.message_id,
+                  parse_mode: 'HTML'
+                }
+              ).catch(() => {});
+            } else {
+              let listText = `📋 <b>Mark for Review List (${remainingList.length}):</b>\n\n`;
+              const keyboardButtons: any[] = [];
+              remainingList.forEach((rem, idx) => {
+                listText += `${idx + 1}. <b>Group:</b> ${escapeHtml(rem.group_name || 'Group')}\n`;
+                listText += `   📌 <b>Topic:</b> ${escapeHtml(rem.topic_name || `Topic #${rem.topic_id}`)}\n`;
+                if (rem.link) {
+                  listText += `   🔗 <a href="${rem.link}">Open Topic Link</a>\n`;
+                }
+                listText += `   <i>Status:</i> 📌 Marked for Review${rem.verified ? ' • ✅ Verified' : ''}\n\n`;
+                keyboardButtons.push([
+                  { text: `❌ Remove #${idx + 1} (${rem.topic_name ? rem.topic_name.slice(0, 15) : rem.topic_id})`, callback_data: `remove_review_${rem._id}` }
+                ]);
+              });
+              await accountBot.editMessageText(listText, {
                 chat_id: query.message.chat.id,
                 message_id: query.message.message_id,
                 parse_mode: 'HTML',
-                reply_markup: query.message.reply_markup
-              }
-            ).catch(() => {});
-          }
-        } else if (data.startsWith("remove_review_")) {
-          const reviewId = data.replace("remove_review_", "");
-          await MarkedReview.findByIdAndDelete(reviewId).catch(() => {});
-          await accountBot.answerCallbackQuery(query.id, { text: "🗑 Removed from review list!" }).catch(() => {});
-          if (query.message) {
-            await accountBot.editMessageText(
-              `🗑 <b>Removed from Review List Successfully.</b>`,
-              {
-                chat_id: query.message.chat.id,
-                message_id: query.message.message_id,
-                parse_mode: 'HTML'
-              }
-            ).catch(() => {});
+                reply_markup: { inline_keyboard: keyboardButtons },
+                disable_web_page_preview: true
+              }).catch(() => {});
+            }
           }
         }
       } catch (err: any) {
@@ -1121,6 +1276,8 @@ const KeywordSchema = new mongoose.Schema({
   match_mode: { type: String, enum: ['exact', 'partial'], default: 'exact' },
   ai_reply_enabled: { type: Boolean, default: false },
   approval_mode: { type: Boolean, default: false },
+  blocked_users: { type: [String], default: [] }, // Blocked usernames or user IDs requiring approval
+  blocked_user_keywords: { type: [String], default: [] }, // Optional specific word(s) inside this rule for which user block applies (empty = all words in this rule)
   target_groups: { type: [String], default: [] }, // Target group IDs or titles
   enabled: { type: Boolean, default: true },
   notify_on_hit: { type: Boolean, default: false },
@@ -1167,6 +1324,8 @@ const PendingApprovalSchema = new mongoose.Schema({
   topic_id: { type: Number },
   topic_name: { type: String },
   original_text: { type: String },
+  sender_id: { type: String },
+  sender_username: { type: String },
   bot_chat_id: { type: String },
   bot_message_id: { type: Number },
   status: { type: String, enum: ['pending', 'approved', 'rejected', 'expired'], default: 'pending' },
@@ -1232,6 +1391,7 @@ const MarkedReviewSchema = new mongoose.Schema({
   topic_name: { type: String, default: "" },
   group_name: { type: String, default: "" },
   link: { type: String, default: "" },
+  marked: { type: Boolean },
   verified: { type: Boolean, default: false },
   account_id: { type: String, default: "default", index: true },
   created_at: { type: Date, default: Date.now }
@@ -1403,35 +1563,59 @@ const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '
 
 // Fast in-memory alias map for account IDs & names (e.g. 'prakash' -> 'acc_1788572705603', 'rohit' -> 'default')
 export const accountNameToIdMap = new Map<string, string>();
+let verifyAndConnectAccountFn: ((accId: string, forceReconnect?: boolean) => Promise<boolean>) | null = null;
+let triggerGlobalAutoScanFn: (() => Promise<void>) | null = null;
+
+export async function waitForDbConnection(maxWaitMs: number = 3000): Promise<boolean> {
+  if ((mongoose.connection.readyState as number) === 1) return true;
+  const start = Date.now();
+  while ((mongoose.connection.readyState as number) !== 1 && (Date.now() - start) < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return (mongoose.connection.readyState as number) === 1;
+}
 
 export async function refreshAccountNameMap() {
   try {
     const accs = await AccountProfile.find().lean();
     accountNameToIdMap.clear();
+    accountNameToIdMap.set("default", "default");
+
     for (const a of accs) {
-      if (a.name) {
-        accountNameToIdMap.set(a.name.toLowerCase().trim(), a.account_id);
-        const firstName = a.name.split(' ')[0].toLowerCase().trim();
-        if (firstName && !accountNameToIdMap.has(firstName)) {
-          accountNameToIdMap.set(firstName, a.account_id);
-        }
-      }
       if (a.account_id) {
         accountNameToIdMap.set(a.account_id.toLowerCase().trim(), a.account_id);
       }
+      if (a.name) {
+        const nameLower = a.name.toLowerCase().trim();
+        accountNameToIdMap.set(nameLower, a.account_id);
+        const firstName = nameLower.split(' ')[0].trim();
+        if (firstName) {
+          accountNameToIdMap.set(firstName, a.account_id);
+        }
+      }
     }
-    accountNameToIdMap.set("main", "default");
-    accountNameToIdMap.set("default", "default");
-    accountNameToIdMap.set("rohit", "default");
   } catch (e) {}
 }
 
 export function getAccountId(req?: any): string {
   if (!req) return 'default';
-  const headerId = req.headers?.['x-account-id'] as string;
   const queryId = (req.query?.account_id || req.query?.accountId || req.query?.account || req.query?.user || req.query?.profile) as string;
   const bodyId = (req.body?.account_id || req.body?.accountId || req.body?.account || req.body?.user || req.body?.profile) as string;
-  const rawId = String(headerId || queryId || bodyId || 'default').trim();
+  const headerId = req.headers?.['x-account-id'] as string;
+
+  let rawId = 'default';
+  if (queryId && queryId.trim() !== '' && queryId.trim() !== 'default') {
+    rawId = queryId.trim();
+  } else if (bodyId && bodyId.trim() !== '' && bodyId.trim() !== 'default') {
+    rawId = bodyId.trim();
+  } else if (headerId && headerId.trim() !== '') {
+    rawId = headerId.trim();
+  } else if (queryId && queryId.trim() !== '') {
+    rawId = queryId.trim();
+  } else if (bodyId && bodyId.trim() !== '') {
+    rawId = bodyId.trim();
+  }
+
   const lower = rawId.toLowerCase();
   if (accountNameToIdMap.has(lower)) {
     return accountNameToIdMap.get(lower)!;
@@ -1687,8 +1871,24 @@ export async function sendTelegramPhotoOptimized(
   return sent;
 }
 
-// Fast In-Memory InputEntity Cache for Ultra-Fast Message Forwarding
+// Fast In-Memory InputEntity Cache for Ultra-Fast Message Forwarding & Replies
 const inputEntityCache = new Map<string, { entity: any; timestamp: number }>();
+const clientEntityCachePopulatedMap = new WeakMap<any, number>();
+
+export async function populateClientEntityCache(client: any): Promise<void> {
+  if (!client || !client.connected) return;
+  const lastFetch = clientEntityCachePopulatedMap.get(client) || 0;
+  if (Date.now() - lastFetch < 30000) return; // Don't spam dialog fetches if fetched within last 30s
+  clientEntityCachePopulatedMap.set(client, Date.now());
+
+  try {
+    // Fetch dialogs to populate GramJS internal entity cache with channel access_hashes
+    await Promise.race([
+      client.getDialogs({ limit: 150 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("DIALOGS_TIMEOUT")), 6000))
+    ]).catch(() => {});
+  } catch (e) {}
+}
 
 function getPeerKey(peer: any): string {
   if (!peer) return 'null';
@@ -1707,30 +1907,217 @@ function getPeerKey(peer: any): string {
 }
 
 export async function getCachedInputEntity(client: any, peer: any, accountId: string = 'default'): Promise<any> {
+  if (!client) {
+    throw new Error("Telegram client is not connected.");
+  }
+
   const key = `${getPeerKey(peer)}:${accountId}`;
   const cached = inputEntityCache.get(key);
   if (cached && Date.now() - cached.timestamp < 3600000) {
     return cached.entity;
   }
-  let entity;
-  try {
-    entity = await client.getInputEntity(peer);
-  } catch (err: any) {
-    console.warn(`[InputEntity] getInputEntity failed for ${getPeerKey(peer)}, trying robust getEntity:`, err.message);
-    try {
-      const resolvedEntity = await client.getEntity(peer);
-      entity = await client.getInputEntity(resolvedEntity);
-    } catch (robustErr: any) {
-      console.error(`[InputEntity] Robust getEntity failed for ${getPeerKey(peer)}:`, robustErr.message);
-      throw err; // throw original
+
+  let cleanPeer: any = peer;
+  if (typeof peer === 'string') {
+    const trimmed = peer.trim();
+    if (trimmed.startsWith("https://t.me/") || trimmed.startsWith("t.me/")) {
+      cleanPeer = trimmed;
+    } else if (/^-?\d+$/.test(trimmed)) {
+      const numStr = trimmed.replace(/^-100|^ -100|^-/, "");
+      try {
+        cleanPeer = BigInt(`-100${numStr}`);
+      } catch (e) {
+        cleanPeer = trimmed;
+      }
     }
   }
-  inputEntityCache.set(key, { entity, timestamp: Date.now() });
-  if (inputEntityCache.size > 200) {
-    const oldestKey = [...inputEntityCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
-    inputEntityCache.delete(oldestKey);
+
+  let entity: any = null;
+  try {
+    entity = await client.getInputEntity(cleanPeer);
+  } catch (err: any) {
+    // Populate client dialog entity cache from Telegram server and retry
+    try {
+      await populateClientEntityCache(client);
+      entity = await client.getInputEntity(cleanPeer);
+    } catch (err2: any) {
+      try {
+        if (cleanPeer !== peer) {
+          entity = await client.getInputEntity(peer);
+        } else {
+          throw err2;
+        }
+      } catch (err3: any) {
+        try {
+          const resolved = await client.getEntity(cleanPeer);
+          entity = await client.getInputEntity(resolved);
+        } catch (err4: any) {
+          const rawPeerStr = getPeerKey(peer).replace(/^-100|^ -100|^-/, "");
+          if (/^\d+$/.test(rawPeerStr)) {
+            if (String(peer).startsWith("-100") || String(peer).length > 10) {
+              entity = new Api.InputPeerChannel({ channelId: rawPeerStr as any, accessHash: "0" as any });
+            } else if (String(peer).startsWith("-")) {
+              entity = new Api.InputPeerChat({ chatId: rawPeerStr as any });
+            } else {
+              entity = new Api.InputPeerUser({ userId: rawPeerStr as any, accessHash: "0" as any });
+            }
+          } else {
+            const errMsg = `Could not find Telegram entity for group/chat ${getPeerKey(peer)}. Please verify that the logged-in Telegram account is a member of this group or channel.`;
+            console.warn(`[InputEntity Warning] ${errMsg}`);
+            throw new Error(errMsg);
+          }
+        }
+      }
+    }
   }
+
+  if (entity) {
+    inputEntityCache.set(key, { entity, timestamp: Date.now() });
+    if (inputEntityCache.size > 200) {
+      const oldestKey = [...inputEntityCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
+      inputEntityCache.delete(oldestKey);
+    }
+  }
+
   return entity;
+}
+
+// Fast In-Memory Sender Info Cache for Blocked User/Bot Approval Checks (1 hour TTL)
+const senderInfoCache = new Map<string, { username: string; name: string; isBot: boolean; timestamp: number }>();
+
+function normalizeUserIdentifier(val: string): string {
+  return String(val || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/t\.me\//i, "")
+    .replace(/^t\.me\//i, "")
+    .replace(/^@/, "")
+    .split(/[/?#\s]/)[0]
+    .trim();
+}
+
+export async function isSenderBlockedForRule(
+  client: any,
+  message: any,
+  kw: any,
+  matchedWord: string = "",
+  accountId: string = "default"
+): Promise<{ isBlocked: boolean; senderId: string; senderUsername: string; matchedEntry?: string }> {
+  let senderId = "";
+  if (message?.senderId) {
+    senderId = message.senderId.toString();
+  } else if (message?.fromId) {
+    if (message.fromId.userId) senderId = message.fromId.userId.toString();
+    else if (message.fromId.channelId) senderId = "-100" + message.fromId.channelId.toString();
+    else if (message.fromId.chatId) senderId = "-" + message.fromId.chatId.toString();
+  }
+  const viaBotIdStr = message?.viaBotId ? message.viaBotId.toString() : "";
+
+  const kwEntries: string[] = (Array.isArray(kw?.blocked_users) ? kw.blocked_users : [])
+    .map((u: any) => normalizeUserIdentifier(String(u || "")))
+    .filter(Boolean);
+
+  if (kwEntries.length === 0) {
+    return { isBlocked: false, senderId, senderUsername: "" };
+  }
+
+  // Check if block is scoped to specific word(s) within this keyword rule
+  const targetWords: string[] = (Array.isArray(kw?.blocked_user_keywords) ? kw.blocked_user_keywords : [])
+    .map((w: any) => String(w || "").trim().toLowerCase())
+    .filter(Boolean);
+  if (targetWords.length > 0) {
+    const normalizedMatched = String(matchedWord || "").trim().toLowerCase();
+    if (!normalizedMatched || !targetWords.includes(normalizedMatched)) {
+      return { isBlocked: false, senderId, senderUsername: "" };
+    }
+  }
+
+  const combinedEntries: string[] = Array.from(new Set<string>(kwEntries));
+
+  let senderUsername = "";
+  let senderFullName = "";
+  let cached = senderId ? senderInfoCache.get(senderId) : undefined;
+  if (cached && Date.now() - cached.timestamp < 3600000) {
+    senderUsername = cached.username;
+    senderFullName = cached.name;
+  } else {
+    let senderEntity: any = message?.sender || null;
+    if (!senderEntity && typeof message?.getSender === "function") {
+      try {
+        senderEntity = await message.getSender();
+      } catch {}
+    }
+    if (!senderEntity && client && senderId && /^\d+$/.test(senderId)) {
+      try {
+        senderEntity = await client.getEntity(BigInt(senderId));
+      } catch {}
+    }
+    if (senderEntity) {
+      senderUsername = normalizeUserIdentifier(senderEntity.username || "");
+      senderFullName = [senderEntity.firstName, senderEntity.lastName, senderEntity.title]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (senderId) {
+        senderInfoCache.set(senderId, {
+          username: senderUsername,
+          name: senderFullName,
+          isBot: !!senderEntity.bot,
+          timestamp: Date.now()
+        });
+        if (senderInfoCache.size > 500) {
+          const oldestKey = senderInfoCache.keys().next().value;
+          if (oldestKey) senderInfoCache.delete(oldestKey);
+        }
+      }
+    }
+  }
+
+  // Also resolve inline bot (viaBotId) if message was sent via inline bot like @FB537bot
+  let viaBotUsername = "";
+  if (viaBotIdStr && client) {
+    const cachedVia = senderInfoCache.get(viaBotIdStr);
+    if (cachedVia && Date.now() - cachedVia.timestamp < 3600000) {
+      viaBotUsername = cachedVia.username;
+    } else {
+      try {
+        const viaEntity: any = await client.getEntity(BigInt(viaBotIdStr));
+        if (viaEntity) {
+          viaBotUsername = normalizeUserIdentifier(viaEntity.username || "");
+          senderInfoCache.set(viaBotIdStr, {
+            username: viaBotUsername,
+            name: [viaEntity.firstName, viaEntity.lastName].filter(Boolean).join(" ").trim(),
+            isBot: !!viaEntity.bot,
+            timestamp: Date.now()
+          });
+        }
+      } catch {}
+    }
+  }
+
+  const lowerFullName = senderFullName.toLowerCase().trim();
+  for (const entry of combinedEntries) {
+    if (
+      (senderUsername && senderUsername === entry) ||
+      (senderId && senderId.replace(/^-100|^-/, "") === entry.replace(/^-100|^-/, "")) ||
+      (viaBotIdStr && viaBotIdStr === entry) ||
+      (viaBotUsername && viaBotUsername === entry) ||
+      (lowerFullName && lowerFullName === entry)
+    ) {
+      return {
+        isBlocked: true,
+        senderId: senderId || viaBotIdStr,
+        senderUsername: senderUsername || viaBotUsername || senderFullName || senderId,
+        matchedEntry: entry
+      };
+    }
+  }
+
+  return {
+    isBlocked: false,
+    senderId,
+    senderUsername: senderUsername || senderFullName || ""
+  };
 }
 
 // Fast In-Memory Photo Reply Limit Cache
@@ -1807,8 +2194,38 @@ const consecutiveAuthFailures: Map<string, number> = new Map();
 export function getAccountClient(accountId: string = 'default'): TelegramClient | null {
   const acc = accountId || 'default';
   const session = accountClients.get(acc);
-  if (session?.client) return session.client;
-  if (acc === 'default' && userClient) return userClient;
+  if (session?.client && session.client.connected) return session.client;
+  if (acc === 'default' && userClient && userClient.connected) return userClient;
+  return null;
+}
+
+export async function getOrConnectAccountClient(accountId: string = 'default'): Promise<TelegramClient | null> {
+  const acc = accountId || 'default';
+  const session = accountClients.get(acc);
+  if (session?.client && session.client.connected) {
+    try {
+      const isAuth = await Promise.race([
+        session.client.isUserAuthorized().catch(() => false),
+        new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error("PING_TIMEOUT")), 3000))
+      ]);
+      if (isAuth) return session.client;
+    } catch (e) {}
+  }
+
+  // Auto-connect MTProto session on demand for this account if logged in
+  if (verifyAndConnectAccountFn) {
+    const connected = await verifyAndConnectAccountFn(acc, true).catch(() => false);
+    if (connected) {
+      const freshSession = accountClients.get(acc);
+      if (freshSession?.client && freshSession.client.connected) {
+        return freshSession.client;
+      }
+    }
+  }
+
+  if (acc === 'default' && userClient && userClient.connected) {
+    return userClient;
+  }
   return null;
 }
 
@@ -2870,6 +3287,15 @@ async function getBotAdminChatIds(accountId: string = "default"): Promise<string
     if (customAdmin && !chatIds.includes(customAdmin)) {
       chatIds.push(customAdmin);
     }
+    if (chatIds.length === 0 && acc !== 'default') {
+      const defaultAdmins = await Setting.find({ key: { $regex: /^bot_admin_/ }, account_id: 'default' });
+      const defaultIds = defaultAdmins.map(d => d.value).filter(Boolean);
+      const defaultCustom = (await getSetting("telegram_admin_id", 'default'))?.value || (await getSetting("admin_chat_id", 'default'))?.value;
+      if (defaultCustom && !defaultIds.includes(defaultCustom)) {
+        defaultIds.push(defaultCustom);
+      }
+      chatIds.push(...defaultIds);
+    }
     return Array.from(new Set(chatIds));
   } catch (e) {
     return [];
@@ -2952,12 +3378,17 @@ export async function sendPhotoReceivedNotification(params: {
       for (const targetChat of targetChats) {
         if (!targetChat) continue;
         await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
-          .catch(async (e) => {
-            if (String(e.message).includes("401") || String(e.message).includes("Unauthorized")) {
+          .catch(async (e: any) => {
+            const errStr = String(e.message || e || "");
+            if (errStr.includes("401") || errStr.includes("Unauthorized")) {
               console.warn(`[NOTIFY] Telegram Bot token is invalid or unauthorized (401). Please update your Telegram Bot Token in Settings.`);
               return;
             }
-            console.warn(`[NOTIFY] HTML Bot photo send failed to ${targetChat}, sending plain:`, e.message);
+            if (errStr.includes("chat not found") || errStr.includes("bot was blocked") || errStr.includes("user is deactivated") || errStr.includes("400 Bad Request")) {
+              console.warn(`[NOTIFY] Cannot send Telegram Bot notification to ${targetChat}: Chat not found or blocked. User needs to send /start to bot.`);
+              return;
+            }
+            console.warn(`[NOTIFY] HTML Bot photo send failed to ${targetChat}, sending plain:`, errStr);
             const plainText = `📸 New Photo Received!\nGroup: ${chatTitle}\nTopic: ${topicName}`;
             await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
           });
@@ -3053,12 +3484,17 @@ export async function sendKeywordHitNotification(params: {
       for (const targetChat of targetChats) {
         if (!targetChat) continue;
         await targetBot.sendMessage(targetChat, botAlertText, { parse_mode: 'HTML', reply_markup: replyMarkup })
-          .catch(async (e) => {
-            if (String(e.message).includes("401") || String(e.message).includes("Unauthorized")) {
+          .catch(async (e: any) => {
+            const errStr = String(e.message || e || "");
+            if (errStr.includes("401") || errStr.includes("Unauthorized")) {
               console.warn(`[NOTIFY] Telegram Bot token is invalid or unauthorized (401). Please update your Telegram Bot Token in Settings.`);
               return;
             }
-            console.warn(`[NOTIFY] HTML Bot keyword send failed to ${targetChat}, sending plain:`, e.message);
+            if (errStr.includes("chat not found") || errStr.includes("bot was blocked") || errStr.includes("user is deactivated") || errStr.includes("400 Bad Request")) {
+              console.warn(`[NOTIFY] Cannot send Telegram Bot notification to ${targetChat}: Chat not found or blocked. User needs to send /start to bot.`);
+              return;
+            }
+            console.warn(`[NOTIFY] HTML Bot keyword send failed to ${targetChat}, sending plain:`, errStr);
             const plainText = `🎯 Keyword Hit Alert!\nKeyword: ${matchedWord}\nTopic: ${topicName}\nGroup: ${chatTitle}\nMessage: ${userMessage || ''}`;
             await targetBot.sendMessage(targetChat, plainText, { reply_markup: replyMarkup }).catch(() => {});
           });
@@ -3483,6 +3919,7 @@ async function getCachedAccountKeywords(accountId: string = "default") {
 
 async function startServer() {
   const app = express();
+  app.use(compression());
   app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
@@ -3830,6 +4267,8 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
+    mongoose.set('bufferTimeoutMS', 3000);
+
     // Asynchronously connect to MongoDB and initialize background services
     mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
@@ -4199,8 +4638,18 @@ async function startServer() {
           // Ignore edited messages to prevent duplicate processing
           if (message.editDate) return;
 
-          // Ignore outgoing messages sent by UserBot, channel posts, or bot-generated messages
-          if (message.out || message.post || message.viaBotId || (message.fromId && (message.fromId as any).bot)) return;
+          // Ignore outgoing messages sent by UserBot or channel posts
+          if (message.out || message.post) return;
+
+          // Prevent self-loop from our own notification bot, while allowing other bots/inline-bots if configured in blocked-users approval list
+          const rawSenderId = message.senderId?.toString() || message.fromId?.userId?.toString() || "";
+          const myBotId = getBotInfoForAccount(accountId)?.id?.toString();
+          if (myBotId && rawSenderId === myBotId) return;
+          if (message.viaBotId) {
+            const kwsForCheck = await getCachedAccountKeywords(accountId);
+            const hasRuleBlocked = kwsForCheck.some((k: any) => Array.isArray(k.blocked_users) && k.blocked_users.length > 0);
+            if (!hasRuleBlocked) return;
+          }
 
           const rawText = message.message || "";
           if (
@@ -4760,7 +5209,8 @@ async function startServer() {
               }
 
               const isGlobalApproval = getCachedSetting("global_approval_mode", accountId) === "true";
-              const requiresApproval = isGlobalApproval || !!kw.approval_mode;
+              const senderCheck = await isSenderBlockedForRule(client, message, kw, match.matchedWord, accountId);
+              const requiresApproval = isGlobalApproval || !!kw.approval_mode || senderCheck.isBlocked;
 
               if (requiresApproval) {
                 // 1. Fast in-memory deduplication check across accounts & loops
@@ -4794,24 +5244,37 @@ async function startServer() {
                   topic_id: topicId,
                   topic_name: topicName,
                   original_text: message.message,
+                  sender_id: senderCheck.senderId || undefined,
+                  sender_username: senderCheck.senderUsername || undefined,
                   status: 'pending',
                   account_id: accountId || 'default'
                 });
 
-                const logMsg = `Approval Required: Keyword "${match.matchedWord}" matched in ${chatTitle} > ${topicName}`;
-                saveLog(logMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, approvalId: approval._id }, accountId).catch(() => {});
+                const senderDisplay = senderCheck.senderUsername
+                  ? `@${senderCheck.senderUsername.replace(/^@/, '')}`
+                  : (senderCheck.senderId || '');
+                const logMsg = senderCheck.isBlocked
+                  ? `Blocked User Approval Required (${senderDisplay || 'User'}): Keyword "${match.matchedWord}" matched in ${chatTitle} > ${topicName}`
+                  : `Approval Required: Keyword "${match.matchedWord}" matched in ${chatTitle} > ${topicName}`;
+                saveLog(logMsg, 'info', 'USERBOT', undefined, { topicId, keyword: match.matchedWord, approvalId: approval._id, blockedUser: senderCheck.isBlocked, sender: senderDisplay }, accountId).catch(() => {});
                 
                 const cleanChatId = (chatId || "").toString().replace(/^-100|^ -100|^-/, "").trim();
                 const topicLink = topicId ? `https://t.me/c/${cleanChatId}/${topicId}` : `https://t.me/c/${cleanChatId}`;
-                sendPushNotification("Approval Required ⚠️", `Keyword "${match.matchedWord}" in "${topicName}" (${chatTitle})`, {
-                  url: topicLink || '/',
-                  tag: `approval-${approval._id}`
-                }, accountId).catch(e => console.error("WebPush approval error:", e));
+                sendPushNotification(
+                  senderCheck.isBlocked ? "Blocked User Approval ⚠️" : "Approval Required ⚠️",
+                  `${senderCheck.isBlocked && senderDisplay ? `${senderDisplay}: ` : ''}Keyword "${match.matchedWord}" in "${topicName}" (${chatTitle})`,
+                  {
+                    url: topicLink || '/',
+                    tag: `approval-${approval._id}`
+                  },
+                  accountId
+                ).catch(e => console.error("WebPush approval error:", e));
                 
                 const targetBot = getBotForAccount(accountId);
                 if (targetBot) {
-                  const notificationText = `🔔 <b>Approval Required</b>\n\n` +
+                  const notificationText = `🔔 <b>${senderCheck.isBlocked ? 'Blocked User Approval Required' : 'Approval Required'}</b>\n\n` +
                     `• <b>Keyword:</b> <code>${escapeHtml(match.matchedWord)}</code>\n` +
+                    (senderDisplay ? `• <b>Sender:</b> <code>${escapeHtml(senderDisplay)}</code>${senderCheck.isBlocked ? ' (🛑 Blocked)' : ''}\n` : '') +
                     `• <b>Group:</b> ${escapeHtml(chatTitle)}\n` +
                     `• <b>Topic:</b> ${escapeHtml(topicName)}\n` +
                     `• <b>User Message:</b> "${escapeHtml(message.message)}"`;
@@ -5894,6 +6357,7 @@ async function startServer() {
   let isBackgroundVerifying = false;
 
   async function verifyAndConnectAccount(accId: string, forceReconnect: boolean = false): Promise<boolean> {
+    verifyAndConnectAccountFn = verifyAndConnectAccount;
     try {
       const sessionDoc = await Setting.findOne({ key: "session_string", ...getAccountFilter(accId) });
       const sessionString = sessionDoc?.value;
@@ -6008,6 +6472,7 @@ async function startServer() {
 
         const targetGroupId = getCachedSetting("telegram_group_ids", accId) || getCachedSetting("telegram_group_ids", "default") || process.env.TELEGRAM_GROUP_ID || "";
         setupUserBotHandlers(newClient, targetGroupId, accId);
+        populateClientEntityCache(newClient).catch(() => {});
         console.log(`[UserBot Background] Account "${accId}" connected.`);
         return true;
       } else {
@@ -6187,10 +6652,14 @@ async function startServer() {
       const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
       const lastLoginTime = (await getSetting("last_login_time", accountId))?.value || "";
       const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
-      
       const session = accountClients.get(accountId);
       const client = session?.client || (accountId === 'default' ? userClient : null);
-      let isUserBotConnected = !!client && client.connected;
+      const hasSessionDoc = !!(await Setting.findOne({ key: "session_string", ...getAccountFilter(accountId) }).maxTimeMS(2000).catch(() => null));
+      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
+
+      if ((!client || !client.connected) && hasSessionDoc) {
+        getOrConnectAccountClient(accountId).catch(() => {});
+      }
 
       const apiId = (await getSetting("api_id", accountId))?.value || "";
       const apiHash = (await getSetting("api_hash", accountId))?.value || "";
@@ -6377,7 +6846,12 @@ async function startServer() {
       
       const session = accountClients.get(accountId);
       const client = session?.client || (accountId === 'default' ? userClient : null);
-      let isUserBotConnected = !!client && client.connected;
+      const hasSessionDoc = !!(await Setting.findOne({ key: "session_string", ...getAccountFilter(accountId) }).maxTimeMS(2000).catch(() => null));
+      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
+
+      if ((!client || !client.connected) && hasSessionDoc) {
+        getOrConnectAccountClient(accountId).catch(() => {});
+      }
 
       const apiId = (await getSetting("api_id", accountId))?.value || "";
       const apiHash = (await getSetting("api_hash", accountId))?.value || "";
@@ -6396,9 +6870,13 @@ async function startServer() {
         } as any, ...accountsList];
       }
       const activeAccountId = activeDoc?.value || 'default';
+      const allSessions = await Setting.find({ key: "session_string" }).lean();
+      const sessionAccountsSet = new Set(allSessions.map((s: any) => s.account_id || 'default'));
+
       const enrichedAccounts = accountsList.map((acc: any) => {
         const accSession = accountClients.get(acc.account_id);
-        const isClientActive = !!(accSession?.client?.connected || (acc.account_id === 'default' && userClient?.connected && cachedAuthStatus));
+        const hasSession = sessionAccountsSet.has(acc.account_id);
+        const isClientActive = !!(accSession?.client?.connected || hasSession || (acc.account_id === 'default' && userClient?.connected && cachedAuthStatus));
         const liveUser = accSession?.loginUser;
         return {
           id: acc.account_id,
@@ -6652,7 +7130,7 @@ async function startServer() {
   app.post("/api/test-welcome", async (req, res) => {
     const accountId = getAccountId(req);
     try {
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
       if (!client || !client.connected) {
         return res.status(400).json({ error: "UserBot is not connected. Please connect your Telegram account first." });
       }
@@ -6678,7 +7156,7 @@ async function startServer() {
   app.post("/api/test-topic-rename", async (req, res) => {
     const accountId = getAccountId(req);
     try {
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
       const targetBot = getBotForAccount(accountId) || bot;
       if ((!client || !client.connected) && !targetBot) {
         return res.status(400).json({ error: "Neither UserBot nor Telegram Bot is connected. Please connect your Telegram account or configure a Bot Token in Settings." });
@@ -6869,13 +7347,15 @@ async function startServer() {
 
   app.post("/api/keywords", async (req, res) => {
     const accountId = getAccountId(req);
-    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, cooldown_minutes, match_mode, ai_reply_enabled, approval_mode, notify_on_hit, target_groups } = req.body;
+    const { id, keyword, keywords, reply, photo, message_link, message_links, max_replies, cooldown_minutes, match_mode, ai_reply_enabled, approval_mode, blocked_users, blocked_user_keywords, notify_on_hit, target_groups } = req.body;
     try {
       // Ensure keywords is an array
       const keywordsArray = Array.isArray(keywords) ? keywords : (keyword ? [keyword] : []);
       const targetGroupsArray = Array.isArray(target_groups) ? target_groups : [];
+      const blockedUsersArray = Array.isArray(blocked_users) ? blocked_users : (typeof blocked_users === 'string' ? blocked_users.split(',').map(s => s.trim()).filter(Boolean) : []);
+      const blockedUserKeywordsArray = Array.isArray(blocked_user_keywords) ? blocked_user_keywords.map((w: any) => String(w || "").trim()).filter(Boolean) : (typeof blocked_user_keywords === 'string' ? blocked_user_keywords.split(',').map(s => s.trim()).filter(Boolean) : []);
       
-      const updateData = { 
+      const updateData: any = { 
         keyword, // Keep legacy
         keywords: keywordsArray, 
         reply, 
@@ -6887,18 +7367,23 @@ async function startServer() {
         match_mode: match_mode || 'exact',
         ai_reply_enabled: !!ai_reply_enabled,
         approval_mode: !!approval_mode,
+        blocked_users: blockedUsersArray,
+        blocked_user_keywords: blockedUserKeywordsArray,
         notify_on_hit: !!notify_on_hit,
         target_groups: targetGroupsArray,
-        account_id: accountId || 'default'
       };
       
       if (id) {
-        let updatedDoc = await Keyword.findOneAndUpdate({ _id: id, ...getAccountFilter(accountId) }, updateData, { new: true });
-        if (!updatedDoc) {
-          // Fallback: claim orphan or previously created keyword under this account
-          await Keyword.findOneAndUpdate({ _id: id }, updateData, { new: true });
+        // Try finding by ID first
+        const existingKw = await Keyword.findById(id).catch(() => null);
+        if (existingKw) {
+          await Keyword.findByIdAndUpdate(id, updateData, { new: true });
+        } else {
+          updateData.account_id = accountId || 'default';
+          await Keyword.findOneAndUpdate({ _id: id }, updateData, { new: true, upsert: true });
         }
       } else {
+        updateData.account_id = accountId || 'default';
         await Keyword.create(updateData);
       }
       
@@ -6913,12 +7398,8 @@ async function startServer() {
 
   app.put("/api/keywords/:id/approval", async (req, res) => {
     try {
-      const accountId = getAccountId(req);
       const { approval_mode } = req.body;
-      let updatedDoc = await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, { approval_mode: !!approval_mode });
-      if (!updatedDoc) {
-        await Keyword.findOneAndUpdate({ _id: req.params.id }, { approval_mode: !!approval_mode });
-      }
+      await Keyword.findByIdAndUpdate(req.params.id, { approval_mode: !!approval_mode }).catch(() => {});
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -6929,9 +7410,9 @@ async function startServer() {
   app.delete("/api/keywords/:id", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      let deleted = await Keyword.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) });
+      let deleted = await Keyword.findOneAndDelete({ _id: req.params.id, ...getAccountFilter(accountId) }).catch(() => null);
       if (!deleted) {
-        await Keyword.findOneAndDelete({ _id: req.params.id });
+        await Keyword.findByIdAndDelete(req.params.id).catch(() => null);
       }
       await refreshKeywordCache();
       res.json({ success: true });
@@ -6942,15 +7423,17 @@ async function startServer() {
 
   app.put("/api/keywords/:id", async (req, res) => {
     try {
-      const accountId = getAccountId(req);
       const updateData: any = {};
       if (typeof req.body.enabled !== 'undefined') updateData.enabled = req.body.enabled;
       if (typeof req.body.approval_mode !== 'undefined') updateData.approval_mode = !!req.body.approval_mode;
       if (typeof req.body.notify_on_hit !== 'undefined') updateData.notify_on_hit = !!req.body.notify_on_hit;
-      let updatedDoc = await Keyword.findOneAndUpdate({ _id: req.params.id, ...getAccountFilter(accountId) }, updateData);
-      if (!updatedDoc) {
-        await Keyword.findOneAndUpdate({ _id: req.params.id }, updateData);
+      if (typeof req.body.blocked_users !== 'undefined') {
+        updateData.blocked_users = Array.isArray(req.body.blocked_users) ? req.body.blocked_users : String(req.body.blocked_users).split(',').map(s => s.trim()).filter(Boolean);
       }
+      if (typeof req.body.blocked_user_keywords !== 'undefined') {
+        updateData.blocked_user_keywords = Array.isArray(req.body.blocked_user_keywords) ? req.body.blocked_user_keywords.map((w: any) => String(w || "").trim()).filter(Boolean) : String(req.body.blocked_user_keywords).split(',').map(s => s.trim()).filter(Boolean);
+      }
+      await Keyword.findByIdAndUpdate(req.params.id, updateData).catch(() => {});
       await refreshKeywordCache();
       res.json({ success: true });
     } catch (err: any) {
@@ -7129,6 +7612,8 @@ async function startServer() {
             const keywordsSame = areArraysEqual(existingKw.keywords || [], kw.keywords || (kw.keyword ? [kw.keyword] : []));
             const targetGroupsSame = areArraysEqual(existingKw.target_groups || [], kw.target_groups || []);
             const messageLinksSame = areArraysEqual(existingKw.message_links || [], kw.message_links || []);
+            const blockedUsersSame = areArraysEqual(existingKw.blocked_users || [], kw.blocked_users || []);
+            const blockedUserKeywordsSame = areArraysEqual(existingKw.blocked_user_keywords || [], kw.blocked_user_keywords || []);
             
             const isSame = 
               existingKw.keyword === kwIdentifier &&
@@ -7143,7 +7628,9 @@ async function startServer() {
               !!existingKw.notify_on_hit === !!kw.notify_on_hit &&
               (existingKw.enabled !== undefined ? existingKw.enabled : true) === (kw.enabled !== undefined ? kw.enabled : true) &&
               targetGroupsSame &&
-              messageLinksSame;
+              messageLinksSame &&
+              blockedUsersSame &&
+              blockedUserKeywordsSame;
 
             if (isSame) {
               // Exact match found - skip writing to database for efficiency and zero duplication
@@ -7164,6 +7651,8 @@ async function startServer() {
               match_mode: kw.match_mode || 'exact',
               ai_reply_enabled: !!kw.ai_reply_enabled,
               approval_mode: !!kw.approval_mode,
+              blocked_users: Array.isArray(kw.blocked_users) ? kw.blocked_users : [],
+              blocked_user_keywords: Array.isArray(kw.blocked_user_keywords) ? kw.blocked_user_keywords : [],
               notify_on_hit: !!kw.notify_on_hit,
               target_groups: kw.target_groups || [],
               enabled: kw.enabled !== undefined ? kw.enabled : true,
@@ -7657,8 +8146,7 @@ async function startServer() {
   app.get("/api/group/messages", async (req, res) => {
     console.log("Accessing /api/group/messages");
     const accountId = getAccountId(req);
-    const session = accountClients.get(accountId);
-    const client = session?.client || (accountId === 'default' ? userClient : null);
+    const client = (await getOrConnectAccountClient(accountId)) || userClient;
 
     if (!client || !client.connected) {
       console.log("UserBot not connected");
@@ -7725,7 +8213,7 @@ async function startServer() {
 
     try {
       const accountId = getAccountId(req);
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
 
       if (client && client.connected) {
         const groupIdsSetting = getCachedSetting("telegram_group_ids", accountId) || groupId || "";
@@ -8212,6 +8700,7 @@ async function startServer() {
 
   let isBackgroundScanning = false;
   async function runBackgroundAutoScanForAllAccounts() {
+    triggerGlobalAutoScanFn = runBackgroundAutoScanForAllAccounts;
     if (isBackgroundScanning) return;
     isBackgroundScanning = true;
     try {
@@ -8229,8 +8718,7 @@ async function startServer() {
 
       for (const accountId of accountIdsToScan) {
         try {
-          const session = accountClients.get(accountId);
-          const client = session?.client || (accountId === 'default' ? userClient : null);
+          const client = (await getOrConnectAccountClient(accountId)) || (accountId === 'default' ? userClient : null);
           if (!client || !client.connected) continue;
 
           const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
@@ -8386,8 +8874,8 @@ async function startServer() {
 
   // Periodic Background Interval Jobs:
   setInterval(pruneOldMissedTriggers, 10 * 60 * 1000); // Clean items older than 48 hours
-  setInterval(runBackgroundAutoScanForAllAccounts, 2 * 60 * 1000); // Time-to-time auto scan every 2 minutes
-  setTimeout(runBackgroundAutoScanForAllAccounts, 25000); // First auto scan after startup
+  setInterval(runBackgroundAutoScanForAllAccounts, 30 * 1000); // Super-fast auto scan every 30 seconds
+  setTimeout(runBackgroundAutoScanForAllAccounts, 10000); // First auto scan after 10 seconds startup
 
   // Persistent Scanned Items Endpoint (strictly last 48 hours)
   app.get("/api/scanned-items", async (req, res) => {
@@ -8452,7 +8940,7 @@ async function startServer() {
       const accountId = getAccountId(req);
       await pruneOldMissedTriggers();
 
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
 
       const isSystemPaused = (await getSetting("system_paused", accountId))?.value === "true";
       if (isSystemPaused) {
@@ -8657,7 +9145,7 @@ async function startServer() {
   app.post("/api/reply-single-missed", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
 
       if (!client || !client.connected) {
         return res.status(400).json({ error: "Telegram client not connected" });
@@ -8704,7 +9192,7 @@ async function startServer() {
   app.post("/api/catchup", async (req, res) => {
     try {
       const accountId = getAccountId(req);
-      const client = getAccountClient(accountId) || userClient;
+      const client = (await getOrConnectAccountClient(accountId)) || userClient;
 
       cancelCatchupFlag = false;
       if (!client || !client.connected) {

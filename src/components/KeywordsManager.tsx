@@ -179,6 +179,17 @@ const RuleCard = memo(function RuleCard({
                 <Zap size={8} className="fill-current" />
               </span>
             )}
+
+            {Array.isArray(kw.blocked_users) && kw.blocked_users.length > 0 && (
+              <span
+                className={`inline-flex items-center gap-0.5 text-[8.5px] font-bold px-1.5 py-0.2 rounded border ${
+                  darkMode ? 'bg-rose-500/15 text-rose-300 border-rose-500/30' : 'bg-rose-50 text-rose-700 border-rose-200'
+                }`}
+                title={`Blocked users (approval required): ${kw.blocked_users.join(', ')}${Array.isArray(kw.blocked_user_keywords) && kw.blocked_user_keywords.length > 0 ? ` | Only on word(s): ${kw.blocked_user_keywords.join(', ')}` : ''}`}
+              >
+                🛑 {kw.blocked_users.length}{Array.isArray(kw.blocked_user_keywords) && kw.blocked_user_keywords.length > 0 ? ` (${kw.blocked_user_keywords.length}w)` : ''}
+              </span>
+            )}
           </div>
 
           {/* Right: Target Groups Summary */}

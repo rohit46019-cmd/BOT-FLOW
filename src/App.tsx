@@ -167,6 +167,8 @@ interface Keyword {
   notify_on_hit?: boolean;
   enabled?: boolean;
   approval_mode?: boolean;
+  blocked_users?: string[];
+  blocked_user_keywords?: string[];
   target_groups?: string[];
 }
 
@@ -2679,7 +2681,7 @@ export default function App() {
   const handleUpdateSettings = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -2763,17 +2765,21 @@ export default function App() {
         cooldown_minutes: parseInt(data.cooldown_minutes?.toString() || "0") || 0,
         ai_reply_enabled: !!data.ai_reply_enabled,
         approval_mode: !!data.approval_mode,
+        blocked_users: Array.isArray(data.blocked_users) ? data.blocked_users : [],
+        blocked_user_keywords: Array.isArray(data.blocked_user_keywords) ? data.blocked_user_keywords : [],
         notify_on_hit: !!data.notify_on_hit,
         target_groups: data.target_groups || []
       };
 
-      const res = await fetch("/api/keywords", {
+      const res = await apiFetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', editingKeywordId ? 'Rule updated!' : 'Rule created!');
         setEditingKeywordId(null);
         fetchKeywords(true);
@@ -2802,7 +2808,7 @@ export default function App() {
     if (!key) return;
     showNotification('warn', 'Verifying key...');
     try {
-      const res = await fetch("/api/verify-gemini", {
+      const res = await apiFetch("/api/verify-gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: key }),
@@ -2846,17 +2852,21 @@ export default function App() {
         max_replies: typeof kw.max_replies === 'number' ? kw.max_replies : 0,
         ai_reply_enabled: !!kw.ai_reply_enabled,
         approval_mode: !!kw.approval_mode,
+        blocked_users: Array.isArray(kw.blocked_users) ? kw.blocked_users : [],
+        blocked_user_keywords: Array.isArray(kw.blocked_user_keywords) ? kw.blocked_user_keywords : [],
         notify_on_hit: !!kw.notify_on_hit,
         target_groups: kw.target_groups || []
       };
 
-      const res = await fetch("/api/keywords", {
+      const res = await apiFetch("/api/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', 'Keyword rule copied! Duplicate added.');
         fetchKeywords(true);
       } else {
@@ -2902,6 +2912,8 @@ export default function App() {
         body: JSON.stringify({ enabled }),
       });
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', `Keyword ${enabled ? 'enabled' : 'disabled'}`);
         fetchKeywords(true);
       } else {
@@ -2919,12 +2931,14 @@ export default function App() {
     // Optimistic state update
     setKeywords(prev => prev.map(k => k._id === id ? { ...k, notify_on_hit } : k));
     try {
-      const res = await fetch(`/api/keywords/${id}`, {
+      const res = await apiFetch(`/api/keywords/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notify_on_hit }),
       });
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', `Notifications ${notify_on_hit ? 'enabled' : 'disabled'}`);
         fetchKeywords(true);
       } else {
@@ -2947,6 +2961,8 @@ export default function App() {
         body: JSON.stringify({ approval_mode }),
       });
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', `Approval mode ${approval_mode ? 'enabled' : 'disabled'}`);
         fetchKeywords(true);
       } else {
@@ -2962,8 +2978,10 @@ export default function App() {
   const confirmDeleteKeyword = async () => {
     if (!deleteConfirmationId) return;
     try {
-      const res = await fetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/keywords/${deleteConfirmationId}`, { method: "DELETE" });
       if (res.ok) {
+        invalidateApiCache('/api/keywords');
+        invalidateApiCache('/api/app-state');
         showNotification('success', 'Keyword deleted');
         fetchKeywords(true);
       }
