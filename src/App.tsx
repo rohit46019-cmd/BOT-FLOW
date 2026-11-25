@@ -620,7 +620,7 @@ export default function App() {
     setIsVerifyingPasscode(true);
     setPasscodeError('');
     try {
-      const res = await fetch('/api/accounts/verify-pin', {
+      const res = await apiFetch('/api/accounts/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountId: currentProfileId, pin: enteredPin })
@@ -1813,10 +1813,12 @@ export default function App() {
           setNotificationSoundType(data.notificationSoundType || "default");
           setPhone(data.defaultPhone || "");
           
-          if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
-            setAuthStep('phone');
-          } else {
-            setAuthStep('credentials');
+          if (authStepRef.current !== 'code') {
+            if (data.apiId && data.apiHash && data.apiId !== "0" && data.apiHash !== "") {
+              setAuthStep('phone');
+            } else {
+              setAuthStep('credentials');
+            }
           }
         }
       }
@@ -3055,8 +3057,9 @@ export default function App() {
       });
       
       if (res.ok) {
+        invalidateApiCache();
         showNotification('success', 'Connected!');
-        fetchStats();
+        await fetchStats(true);
         setAuthStep('credentials');
         setCode("");
         setPassword("");
@@ -3102,11 +3105,11 @@ export default function App() {
 
   const handleResetKeywords = async () => {
     try {
-      const response = await fetch("/api/keywords/reset-all", { method: "POST" });
+      const response = await apiFetch("/api/keywords/reset-all", { method: "POST" });
       if (response.ok) {
         setShowResetKeywordsConfirm(false);
         // Refresh keywords to show updated counts
-        const kwRes = await fetch("/api/keywords");
+        const kwRes = await apiFetch("/api/keywords", { bypassCache: true });
         const kwText = await kwRes.text();
         if (kwText.includes("Rate exceeded")) return;
         try {
@@ -3283,14 +3286,26 @@ export default function App() {
   const handleLogout = async () => {
     setShowLogoutConfirm(false);
     try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
+      const res = await apiFetch("/api/auth/logout", { method: "POST" });
       if (res.ok) {
+        invalidateApiCache();
+        try {
+          localStorage.removeItem(`${currentProfileId}_botflow_stats`);
+          localStorage.removeItem('default_botflow_stats');
+          localStorage.removeItem('botflow_stats');
+        } catch (e) {}
+        setStats((prev) => prev ? { ...prev, isUserBotConnected: false, loginUser: null, sessionStartTime: null } : null);
+        setCode("");
+        setPassword("");
+        setAuthStep(apiIdInput && apiHashInput ? 'phone' : 'credentials');
         showNotification('success', 'Logged out');
-        fetchStats();
-        window.location.reload();
+        await fetchAppState(true);
+      } else {
+        const errData = await res.json().catch(() => null);
+        showNotification('error', errData?.error || `Logout failed (${res.status}). Please try again.`);
       }
-    } catch (err) {
-      showNotification('error', 'Logout failed');
+    } catch (err: any) {
+      showNotification('error', err?.message || 'Logout failed. Check connection.');
     }
   };
 

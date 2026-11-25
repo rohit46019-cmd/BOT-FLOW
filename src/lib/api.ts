@@ -47,7 +47,7 @@ export async function apiFetch(
 ): Promise<Response> {
   const urlString = typeof resource === 'string' ? resource : resource.url;
   const method = (config.method || 'GET').toUpperCase();
-  const maxRetries = config.retries !== undefined ? config.retries : 2;
+  const maxRetries = config.retries !== undefined ? config.retries : 3;
 
   let activeAccountId =
     (typeof window !== 'undefined'
@@ -116,9 +116,10 @@ export async function apiFetch(
         headers,
       });
 
-      // Handle 429 "Rate exceeded" or 503 Service Unavailable gracefully with exponential backoff
-      if ((response.status === 429 || response.status === 503) && retryCount < maxRetries) {
-        console.warn(`[apiFetch] Rate limit reached on ${urlString}. Retrying in ${(retryCount + 1) * 1200}ms...`);
+      // Handle 429 "Rate exceeded" (except Telegram auth FLOOD_WAIT) or 503 Service Unavailable gracefully with exponential backoff
+      const isAuthRoute = urlString.includes('/api/auth/');
+      if ((response.status === 503 || (response.status === 429 && !isAuthRoute)) && retryCount < maxRetries) {
+        console.warn(`[apiFetch] Retryable status ${response.status} on ${urlString}. Retrying in ${(retryCount + 1) * 1200}ms...`);
         await new Promise((resolve) => setTimeout(resolve, (retryCount + 1) * 1200));
         return execute(retryCount + 1);
       }

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import compression from "compression";
 import { createServer as createViteServer } from "vite";
@@ -1564,15 +1565,151 @@ const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '
 // Fast in-memory alias map for account IDs & names (e.g. 'prakash' -> 'acc_1788572705603', 'rohit' -> 'default')
 export const accountNameToIdMap = new Map<string, string>();
 let verifyAndConnectAccountFn: ((accId: string, forceReconnect?: boolean) => Promise<boolean>) | null = null;
+let verifyAndConnectAllUserBotsFn: (() => Promise<void>) | null = null;
 let triggerGlobalAutoScanFn: (() => Promise<void>) | null = null;
 
-export async function waitForDbConnection(maxWaitMs: number = 3000): Promise<boolean> {
-  if ((mongoose.connection.readyState as number) === 1) return true;
-  const start = Date.now();
-  while ((mongoose.connection.readyState as number) !== 1 && (Date.now() - start) < maxWaitMs) {
-    await new Promise(r => setTimeout(r, 100));
+let dbConnectPromise: Promise<boolean> | null = null;
+let dbInitialized = false;
+let dbInitPromise: Promise<void> | null = null;
+let dbReconnectTimer: NodeJS.Timeout | null = null;
+let dbListenersAttached = false;
+
+function attachDbLifecycleListeners() {
+  if (dbListenersAttached) return;
+  dbListenersAttached = true;
+
+  mongoose.connection.on("disconnected", () => {
+    console.warn("[MongoDB] Connection lost (disconnected). Scheduling automatic reconnect...");
+    if (!dbReconnectTimer) {
+      dbReconnectTimer = setTimeout(() => {
+        dbReconnectTimer = null;
+        connectToMongo().catch(() => {});
+      }, 1500);
+    }
+  });
+
+  mongoose.connection.on("error", (err: any) => {
+    console.error("[MongoDB] Connection error event:", err?.message || err);
+    if ((mongoose.connection.readyState as number) !== 1 && !dbReconnectTimer) {
+      dbReconnectTimer = setTimeout(() => {
+        dbReconnectTimer = null;
+        connectToMongo().catch(() => {});
+      }, 2000);
+    }
+  });
+}
+
+async function runPostDbInit() {
+  if (dbInitialized) return;
+  if (dbInitPromise) return dbInitPromise;
+  dbInitPromise = (async () => {
+    try {
+      try {
+        await mongoose.connection.collection("topics").dropIndex("telegram_topic_id_1").catch(() => {});
+        await mongoose.connection.collection("replyhistories").dropIndex("topic_id_1_keyword_id_1").catch(() => {});
+        await mongoose.connection.collection("photoreplyhistories").dropIndex("topic_id_1").catch(() => {});
+        await mongoose.connection.collection("settings").dropIndex("key_1").catch(() => {});
+        await mongoose.connection.collection("settings").dropIndex("key_1_profile_1").catch(() => {});
+        await mongoose.connection.collection("settings").updateMany({ account_id: { $exists: false } }, { $set: { account_id: "default" } }).catch(() => {});
+        await mongoose.connection.collection("settings").updateMany({ account_id: null }, { $set: { account_id: "default" } }).catch(() => {});
+        console.log("Old indexes checked and dropped if existed.");
+      } catch (idxErr) {
+        console.error("Index cleanup error:", idxErr);
+      }
+
+      await Promise.all([
+        refreshSettingsCache().catch(() => {}),
+        refreshKeywordCache().catch(() => {}),
+        refreshAccountNameMap().catch(() => {}),
+      ]);
+      await initSettings().catch(() => {});
+      await setupVapid().catch(() => {});
+      dbInitialized = true;
+
+      initAllAccountBots().catch(e => console.error("Initial initAllAccountBots failed:", e));
+      setTimeout(() => {
+        if (verifyAndConnectAllUserBotsFn) {
+          verifyAndConnectAllUserBotsFn().catch(e => console.error("Initial verifyAndConnectAllUserBots failed:", e));
+        }
+      }, 1000);
+    } finally {
+      dbInitPromise = null;
+    }
+  })();
+  return dbInitPromise;
+}
+
+export async function connectToMongo(): Promise<boolean> {
+  attachDbLifecycleListeners();
+  if ((mongoose.connection.readyState as number) === 1) {
+    if (!dbInitialized) await runPostDbInit().catch(() => {});
+    return true;
   }
-  return (mongoose.connection.readyState as number) === 1;
+  if (dbConnectPromise) {
+    return dbConnectPromise;
+  }
+  dbConnectPromise = (async () => {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if ((mongoose.connection.readyState as number) === 1) {
+          await runPostDbInit().catch(() => {});
+          return true;
+        }
+        const state = mongoose.connection.readyState as number;
+        if (state === 0 || state === 3 || state === 99) {
+          await mongoose.connect(MONGODB_URI!, {
+            serverSelectionTimeoutMS: 12000,
+            socketTimeoutMS: 45000,
+            connectTimeoutMS: 12000,
+            waitQueueTimeoutMS: 10000,
+            maxPoolSize: 12,
+            minPoolSize: 1,
+            heartbeatFrequencyMS: 10000,
+            family: 4,
+          });
+        } else if (state === 2) {
+          const startWait = Date.now();
+          while ((mongoose.connection.readyState as number) === 2 && (Date.now() - startWait) < 10000) {
+            await new Promise(r => setTimeout(r, 100));
+          }
+        }
+        if ((mongoose.connection.readyState as number) === 1) {
+          console.log(`Connected to MongoDB (attempt ${attempt})`);
+          await runPostDbInit().catch(() => {});
+          return true;
+        }
+      } catch (err: any) {
+        console.error(`MongoDB connection attempt ${attempt}/${maxAttempts} failed:`, err?.message || err);
+        if (attempt < maxAttempts) {
+          await new Promise(r => setTimeout(r, attempt * 1500));
+        }
+      }
+    }
+    return (mongoose.connection.readyState as number) === 1;
+  })().finally(() => {
+    dbConnectPromise = null;
+  });
+
+  return dbConnectPromise;
+}
+
+export async function waitForDbConnection(maxWaitMs: number = 12000): Promise<boolean> {
+  if ((mongoose.connection.readyState as number) === 1) {
+    if (!dbInitialized) {
+      await Promise.race([runPostDbInit(), new Promise(r => setTimeout(r, 4000))]).catch(() => {});
+    }
+    return true;
+  }
+  try {
+    const ok = await Promise.race([
+      connectToMongo(),
+      new Promise<boolean>(resolve => setTimeout(() => resolve((mongoose.connection.readyState as number) === 1), maxWaitMs))
+    ]);
+    return ok || (mongoose.connection.readyState as number) === 1;
+  } catch {
+    return (mongoose.connection.readyState as number) === 1;
+  }
 }
 
 export async function refreshAccountNameMap() {
@@ -2188,8 +2325,9 @@ export interface AccountSession {
 }
 
 export const accountClients: Map<string, AccountSession> = new Map();
-export const accountAuthStates: Map<string, { phoneCodeHash?: string; phoneNumber?: string; isConnecting?: boolean; client?: TelegramClient }> = new Map();
+export const accountAuthStates: Map<string, { phoneCodeHash?: string; phoneNumber?: string; isConnecting?: boolean; connectingAt?: number; client?: TelegramClient }> = new Map();
 const consecutiveAuthFailures: Map<string, number> = new Map();
+const recentLogoutAt: Map<string, number> = new Map();
 
 export function getAccountClient(accountId: string = 'default'): TelegramClient | null {
   const acc = accountId || 'default';
@@ -3925,8 +4063,35 @@ async function startServer() {
   const PORT = 3000;
 
   // Health check endpoint - MUST be early
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", (req, res) => res.json({ status: "ok", dbReady: (mongoose.connection.readyState as number) === 1 }));
   app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+  // Ensure MongoDB is connected before handling any database-backed /api/* route
+  app.use("/api", async (req, res, next) => {
+    if (req.path === "/health" || req.path === "/notifications") {
+      return next();
+    }
+    if ((mongoose.connection.readyState as number) === 1) {
+      if (!dbInitialized) {
+        await waitForDbConnection(4000).catch(() => {});
+      }
+      return next();
+    }
+    const connected = await waitForDbConnection(12000);
+    if (!connected) {
+      if (!dbReconnectTimer) {
+        dbReconnectTimer = setTimeout(() => {
+          dbReconnectTimer = null;
+          connectToMongo().catch(() => {});
+        }, 1500);
+      }
+      return res.status(503).json({
+        error: "Database is connecting, please retry in a moment.",
+        retryable: true
+      });
+    }
+    next();
+  });
 
   // Push notification endpoints (Support both standard and legacy endpoints)
   const serveVapidKey = async (req: express.Request, res: express.Response) => {
@@ -4263,51 +4428,16 @@ async function startServer() {
     // We don't exit here to allow the server to start for other features, but bot won't work
   }
 
+  mongoose.set('bufferCommands', true);
+  mongoose.set('bufferTimeoutMS', 15000);
+
   // Start server listening IMMEDIATELY so Cloud Run TCP startup probe succeeds without delay
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    
-    mongoose.set('bufferTimeoutMS', 3000);
-
-    // Asynchronously connect to MongoDB and initialize background services
-    mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      connectTimeoutMS: 10000,
-      waitQueueTimeoutMS: 5000,
-    })
-      .then(async () => {
-        console.log("Connected to MongoDB");
-        // Safely drop old non-group indexing constraints to migrate to multi-group setups
-        try {
-          await mongoose.connection.collection("topics").dropIndex("telegram_topic_id_1").catch(() => {});
-          await mongoose.connection.collection("replyhistories").dropIndex("topic_id_1_keyword_id_1").catch(() => {});
-          await mongoose.connection.collection("photoreplyhistories").dropIndex("topic_id_1").catch(() => {});
-          await mongoose.connection.collection("settings").dropIndex("key_1").catch(() => {});
-          await mongoose.connection.collection("settings").dropIndex("key_1_profile_1").catch(() => {});
-          await mongoose.connection.collection("settings").updateMany({ account_id: { $exists: false } }, { $set: { account_id: "default" } }).catch(() => {});
-          await mongoose.connection.collection("settings").updateMany({ account_id: null }, { $set: { account_id: "default" } }).catch(() => {});
-          console.log("Old indexes checked and dropped if existed.");
-        } catch (idxErr) {
-          console.error("Index cleanup error:", idxErr);
-        }
-        await refreshSettingsCache().catch(() => {});
-        await initSettings().catch(() => {});
-        await setupVapid().catch(() => {});
-        await refreshKeywordCache().catch(() => {});
-        await refreshAccountNameMap().catch(() => {});
-
-        // Initialize Telegram Bots for all accounts after DB is ready
-        await initAllAccountBots().catch(e => console.error("Initial initAllAccountBots failed:", e));
-
-        // Background Engine: Verify and connect all authorized UserBots
-        setTimeout(() => {
-          verifyAndConnectAllUserBots().catch(e => console.error("Initial verifyAndConnectAllUserBots failed:", e));
-        }, 1000);
-      })
-      .catch((err) => {
-        console.error("MongoDB connection error:", err);
-      });
+    // Asynchronously connect to MongoDB with automatic retries & post-init
+    connectToMongo().catch((err) => {
+      console.error("MongoDB initial startup connection error:", err);
+    });
   });
 
   async function handleNewTopicCreatedEvent(
@@ -6359,6 +6489,10 @@ async function startServer() {
   async function verifyAndConnectAccount(accId: string, forceReconnect: boolean = false): Promise<boolean> {
     verifyAndConnectAccountFn = verifyAndConnectAccount;
     try {
+      const lastLogout = recentLogoutAt.get(accId) || 0;
+      if (Date.now() - lastLogout < 15000) {
+        return false;
+      }
       const sessionDoc = await Setting.findOne({ key: "session_string", ...getAccountFilter(accId) });
       const sessionString = sessionDoc?.value;
       if (!sessionString) return false;
@@ -6403,18 +6537,43 @@ async function startServer() {
       if (client) try { await client.disconnect().catch(() => {}); } catch (e) {}
 
       const devInfo = await getTelegramDevice(accId);
-      const newClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-        connectionRetries: 10,
-        requestRetries: 5,
-        deviceModel: devInfo.deviceModel,
-        systemVersion: devInfo.systemVersion,
-        appVersion: devInfo.appVersion,
-        autoReconnect: true,
-        useWSS: true
-      });
+      let newClient: TelegramClient;
+      try {
+        const clientWss = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+          connectionRetries: 5,
+          requestRetries: 5,
+          deviceModel: devInfo.deviceModel,
+          systemVersion: devInfo.systemVersion,
+          appVersion: devInfo.appVersion,
+          autoReconnect: true,
+          useWSS: true
+        });
+        try { clientWss.setLogLevel("none" as any); } catch (e) {}
+        await Promise.race([
+          clientWss.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("CONNECT_TIMEOUT_WSS")), 30000))
+        ]);
+        newClient = clientWss;
+      } catch (wssErr) {
+        console.warn(`[UserBot Background] WSS connect timed out/failed for "${accId}", falling back to direct TCP...`);
+        const clientTcp = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+          connectionRetries: 8,
+          requestRetries: 5,
+          deviceModel: devInfo.deviceModel,
+          systemVersion: devInfo.systemVersion,
+          appVersion: devInfo.appVersion,
+          autoReconnect: true,
+          useWSS: false
+        });
+        try { clientTcp.setLogLevel("none" as any); } catch (e) {}
+        await Promise.race([
+          clientTcp.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("CONNECT_TIMEOUT")), 35000))
+        ]);
+        newClient = clientTcp;
+      }
 
       try {
-        newClient.setLogLevel("none" as any);
         newClient.onError = async (err: any) => {
           const errStr = String(err?.message || err);
           if (errStr.includes("TIMEOUT")) return;
@@ -6430,11 +6589,6 @@ async function startServer() {
           }
         };
       } catch (e) {}
-
-      await Promise.race([
-        newClient.connect(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("CONNECT_TIMEOUT")), 15000))
-      ]).catch(e => { throw e; });
 
       let isAuthorized = false;
       try {
@@ -6493,6 +6647,7 @@ async function startServer() {
   }
 
   async function verifyAndConnectAllUserBots() {
+    if ((mongoose.connection.readyState as number) !== 1) return;
     if (isBackgroundVerifying) return;
     isBackgroundVerifying = true;
     try {
@@ -6525,6 +6680,8 @@ async function startServer() {
       isBackgroundVerifying = false;
     }
   }
+
+  verifyAndConnectAllUserBotsFn = verifyAndConnectAllUserBots;
 
   async function checkAndReconnectUserBot() {
     await verifyAndConnectAllUserBots();
@@ -6652,14 +6809,19 @@ async function startServer() {
       const replyInGeneral = (await getSetting("reply_in_general", accountId))?.value === "true";
       const lastLoginTime = (await getSetting("last_login_time", accountId))?.value || "";
       const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
-      const session = accountClients.get(accountId);
-      const client = session?.client || (accountId === 'default' ? userClient : null);
+      let session = accountClients.get(accountId);
+      let client = session?.client || (accountId === 'default' ? userClient : null);
       const hasSessionDoc = !!(await Setting.findOne({ key: "session_string", ...getAccountFilter(accountId) }).maxTimeMS(2000).catch(() => null));
-      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
 
       if ((!client || !client.connected) && hasSessionDoc) {
-        getOrConnectAccountClient(accountId).catch(() => {});
+        await Promise.race([
+          getOrConnectAccountClient(accountId),
+          new Promise(r => setTimeout(r, 4000))
+        ]).catch(() => {});
+        session = accountClients.get(accountId);
+        client = session?.client || (accountId === 'default' ? userClient : null);
       }
+      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
 
       const apiId = (await getSetting("api_id", accountId))?.value || "";
       const apiHash = (await getSetting("api_hash", accountId))?.value || "";
@@ -6844,14 +7006,19 @@ async function startServer() {
       const lastLoginTime = (await getSetting("last_login_time", accountId))?.value || "";
       const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
       
-      const session = accountClients.get(accountId);
-      const client = session?.client || (accountId === 'default' ? userClient : null);
+      let session = accountClients.get(accountId);
+      let client = session?.client || (accountId === 'default' ? userClient : null);
       const hasSessionDoc = !!(await Setting.findOne({ key: "session_string", ...getAccountFilter(accountId) }).maxTimeMS(2000).catch(() => null));
-      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
 
       if ((!client || !client.connected) && hasSessionDoc) {
-        getOrConnectAccountClient(accountId).catch(() => {});
+        await Promise.race([
+          getOrConnectAccountClient(accountId),
+          new Promise(r => setTimeout(r, 4000))
+        ]).catch(() => {});
+        session = accountClients.get(accountId);
+        client = session?.client || (accountId === 'default' ? userClient : null);
       }
+      let isUserBotConnected = (!!client && client.connected) || hasSessionDoc;
 
       const apiId = (await getSetting("api_id", accountId))?.value || "";
       const apiHash = (await getSetting("api_hash", accountId))?.value || "";
@@ -7373,7 +7540,7 @@ async function startServer() {
         target_groups: targetGroupsArray,
       };
       
-      if (id) {
+      if (id && mongoose.Types.ObjectId.isValid(id)) {
         // Try finding by ID first
         const existingKw = await Keyword.findById(id).catch(() => null);
         if (existingKw) {
@@ -7823,38 +7990,72 @@ async function startServer() {
     console.log(`Attempting login for account ${accountId} with phone: ${phone}, API ID: ${apiId} (Hash length: ${apiHash.length})`);
 
     const authState = accountAuthStates.get(accountId) || {};
-    if (authState.isConnecting || (accountId === 'default' && isConnecting)) {
+    const isStaleConnecting = authState.isConnecting && authState.connectingAt && (Date.now() - authState.connectingAt > 30000);
+    if ((authState.isConnecting && !isStaleConnecting) || (accountId === 'default' && isConnecting && !isStaleConnecting)) {
       return res.status(429).json({ error: "Connection already in progress. Please wait a few seconds." });
     }
 
     try {
-      accountAuthStates.set(accountId, { ...authState, isConnecting: true });
+      recentLogoutAt.delete(accountId);
+      accountAuthStates.set(accountId, { ...authState, isConnecting: true, connectingAt: Date.now() });
       if (accountId === 'default') isConnecting = true;
+
+      // Disconnect any previous pending auth client cleanly
+      if (authState.client) {
+        try { await authState.client.disconnect(); } catch (e) {}
+        try { await authState.client.destroy(); } catch (e) {}
+      }
 
       // Disconnect existing client for this account if any
       const existingSession = accountClients.get(accountId);
       if (existingSession) {
         try { await existingSession.client.disconnect(); } catch (e) {}
+        try { await existingSession.client.destroy(); } catch (e) {}
         if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
         accountClients.delete(accountId);
       }
       if (accountId === 'default' && userClient) {
         try { await userClient.disconnect(); } catch (e) {}
+        try { await userClient.destroy(); } catch (e) {}
         userClient = null;
       }
 
       const devInfo = await getTelegramDevice(accountId);
-
-      const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
-        connectionRetries: 5,
-        deviceModel: devInfo.deviceModel,
-        systemVersion: devInfo.systemVersion,
-        appVersion: devInfo.appVersion,
-        autoReconnect: true,
-      });
+      let client: TelegramClient;
+      try {
+        const clientWss = new TelegramClient(new StringSession(""), apiId, apiHash, {
+          connectionRetries: 5,
+          deviceModel: devInfo.deviceModel,
+          systemVersion: devInfo.systemVersion,
+          appVersion: devInfo.appVersion,
+          autoReconnect: true,
+          useWSS: true,
+        });
+        try { clientWss.setLogLevel("none" as any); } catch (e) {}
+        await Promise.race([
+          clientWss.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT connecting to Telegram WSS")), 30000))
+        ]);
+        client = clientWss;
+      } catch (wssErr) {
+        console.warn(`[UserBot Auth] WSS connect timed out/failed, falling back to direct TCP...`);
+        const clientTcp = new TelegramClient(new StringSession(""), apiId, apiHash, {
+          connectionRetries: 5,
+          deviceModel: devInfo.deviceModel,
+          systemVersion: devInfo.systemVersion,
+          appVersion: devInfo.appVersion,
+          autoReconnect: true,
+          useWSS: false,
+        });
+        try { clientTcp.setLogLevel("none" as any); } catch (e) {}
+        await Promise.race([
+          clientTcp.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT connecting to Telegram TCP")), 35000))
+        ]);
+        client = clientTcp;
+      }
 
       try {
-        client.setLogLevel("none" as any);
         client.onError = async (err: any) => {
           if (err?.message?.includes("TIMEOUT") || String(err).includes("TIMEOUT")) {
             return;
@@ -7863,8 +8064,8 @@ async function startServer() {
         };
       } catch (e) {}
 
-      await client.connect();
       const result = await client.sendCode({ apiId, apiHash }, phone);
+      const tempSessionString = (client.session as StringSession).save() || "";
       
       accountAuthStates.set(accountId, {
         phoneCodeHash: result.phoneCodeHash,
@@ -7875,6 +8076,20 @@ async function startServer() {
       if (accountId === 'default') {
         phoneCodeHash = result.phoneCodeHash;
         phoneNumber = phone;
+      }
+
+      // Persist pending auth state in MongoDB so OTP verification works across mobile app-switches & Cloud Run container restarts
+      try {
+        await setSetting("pending_auth_state", JSON.stringify({
+          phoneCodeHash: result.phoneCodeHash,
+          phoneNumber: phone,
+          tempSessionString,
+          apiId,
+          apiHash,
+          createdAt: Date.now()
+        }), accountId);
+      } catch (e) {
+        console.warn("Could not persist pending_auth_state:", e);
       }
 
       // Persist the phone number for this account so it auto-fills next time
@@ -7932,9 +8147,14 @@ async function startServer() {
   app.post("/api/auth/resend-code", async (req, res) => {
     const accountId = getAccountId(req);
     const authState = accountAuthStates.get(accountId) || (accountId === 'default' ? { phoneCodeHash, phoneNumber } : null);
-    
-    const targetPhone = authState?.phoneNumber || (await getSetting("default_phone", accountId))?.value || req.body.phone;
-    const currentHash = authState?.phoneCodeHash || (accountId === 'default' ? phoneCodeHash : null);
+    let persistedAuth: any = null;
+    try {
+      const rawPending = (await getSetting("pending_auth_state", accountId))?.value;
+      if (rawPending) persistedAuth = JSON.parse(rawPending);
+    } catch (e) {}
+
+    const targetPhone = authState?.phoneNumber || persistedAuth?.phoneNumber || (await getSetting("default_phone", accountId))?.value || req.body.phone;
+    const currentHash = authState?.phoneCodeHash || persistedAuth?.phoneCodeHash || (accountId === 'default' ? phoneCodeHash : null);
     const client = authState?.client;
 
     if (!targetPhone) {
@@ -7943,8 +8163,14 @@ async function startServer() {
 
     try {
       // If we have an active client and phoneCodeHash, attempt Api.auth.ResendCode
-      if (client && client.connected && currentHash) {
+      if (client && currentHash) {
         try {
+          if (!client.connected) {
+            await Promise.race([
+              client.connect(),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 10000))
+            ]);
+          }
           const resendResult: any = await client.invoke(new Api.auth.ResendCode({
             phoneNumber: targetPhone,
             phoneCodeHash: currentHash,
@@ -7955,11 +8181,21 @@ async function startServer() {
               ...authState,
               phoneCodeHash: resendResult.phoneCodeHash,
               phoneNumber: targetPhone,
+              client
             });
             if (accountId === 'default') {
               phoneCodeHash = resendResult.phoneCodeHash;
               phoneNumber = targetPhone;
             }
+            const tempSessionString = (client.session as StringSession).save() || persistedAuth?.tempSessionString || "";
+            await setSetting("pending_auth_state", JSON.stringify({
+              phoneCodeHash: resendResult.phoneCodeHash,
+              phoneNumber: targetPhone,
+              tempSessionString,
+              apiId: persistedAuth?.apiId || Number((await getSetting("api_id", accountId))?.value || 0),
+              apiHash: persistedAuth?.apiHash || (await getSetting("api_hash", accountId))?.value || "",
+              createdAt: Date.now()
+            }), accountId).catch(() => {});
           }
 
           await saveLog(`Auth code resent via Telegram API to ${targetPhone}`, 'info', 'API', '/api/auth/resend-code', undefined, accountId);
@@ -7970,8 +8206,8 @@ async function startServer() {
       }
 
       // Fallback: Re-issue sendCode using saved or provided credentials
-      let apiIdRaw = req.body.apiId || (await getSetting("api_id", accountId))?.value;
-      let apiHash = req.body.apiHash || (await getSetting("api_hash", accountId))?.value;
+      let apiIdRaw = req.body.apiId || persistedAuth?.apiId || (await getSetting("api_id", accountId))?.value;
+      let apiHash = req.body.apiHash || persistedAuth?.apiHash || (await getSetting("api_hash", accountId))?.value;
 
       if (!apiIdRaw || !apiHash) {
         if (accountId === 'default') {
@@ -7980,7 +8216,7 @@ async function startServer() {
         }
       }
 
-      const apiId = parseInt(apiIdRaw, 10);
+      const apiId = parseInt(String(apiIdRaw || ""), 10);
       if (!apiId || isNaN(apiId) || !apiHash) {
         return res.status(400).json({ error: "API ID and Hash required to send a fresh code." });
       }
@@ -7992,19 +8228,27 @@ async function startServer() {
       }
 
       let activeClient = client;
-      if (!activeClient || !activeClient.connected) {
+      if (!activeClient) {
         const devInfo = await getTelegramDevice(accountId);
-        activeClient = new TelegramClient(new StringSession(""), apiId, apiHash, {
+        activeClient = new TelegramClient(new StringSession(persistedAuth?.tempSessionString || ""), apiId, String(apiHash).trim(), {
           connectionRetries: 5,
           deviceModel: devInfo.deviceModel,
           systemVersion: devInfo.systemVersion,
           appVersion: devInfo.appVersion,
           autoReconnect: true,
+          useWSS: true,
         });
-        await activeClient.connect();
+        try { activeClient.setLogLevel("none" as any); } catch (e) {}
+      }
+      if (!activeClient.connected) {
+        await Promise.race([
+          activeClient.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT connecting to Telegram")), 15000))
+        ]);
       }
 
-      const result = await activeClient.sendCode({ apiId, apiHash }, cleanPhone);
+      const result = await activeClient.sendCode({ apiId, apiHash: String(apiHash).trim() }, cleanPhone);
+      const tempSessionString = (activeClient.session as StringSession).save() || "";
 
       accountAuthStates.set(accountId, {
         phoneCodeHash: result.phoneCodeHash,
@@ -8016,6 +8260,14 @@ async function startServer() {
         phoneCodeHash = result.phoneCodeHash;
         phoneNumber = cleanPhone;
       }
+      await setSetting("pending_auth_state", JSON.stringify({
+        phoneCodeHash: result.phoneCodeHash,
+        phoneNumber: cleanPhone,
+        tempSessionString,
+        apiId,
+        apiHash: String(apiHash).trim(),
+        createdAt: Date.now()
+      }), accountId).catch(() => {});
 
       await saveLog(`Auth code refreshed and resent to ${cleanPhone}`, 'info', 'API', '/api/auth/resend-code', undefined, accountId);
       res.json({ success: true, method: 'sendCode' });
@@ -8039,19 +8291,72 @@ async function startServer() {
     const { code, password } = req.body;
     const session = accountClients.get(accountId);
     const authState = accountAuthStates.get(accountId);
-    const client = session?.client || authState?.client || (accountId === 'default' ? userClient : null);
-    const currentPhone = session?.phoneNumber || authState?.phoneNumber || (accountId === 'default' ? phoneNumber : null);
-    const currentHash = session?.phoneCodeHash || authState?.phoneCodeHash || (accountId === 'default' ? phoneCodeHash : null);
 
-    if (!client || !currentPhone || !currentHash) return res.status(400).json({ error: "Session not initialized" });
+    let persistedAuth: any = null;
+    if (!authState?.client || !authState?.phoneCodeHash) {
+      try {
+        const rawPending = (await getSetting("pending_auth_state", accountId))?.value;
+        if (rawPending) persistedAuth = JSON.parse(rawPending);
+      } catch (e) {}
+    }
+
+    let client = session?.client || authState?.client || (accountId === 'default' ? userClient : null);
+    const currentPhone = session?.phoneNumber || authState?.phoneNumber || persistedAuth?.phoneNumber || (accountId === 'default' ? phoneNumber : null);
+    const currentHash = session?.phoneCodeHash || authState?.phoneCodeHash || persistedAuth?.phoneCodeHash || (accountId === 'default' ? phoneCodeHash : null);
+
+    // Reconstruct TelegramClient from persisted pending_auth_state if Cloud Run restarted/switched container during OTP entry
+    if (!client && persistedAuth?.phoneCodeHash && persistedAuth?.phoneNumber && persistedAuth?.apiId && persistedAuth?.apiHash) {
+      try {
+        const devInfo = await getTelegramDevice(accountId);
+        client = new TelegramClient(
+          new StringSession(persistedAuth.tempSessionString || ""),
+          Number(persistedAuth.apiId),
+          String(persistedAuth.apiHash).trim(),
+          {
+            connectionRetries: 5,
+            deviceModel: devInfo.deviceModel,
+            systemVersion: devInfo.systemVersion,
+            appVersion: devInfo.appVersion,
+            autoReconnect: true,
+            useWSS: true,
+          }
+        );
+        try {
+          client.setLogLevel("none" as any);
+          client.onError = async (err: any) => {
+            if (err?.message?.includes("TIMEOUT") || String(err).includes("TIMEOUT")) return;
+          };
+        } catch (e) {}
+        accountAuthStates.set(accountId, {
+          phoneCodeHash: currentHash || persistedAuth.phoneCodeHash,
+          phoneNumber: currentPhone || persistedAuth.phoneNumber,
+          isConnecting: false,
+          client
+        });
+      } catch (recreateErr: any) {
+        console.error("Failed to reconstruct auth client from pending_auth_state:", recreateErr?.message || recreateErr);
+      }
+    }
+
+    if (!client || !currentPhone || !currentHash) {
+      return res.status(400).json({ error: "OTP session expired or not initialized. Please request a fresh Telegram code." });
+    }
 
     try {
+      recentLogoutAt.delete(accountId);
+      if (!client.connected) {
+        await Promise.race([
+          client.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT reconnecting to Telegram")), 15000))
+        ]);
+      }
+
       try {
         await client.invoke(
           new Api.auth.SignIn({
             phoneNumber: currentPhone,
             phoneCodeHash: currentHash,
-            phoneCode: code,
+            phoneCode: String(code || "").trim(),
           })
         );
       } catch (err: any) {
@@ -8059,8 +8364,8 @@ async function startServer() {
           if (!password) {
             return res.status(401).json({ error: "2FA Password required" });
           }
-          const apiIdRaw = (await getSetting("api_id", accountId))?.value || "";
-          const apiHash = ((await getSetting("api_hash", accountId))?.value || "").trim();
+          const apiIdRaw = (await getSetting("api_id", accountId))?.value || String(persistedAuth?.apiId || "");
+          const apiHash = ((await getSetting("api_hash", accountId))?.value || String(persistedAuth?.apiHash || "")).trim();
           const apiId = parseInt(apiIdRaw.trim(), 10);
           
           await client.signInWithPassword({ apiId, apiHash }, {
@@ -8074,22 +8379,43 @@ async function startServer() {
 
       const sessionString = (client.session as StringSession).save();
       await setSetting("session_string", sessionString, accountId);
+      await deleteSetting("pending_auth_state", accountId).catch(() => {});
+      accountAuthStates.delete(accountId);
+      consecutiveAuthFailures.set(accountId, 0);
+
       if (currentPhone) {
         await setSetting("default_phone", currentPhone, accountId);
       }
       const now = new Date().toISOString();
       await setSetting("last_login_time", now, accountId);
+
+      let liveUser: any = null;
+      try {
+        const me = await client.getMe();
+        if (me) {
+          liveUser = {
+            id: me.id.toString(),
+            firstName: me.firstName,
+            lastName: me.lastName,
+            username: me.username,
+            phone: me.phone
+          };
+        }
+      } catch (e) {}
       
       const startTime = Date.now();
       if (accountId === 'default') {
         sessionStartTime = startTime;
         userClient = client;
+        cachedAuthStatus = true;
+        lastAuthCheck = Date.now();
       }
       accountClients.set(accountId, {
         accountId,
         client,
         sessionStartTime: startTime,
-        phoneNumber: currentPhone
+        phoneNumber: currentPhone,
+        loginUser: liveUser
       });
 
       const targetGroupId = (await getSetting("telegram_group_ids", accountId))?.value || (accountId === 'default' ? process.env.TELEGRAM_GROUP_ID : "") || "";
@@ -8114,18 +8440,41 @@ async function startServer() {
   app.post("/api/auth/logout", async (req, res) => {
     try {
       const accountId = getAccountId(req);
+      recentLogoutAt.set(accountId, Date.now());
+
+      const authState = accountAuthStates.get(accountId);
+      if (authState?.client) {
+        try { await authState.client.disconnect(); } catch (e) {}
+        try { await authState.client.destroy(); } catch (e) {}
+      }
+      accountAuthStates.delete(accountId);
+
       const session = accountClients.get(accountId);
       if (session) {
         try { await session.client.disconnect(); } catch (e) {}
+        try { await session.client.destroy(); } catch (e) {}
         if (accountClients.has(accountId)) { await recordSessionEnd(accountId, accountClients.get(accountId)?.sessionStartTime); }
-                accountClients.delete(accountId);
+        accountClients.delete(accountId);
       }
       if (accountId === 'default' && userClient) {
         try { await userClient.disconnect(); } catch (e) {}
+        try { await userClient.destroy(); } catch (e) {}
         userClient = null;
         sessionStartTime = null;
+        cachedAuthStatus = false;
       }
-      await deleteSetting("session_string", accountId);
+
+      consecutiveAuthFailures.delete(accountId);
+      if (settingsCache[accountId]) {
+        delete settingsCache[accountId]["session_string"];
+        delete settingsCache[accountId]["pending_auth_state"];
+      }
+
+      const deleteFilter = accountId === "default"
+        ? { key: { $in: ["session_string", "pending_auth_state"] }, ...getAccountFilter("default") }
+        : { key: { $in: ["session_string", "pending_auth_state"] }, account_id: accountId };
+      await Setting.deleteMany(deleteFilter);
+
       await saveLog(`UserBot logged out`, 'info', 'API', '/api/auth/logout', undefined, accountId);
       res.json({ success: true });
     } catch (err: any) {

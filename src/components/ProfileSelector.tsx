@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
+import { apiFetch } from '../lib/api';
 import { 
   User, 
   Plus, 
@@ -116,7 +117,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
 
   const fetchProfiles = async () => {
     try {
-      const res = await fetch('/api/accounts');
+      const res = await apiFetch('/api/accounts', { bypassCache: true });
       if (res.ok) {
         const data = await res.json();
         if (data.accounts && Array.isArray(data.accounts) && data.accounts.length > 0) {
@@ -251,7 +252,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
 
     try {
       // Save directly to MongoDB server database
-      const res = await fetch('/api/accounts', {
+      const res = await apiFetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -318,7 +319,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
     localStorage.setItem('activeAccountId', id);
 
     // Sync active account to backend server so background verification and notifications run for it immediately
-    fetch('/api/accounts/active', {
+    apiFetch('/api/accounts/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accountId: id })
@@ -369,7 +370,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
         try {
           const targetProfile = profiles.find(p => p.id === lockingProfileId);
           if (!targetProfile) return;
-          const res = await fetch(`/api/accounts/${lockingProfileId}`, {
+          const res = await apiFetch(`/api/accounts/${lockingProfileId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: targetProfile.name, lockPin: enteredPin })
@@ -399,7 +400,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
         return;
       }
       try {
-        const res = await fetch(`/api/accounts/${lockingProfileId}`, {
+        const res = await apiFetch(`/api/accounts/${lockingProfileId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: targetProfile.name, lockPin: '' })
@@ -484,7 +485,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
 
     try {
       // Delete from MongoDB server database
-      await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+      await apiFetch(`/api/accounts/${id}`, { method: 'DELETE' });
 
       const remaining = profiles.filter(p => p.id !== id);
       setProfiles(remaining);
@@ -528,7 +529,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
 
     // Save rename to MongoDB server database
     try {
-      await fetch(`/api/accounts/${id}`, {
+      await apiFetch(`/api/accounts/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: trimmed })
@@ -1159,7 +1160,7 @@ export default function ProfileSelector({ isConnected, onSwitchAccount }: Profil
                             }
                           }
                           try {
-                            const res = await fetch('/api/push/test', {
+                            const res = await apiFetch('/api/push/test', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({
